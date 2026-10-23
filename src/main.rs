@@ -120,6 +120,8 @@ struct ProvinceMap {
     terrain_texture: Texture2D,
     resource_markers: Vec<ResourceMarker>,
     city_markers: Vec<CityMarker>,
+    city_named_count: usize,
+    localisation_file_count: usize,
     zoom: f32,
     target_zoom: f32,
     pan: Vec2,
@@ -193,6 +195,8 @@ impl ProvinceMap {
             width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
         let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
+        let city_named_count = city_markers.iter().filter(|city| !city.name.is_empty()).count();
+        let localisation_file_count = count_localisation_files(Path::new("data/hoi4/localisation"));
 
         Ok(Self {
             texture,
@@ -210,6 +214,8 @@ impl ProvinceMap {
             terrain_texture,
             resource_markers,
             city_markers,
+            city_named_count,
+            localisation_file_count,
             zoom: 1.0,
             target_zoom: 1.0,
             pan: Vec2::ZERO,
@@ -715,6 +721,20 @@ fn parse_victory_point_pairs(line: &str, points: &mut HashMap<u32, u32>) {
     }
 }
 
+fn count_localisation_files(root: &Path) -> usize {
+    let Ok(entries) = fs::read_dir(root) else { return 0 };
+    entries.flatten().map(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            count_localisation_files(&path)
+        } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("yml")) {
+            1
+        } else {
+            0
+        }
+    }).sum()
+}
+
 fn load_victory_point_names() -> HashMap<u32, String> {
     fn visit(directory: &Path, names: &mut HashMap<u32, String>) {
         let Ok(entries) = fs::read_dir(directory) else { return };
@@ -1060,6 +1080,20 @@ fn draw_map_viewer(
                     28.0,
                     228.0,
                     14.0,
+                    LIGHTGRAY,
+                );
+                draw_ui_text(
+                    &format!("Cities: {}  |  Named: {}", map.city_markers.len(), map.city_named_count),
+                    28.0,
+                    450.0,
+                    13.0,
+                    LIGHTGRAY,
+                );
+                draw_ui_text(
+                    &format!("Localisation .yml files: {}", map.localisation_file_count),
+                    28.0,
+                    470.0,
+                    13.0,
                     LIGHTGRAY,
                 );
 
