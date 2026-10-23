@@ -383,6 +383,16 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
             if clean.starts_with("history") && clean.contains('{') {
                 in_history = true;
                 history_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+
+                // Some state files put the whole history block on one line. Parse
+                // owner assignments after the opening brace too, rather than skipping
+                // them because this line enters the history block.
+                if let Some((_, tail)) = clean.split_once('{') {
+                    parse_owner_assignment(tail, id, active_date, MAP_DATE, &mut owners);
+                }
+                if history_depth <= 0 {
+                    in_history = false;
+                }
             } else if in_history {
                 // State history may contain dated owner changes. Resolve the owner as of
                 // the default 1936-01-01 bookmark instead of letting later entries overwrite it.
@@ -392,15 +402,7 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                 }
                 let owner_is_in_date = active_date.map(|date| date > MAP_DATE).unwrap_or(false);
                 if !owner_is_in_date {
-                    if let Some((_, assignment)) = clean.split_once("owner") {
-                        if let Some((_, raw_tag)) = assignment.split_once('=') {
-                            let tag = raw_tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
-                            let tag = tag.split_whitespace().next().unwrap_or("").trim_matches('}');
-                            if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                                owners.insert(id, tag.to_owned());
-                            }
-                        }
-                    }
+                    parse_owner_assignment(clean, id, active_date, MAP_DATE, &mut owners);
                 }
 
                 if active_date.is_some() {
@@ -433,6 +435,29 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
         }
     }
     (owners, resources)
+}
+
+fn parse_owner_assignment(
+    line: &str,
+    state_id: u32,
+    active_date: Option<(u32, u32, u32)>,
+    map_date: (u32, u32, u32),
+    owners: &mut HashMap<u32, String>,
+) {
+    if active_date.is_some_and(|date| date > map_date) {
+        return;
+    }
+
+    // Match an actual "owner" key rather than any larger key containing that word.
+    for segment in line.split("owner") {
+        let Some((_, after)) = segment.split_once('=') else { continue };
+        let tag = after.trim().trim_matches(|c: char| c == '}' || c == '{' || c.is_whitespace() || c == '"');
+        let tag = tag.split_whitespace().next().unwrap_or("").trim_matches(|c: char| c == '}' || c == '{' || c == '"');
+        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            owners.insert(state_id, tag.to_owned());
+            return;
+        }
+    }
 }
 
 fn parse_resource_values(line: &str, state_id: u32, resources: &mut HashMap<u32, f32>) {
