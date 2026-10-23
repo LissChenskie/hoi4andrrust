@@ -130,7 +130,7 @@ impl Default for BuildingRules {
                 base_cost: building.default_base_cost(),
                 per_level_extra_cost: building.default_per_level_extra_cost(),
                 per_controlled_building_extra_cost: 0.0,
-                infrastructure_construction_effect: false,
+                infrastructure_construction_effect: true,
             });
         }
         Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY }
@@ -457,10 +457,11 @@ mod tests {
     fn daily_tick_uses_civilian_factories_and_infrastructure() {
         let mut world = test_world();
         let mut queues = ConstructionQueues::new();
-        queues.insert(1, VecDeque::from([ConstructionProject { building: BuildingType::CivilianFactory, progress: 10_790.0, cost: 10_800.0 }]));
+        queues.insert(1, VecDeque::from([ConstructionProject { building: BuildingType::CivilianFactory, progress: 0.0, cost: 1_000.0 }]));
         advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
-        assert_eq!(world.states[&1].economy.civilian_factories, 3);
-        assert!(queues.get(&1).is_none_or(VecDeque::is_empty));
+        // Two civilian factories × 5 IC/day × (1 + 5 × 0.1) infrastructure bonus.
+        assert_eq!(queues[&1][0].progress, 15.0);
+        assert_eq!(world.states[&1].economy.civilian_factories, 2);
     }
 
     #[test]
