@@ -120,6 +120,9 @@ struct ProvinceMap {
     state_count: usize,
     state_load_status: String,
     province_border_texture: Texture2D,
+    country_border_texture: Option<Texture2D>,
+    state_ids_by_pixel: Vec<u32>,
+    highlighted_state_texture: Option<(u32, Texture2D)>,
     state_border_texture: Option<Texture2D>,
     political_texture: Texture2D,
     resources_texture: Texture2D,
@@ -178,6 +181,8 @@ impl ProvinceMap {
 
         let province_border_texture = build_province_border_texture(width, height, &rgba, &id_by_rgb);
 
+        let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
+
         let state_border_texture = if state_count > 0 {
             Some(build_state_border_texture(
                 width,
@@ -200,6 +205,11 @@ impl ProvinceMap {
             &definition_text,
             Path::new(STATE_DIRECTORY_PATH),
         );
+        let country_border_texture = if state_count > 0 {
+            Some(build_country_border_texture(width, height, &rgba, &id_by_rgb, &state_ids_by_pixel, &owner_by_state))
+        } else {
+            None
+        };
         let resource_markers = build_resource_markers(
             width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
@@ -223,6 +233,9 @@ impl ProvinceMap {
             state_count,
             state_load_status,
             province_border_texture,
+            country_border_texture,
+            state_ids_by_pixel,
+            highlighted_state_texture: None,
             state_border_texture,
             political_texture,
             resources_texture,
@@ -332,11 +345,101 @@ fn build_state_border_texture(
                 overlay[offset] = 235;
                 overlay[offset + 1] = 198;
                 overlay[offset + 2] = 120;
-                overlay[offset + 3] = 230;
+                overlay[offset + 3] = 38;
             }
         }
     }
 
+    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+    texture.set_filter(FilterMode::Linear);
+    texture
+}
+
+fn build_state_ids_by_pixel(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_by_province: &HashMap<u32, u32>,
+) -> Vec<u32> {
+    let mut state_ids = vec![0u32; width as usize * height as usize];
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        if let Some(province_id) = id_by_rgb.get(&rgb) {
+            state_ids[index] = state_by_province.get(province_id).copied().unwrap_or(0);
+        }
+    }
+    state_ids
+}
+
+fn build_country_border_texture(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_ids: &[u32],
+    owner_by_state: &HashMap<u32, String>,
+) -> Texture2D {
+    let pixel_count = width as usize * height as usize;
+    let mut owners = vec![String::new(); pixel_count];
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        if let Some(province_id) = id_by_rgb.get(&rgb) {
+            if let Some(state_id) = state_ids.get(index) {
+                if let Some(owner) = owner_by_state.get(state_id) {
+                    owners[index] = owner.clone();
+                }
+            }
+            let _ = province_id;
+        }
+    }
+    let mut overlay = vec![0u8; pixel_count * 4];
+    let w = width as usize;
+    let h = height as usize;
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            let owner = &owners[index];
+            if owner.is_empty() { continue; }
+            let differs = (x > 0 && !owners[index - 1].is_empty() && owners[index - 1] != *owner)
+                || (x + 1 < w && !owners[index + 1].is_empty() && owners[index + 1] != *owner)
+                || (y > 0 && !owners[index - w].is_empty() && owners[index - w] != *owner)
+                || (y + 1 < h && !owners[index + w].is_empty() && owners[index + w] != *owner);
+            if differs {
+                let o = index * 4;
+                overlay[o] = 232;
+                overlay[o + 1] = 220;
+                overlay[o + 2] = 194;
+                overlay[o + 3] = 150;
+            }
+        }
+    }
+    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+    texture.set_filter(FilterMode::Linear);
+    texture
+}
+
+fn build_highlighted_state_texture(width: u32, height: u32, state_ids: &[u32], selected_state: u32) -> Texture2D {
+    let w = width as usize;
+    let h = height as usize;
+    let mut overlay = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let index = y * w + x;
+            if state_ids[index] != selected_state { continue; }
+            let differs = (x > 0 && state_ids[index - 1] != selected_state)
+                || (x + 1 < w && state_ids[index + 1] != selected_state)
+                || (y > 0 && state_ids[index - w] != selected_state)
+                || (y + 1 < h && state_ids[index + w] != selected_state);
+            if differs {
+                let o = index * 4;
+                overlay[o] = 255;
+                overlay[o + 1] = 218;
+                overlay[o + 2] = 105;
+                overlay[o + 3] = 235;
+            }
+        }
+    }
     let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
     texture.set_filter(FilterMode::Linear);
     texture
@@ -377,7 +480,7 @@ fn build_province_border_texture(
                 overlay[offset] = 20;
                 overlay[offset + 1] = 25;
                 overlay[offset + 2] = 31;
-                overlay[offset + 3] = 105;
+                overlay[offset + 3] = 34;
             }
         }
     }
@@ -1463,6 +1566,21 @@ fn draw_map_viewer(
                     draw_ui_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
                 }
             }
+            if let Some(country_texture) = &map.country_border_texture {
+                draw_texture_ex(
+                    country_texture,
+                    rect.x, rect.y, WHITE,
+                    DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
+                );
+            }
+            if let Some((state_id, highlight_texture)) = &map.highlighted_state_texture {
+                let _ = state_id;
+                draw_texture_ex(
+                    highlight_texture,
+                    rect.x, rect.y, WHITE,
+                    DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
+                );
+            }
             if let Some(state_texture) = &map.state_border_texture {
                 draw_texture_ex(
                     state_texture,
@@ -1630,6 +1748,10 @@ async fn main() {
                                     pixel_y.min(current_map.height - 1),
                                 )
                                 .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                            let selected_state_id = selected.and_then(|(province_id, _, _, _)| current_map.state_by_province.get(&province_id).copied());
+                            current_map.highlighted_state_texture = selected_state_id.map(|state_id| {
+                                (state_id, build_highlighted_state_texture(current_map.width, current_map.height, &current_map.state_ids_by_pixel, state_id))
+                            });
                         }
                         current_map.dragging = false;
                     }
