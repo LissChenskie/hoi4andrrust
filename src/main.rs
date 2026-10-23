@@ -165,6 +165,9 @@ impl ProvinceMap {
         }
 
         let rgba = decoded.to_rgba8().into_raw();
+        // Release the decoder's original image buffer before allocating map layers.
+        // The RGBA buffer is now the single CPU-side source for the remaining load steps.
+        drop(decoded);
         let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
         texture.set_filter(FilterMode::Linear);
 
