@@ -1196,8 +1196,8 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            // Show city names as soon as the map is open; zooming still improves readability.
-            if map.zoom >= 1.0 {
+            // Keep city labels limited to closer zoom; this controls clutter, not whether names load.
+            if map.zoom >= 1.8 {
                 let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
