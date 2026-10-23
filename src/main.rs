@@ -197,9 +197,9 @@ impl ProvinceMap {
             width, height, &rgba, &id_by_rgb, &state_ids_by_pixel, &owner_by_state,
         );
         let resource_markers = build_resource_markers(
-            width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
+            width, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
-        let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
+        let city_markers = build_city_markers(width, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
         let world = World::from_map_data(&state_by_province, &owner_by_state, &state_name_by_id);
 
         // CPU-side hit testing only needs RGB. Drop the fourth alpha byte per pixel
@@ -641,7 +641,6 @@ fn build_map_mode_textures(
 
 fn build_resource_markers(
     width: u32,
-    height: u32,
     rgba: &[u8],
     id_by_rgb: &HashMap<[u8; 3], u32>,
     state_by_province: &HashMap<u32, u32>,
@@ -734,7 +733,6 @@ fn build_resource_markers(
 
 fn build_city_markers(
     width: u32,
-    height: u32,
     rgba: &[u8],
     id_by_rgb: &HashMap<[u8; 3], u32>,
     state_directory: &Path,
@@ -1127,14 +1125,13 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
 
     let date_x = panel_x + 8.0;
     let date_y = panel_y + 33.0;
-    let mut pause_clicked = false;
     let mut speed_clicked = None;
 
-    if compact {
+    let pause_clicked = if compact {
         let date_width = (panel_w * 0.255).clamp(70.0, 91.0);
         draw_ui_text(date_label, date_x, date_y, 12.0, WHITE);
         let pause_x = panel_x + date_width;
-        pause_clicked = time_control_button(
+        let clicked = time_control_button(
             if game.paused { ">" } else { "||" },
             pause_x,
             panel_y + 10.0,
@@ -1152,10 +1149,11 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
                 speed_clicked = Some(speed);
             }
         }
+        clicked
     } else {
         draw_ui_text(date_label, date_x, date_y, 14.0, WHITE);
         let pause_x = panel_x + 112.0;
-        pause_clicked = time_control_button(
+        let clicked = time_control_button(
             if game.paused { "PLAY" } else { "PAUSE" },
             pause_x,
             panel_y + 9.0,
@@ -1170,7 +1168,8 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
                 speed_clicked = Some(speed);
             }
         }
-    }
+        clicked
+    };
     (pause_clicked, speed_clicked)
 }
 
