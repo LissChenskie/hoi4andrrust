@@ -381,30 +381,34 @@ fn build_country_border_texture(
     owner_by_state: &HashMap<u32, String>,
 ) -> Texture2D {
     let pixel_count = width as usize * height as usize;
-    let mut owners = vec![String::new(); pixel_count];
+    let mut owner_ids_by_state = HashMap::<u32, u64>::new();
+    for (state_id, owner) in owner_by_state {
+        let hash = owner.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211));
+        owner_ids_by_state.insert(*state_id, hash.max(1));
+    }
+
+    let mut owners = vec![0u64; pixel_count];
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let rgb = [pixel[0], pixel[1], pixel[2]];
-        if let Some(province_id) = id_by_rgb.get(&rgb) {
+        if id_by_rgb.contains_key(&rgb) {
             if let Some(state_id) = state_ids.get(index) {
-                if let Some(owner) = owner_by_state.get(state_id) {
-                    owners[index] = owner.clone();
-                }
+                owners[index] = owner_ids_by_state.get(state_id).copied().unwrap_or(0);
             }
-            let _ = province_id;
         }
     }
+
     let mut overlay = vec![0u8; pixel_count * 4];
     let w = width as usize;
     let h = height as usize;
     for y in 0..h {
         for x in 0..w {
             let index = y * w + x;
-            let owner = &owners[index];
-            if owner.is_empty() { continue; }
-            let differs = (x > 0 && !owners[index - 1].is_empty() && owners[index - 1] != *owner)
-                || (x + 1 < w && !owners[index + 1].is_empty() && owners[index + 1] != *owner)
-                || (y > 0 && !owners[index - w].is_empty() && owners[index - w] != *owner)
-                || (y + 1 < h && !owners[index + w].is_empty() && owners[index + w] != *owner);
+            let owner = owners[index];
+            if owner == 0 { continue; }
+            let differs = (x > 0 && owners[index - 1] != 0 && owners[index - 1] != owner)
+                || (x + 1 < w && owners[index + 1] != 0 && owners[index + 1] != owner)
+                || (y > 0 && owners[index - w] != 0 && owners[index - w] != owner)
+                || (y + 1 < h && owners[index + w] != 0 && owners[index + w] != owner);
             if differs {
                 let o = index * 4;
                 overlay[o] = 232;
