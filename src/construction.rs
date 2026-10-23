@@ -8,7 +8,7 @@ use crate::world::World;
 
 pub const BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY: f32 = 5.0;
 pub const MAX_CIVILIAN_FACTORIES_PER_LINE: u32 = 15;
-pub const MAX_SHARED_BUILDING_SLOTS: u16 = 30;
+pub const MAX_SHARED_BUILDING_SLOTS: u16 = 25;
 pub const BUILDING_DEFINITIONS_DIRECTORY: &str = "data/hoi4/common/buildings";
 pub const DEFINES_DIRECTORY: &str = "data/hoi4/common/defines";
 pub const DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT: f32 = 1.0;
@@ -123,6 +123,8 @@ pub struct BuildingRules {
     definitions: HashMap<BuildingType, BuildingDefinition>,
     pub base_factory_speed: f32,
     pub infra_max_construction_cost_effect: f32,
+    pub max_civilian_factories_per_line: u32,
+    pub max_shared_slots: u16,
 }
 
 impl Default for BuildingRules {
@@ -136,7 +138,7 @@ impl Default for BuildingRules {
                 infrastructure_construction_effect: true,
             });
         }
-        Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT }
+        Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT, max_civilian_factories_per_line: MAX_CIVILIAN_FACTORIES_PER_LINE, max_shared_slots: MAX_SHARED_BUILDING_SLOTS }
     }
 }
 
@@ -193,6 +195,16 @@ impl BuildingRules {
                     if let Some(value) = find_lua_number(&text, "INFRA_MAX_CONSTRUCTION_COST_EFFECT") {
                         if value.is_finite() && value >= 0.0 {
                             rules.infra_max_construction_cost_effect = value;
+                        }
+                    }
+                    if let Some(value) = find_lua_number(&text, "MAX_CIV_FACTORIES_PER_LINE") {
+                        if value.is_finite() && value >= 1.0 {
+                            rules.max_civilian_factories_per_line = value as u32;
+                        }
+                    }
+                    if let Some(value) = find_lua_number(&text, "MAX_SHARED_SLOTS") {
+                        if value.is_finite() && value >= 1.0 {
+                            rules.max_shared_slots = (value as u16).min(MAX_SHARED_BUILDING_SLOTS.max(value as u16));
                         }
                     }
                 }
@@ -368,7 +380,7 @@ pub fn advance_day(world: &mut World, country_tag: &str, queues: &mut Constructi
         let mut assigned_this_round = false;
         for assigned in &mut assignments {
             if available_factories == 0 { break; }
-            if *assigned < MAX_CIVILIAN_FACTORIES_PER_LINE {
+            if *assigned < rules.max_civilian_factories_per_line {
                 *assigned += 1;
                 available_factories -= 1;
                 assigned_this_round = true;
