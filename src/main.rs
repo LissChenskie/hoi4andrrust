@@ -1714,7 +1714,7 @@ fn draw_map_viewer(
         let base_slots = selected_state.map(|state| usize::from(state.shared_building_slots)).unwrap_or(0);
         // Until technology/focus slot bonuses are simulated, never hide starting factories
         // if they exceed the base category value in a modded or modified save.
-        let slot_count = base_slots.max(built).min(30);
+        let slot_count = base_slots.max(built).min(building_rules.max_shared_slots);
         let free_slots = slot_count.saturating_sub(built + queued_count);
         draw_ui_text(
             &format!("SHARED SLOTS  ·  {built} built  ·  {queued_count} queued  ·  {free_slots} empty  ·  INFRA {}", economy.infrastructure),
