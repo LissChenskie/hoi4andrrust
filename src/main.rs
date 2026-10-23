@@ -1812,7 +1812,15 @@ fn draw_map_viewer(
                                 .map(|state| building.built_count(state.economy))
                                 .unwrap_or(0)
                                 .saturating_add(queue.iter().filter(|p| p.building == *building).count() as u16);
-                            queue.push_back(building_rules.project(*building, level));
+                            let controlled_count = map.as_deref()
+                                .and_then(|current_map| player_country
+                                    .and_then(|tag| current_map.world.countries.get(tag))
+                                    .map(|country| country.state_ids.iter()
+                                        .filter_map(|state_id| map.as_deref().and_then(|m| m.world.states.get(state_id)))
+                                        .map(|state| u32::from(building.built_count(state.economy)))
+                                        .sum::<u32>()))
+                                .unwrap_or(0);
+                            queue.push_back(building_rules.project(*building, level, controlled_count));
                         }
                         *construction_menu = None;
                     }
