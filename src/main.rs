@@ -59,7 +59,7 @@ impl ProvinceMap {
 
         let rgba = decoded.to_rgba8().into_raw();
         let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
-        texture.set_filter(FilterMode::Nearest);
+        texture.set_filter(FilterMode::Linear);
 
         let definition_text = fs::read_to_string(definition_path)
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
