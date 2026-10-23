@@ -288,6 +288,7 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                     if let Some((_, owner)) = tail.split_once("owner") {
                         if let Some((_, tag)) = owner.split_once('=') {
                             let tag = tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
+                            let tag = tag.split_whitespace().next().unwrap_or("").trim_matches('}');
                             if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
                         }
                     }
