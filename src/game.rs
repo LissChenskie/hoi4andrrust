@@ -77,7 +77,7 @@ impl GameState {
     }
 
     pub fn set_speed(&mut self, speed: u8) {
-        self.speed = speed.clamp(1, 3);
+        self.speed = speed.clamp(1, 5);
     }
 
     /// Advance using elapsed real time. A frame hitch is capped to avoid huge catch-up loops.
@@ -87,7 +87,8 @@ impl GameState {
         }
 
         self.accumulator += delta_seconds.min(0.25);
-        let day_duration = Self::SECONDS_PER_DAY / f32::from(self.speed);
+        let speed_multiplier = match self.speed { 1 => 1.0, 2 => 2.0, 3 => 4.0, 4 => 8.0, _ => 16.0 };
+        let day_duration = Self::SECONDS_PER_DAY / speed_multiplier;
         while self.accumulator >= day_duration {
             self.accumulator -= day_duration;
             self.date.advance_one_day();
