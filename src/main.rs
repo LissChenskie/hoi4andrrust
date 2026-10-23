@@ -285,10 +285,10 @@ fn draw_settings() -> Screen {
 #[macroquad::main(window_conf)]
 async fn main() {
     let mut screen = Screen::MainMenu;
-    let mut map = ProvinceMap::load().ok();
-    let mut load_error = map.as_ref().map(|_| String::new()).unwrap_or_else(|| {
-        format!("Map not loaded. Expected {} and {}", MAP_BITMAP_PATH, MAP_DEFINITION_PATH)
-    });
+    let (mut map, mut load_error) = match ProvinceMap::load() {
+        Ok(loaded) => (Some(loaded), String::new()),
+        Err(error) => (None, error),
+    };
     let mut selected: Option<(u32, [u8; 3], u32, u32)> = None;
 
     loop {
