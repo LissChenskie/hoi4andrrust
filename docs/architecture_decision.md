@@ -18,8 +18,8 @@ The map model must not depend on the UI library. If a later renderer is needed, 
 Treat the source province raster and its metadata as a linked dataset:
 - provinces.bmp: raster whose pixel RGB identifies a province;
 - definition.csv: maps province IDs to RGB colours and province metadata;
-- state history files: later source for grouping province IDs into states;
-- further layers (terrain, rivers, heightmap, strategic regions, supply areas, positions and adjacencies) are later milestones.
+- state history files: parsed for province-to-state membership and used to derive a translucent state-border overlay;
+- further layers (country ownership, terrain, rivers, heightmap, strategic regions, supply areas, positions and adjacencies) are later milestones.
 
 Do not redraw or recolour the source province bitmap to make the first viewer work. Use nearest-neighbour texture filtering. Keep state borders as a derived overlay, not as destructive changes to the province image.
 
@@ -27,7 +27,7 @@ Do not redraw or recolour the source province bitmap to make the first viewer wo
 
 Screen coordinates are converted into source-raster coordinates. The exact RGB value at that pixel is resolved through a reverse index (RGB -> province ID). This makes selection independent of the rendering scale.
 
-The first prototype parses the essential numeric columns from definition.csv. It does not yet parse the full Clausewitz grammar, validate every file rule, or read state ownership.
+The definition parser accepts vanilla semicolon-delimited files (and comma-delimited fixtures) and builds a reverse RGB-to-province-ID index. A small Clausewitz tokenizer/parser reads top-level state IDs and province membership while safely traversing nested blocks. It does not yet parse country ownership or the full set of state properties.
 
 ## 5. Preserve IDs and report invalid data
 
@@ -39,7 +39,7 @@ Never renumber provinces in the viewer. Later validation should report:
 - disconnected components and unusual topology;
 - malformed or duplicate state membership.
 
-The current prototype checks duplicate RGB colours while loading definitions and reports basic file/bitmap errors. More complete validation remains future work.
+The current prototype checks duplicate province IDs/RGB colours, duplicate state IDs, repeated province membership, and provinces assigned to multiple states. It reports basic file/bitmap errors. It does not yet verify every raster colour against the definition table or validate all cross-file map references.
 
 ## 6. Asset and licensing policy
 
@@ -51,6 +51,6 @@ AnalyticalEngine is an AOC3 modding layer, not a source of HOI4 geography. Its d
 
 - Android file picker / SAF import is not implemented.
 - The app currently expects a relative local path.
-- State files, state borders, zoom/pan, and map-layer switching are not implemented.
-- The map view displays the source raster and province ID only; no simulation is present.
-- No local compilation, test run, Android build, device launch or performance measurement has been performed.
+- Country ownership colours, zoom/pan, map-layer switching and Android file import are not implemented.
+- The viewer displays the source province raster with a derived state-boundary overlay when state files are present; no simulation is present.
+- No local build or Android device test has been performed. GitHub Actions is used for remote formatting/check/test validation.
