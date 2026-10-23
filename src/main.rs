@@ -1386,7 +1386,7 @@ fn draw_map_viewer(
         draw_ui_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
     }
 
-    match map {
+    match map.as_deref_mut() {
         Some(map) => {
             if compact {
                 draw_ui_text(
