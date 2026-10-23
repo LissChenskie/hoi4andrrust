@@ -1,7 +1,9 @@
 mod state;
 mod game;
+mod world;
 
 use game::GameState;
+use world::World;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -117,6 +119,7 @@ struct ProvinceMap {
     state_by_province: HashMap<u32, u32>,
     owner_by_state: HashMap<u32, String>,
     state_name_by_id: HashMap<u32, String>,
+    world: World,
     state_count: usize,
     state_load_status: String,
     map_border_texture: Texture2D,
@@ -197,6 +200,7 @@ impl ProvinceMap {
             width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
         let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
+        let world = World::from_map_data(&state_by_province, &owner_by_state, &state_name_by_id);
         let city_named_count = city_markers.iter().filter(|city| !city.name.is_empty()).count();
         let localisation_file_count = localisation_roots()
             .iter()
@@ -213,6 +217,7 @@ impl ProvinceMap {
             state_by_province,
             owner_by_state,
             state_name_by_id,
+            world,
             state_count,
             state_load_status,
             map_border_texture,
@@ -1511,13 +1516,10 @@ fn draw_map_viewer(
 
         let state_id = map.state_by_province.get(&province_id).copied();
         let state_name = state_id
-            .and_then(|id| map.state_name_by_id.get(&id))
-            .map(String::as_str)
+            .and_then(|id| map.world.states.get(&id))
+            .and_then(|state| state.name.as_deref())
             .unwrap_or("Unknown state");
-        let owner = state_id
-            .and_then(|id| map.owner_by_state.get(&id))
-            .map(String::as_str)
-            .unwrap_or("—");
+        let owner = map.world.owner_of_province(province_id).unwrap_or("—");
         let heading = if state_id.is_some() {
             format!("{state_name}  ·  {owner}")
         } else {
