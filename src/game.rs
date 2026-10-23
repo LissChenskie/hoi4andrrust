@@ -156,6 +156,7 @@ mod tests {
         game.set_speed(3);
         assert_eq!(game.update(0.25), 1);
         assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 2 });
+    }
 
     #[test]
     fn reports_all_ticks_without_exceeding_catch_up_cap() {
@@ -174,6 +175,5 @@ mod tests {
         assert_eq!(game.update(f32::INFINITY), 0);
         assert_eq!(game.update(-1.0), 0);
         assert_eq!(game.date, GameDate::START);
-    }
     }
 }
