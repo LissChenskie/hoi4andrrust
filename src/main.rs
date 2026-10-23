@@ -51,6 +51,7 @@ struct ProvinceMap {
     pan: Vec2,
     last_mouse: Vec2,
     dragging: bool,
+    drag_moved: bool,
     map_mode: MapMode,
 }
 
@@ -120,6 +121,7 @@ impl ProvinceMap {
             pan: Vec2::ZERO,
             last_mouse: Vec2::ZERO,
             dragging: false,
+            drag_moved: false,
             map_mode: MapMode::Political,
         })
     }
@@ -673,32 +675,44 @@ async fn main() {
                     let rect = map_view_rect(current_map);
                     let inside_map = rect.contains(mouse);
 
-                    if is_mouse_button_down(MouseButton::Left) && inside_map {
-                        if current_map.dragging {
-                            let delta = mouse - current_map.last_mouse;
+                    if is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                        current_map.dragging = true;
+                        current_map.drag_moved = false;
+                        current_map.last_mouse = mouse;
+                    }
+
+                    if is_mouse_button_down(MouseButton::Left) && current_map.dragging {
+                        let delta = mouse - current_map.last_mouse;
+                        if delta.length() > 1.5 {
+                            current_map.drag_moved = true;
+                        }
+                        if current_map.drag_moved {
                             let source = current_map.source_rect();
                             current_map.pan.x -= delta.x / rect.w * source.w;
                             current_map.pan.y -= delta.y / rect.h * source.h;
                             current_map.clamp_pan();
                         }
-                        current_map.dragging = true;
-                    } else {
+                    }
+
+                    if is_mouse_button_released(MouseButton::Left) && current_map.dragging {
+                        if !current_map.drag_moved && inside_map {
+                            let source = current_map.source_rect();
+                            let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
+                                .floor() as u32;
+                            let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
+                                .floor() as u32;
+                            selected = current_map
+                                .province_at(
+                                    pixel_x.min(current_map.width - 1),
+                                    pixel_y.min(current_map.height - 1),
+                                )
+                                .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                        }
                         current_map.dragging = false;
                     }
-                    current_map.last_mouse = mouse;
 
-                    if is_mouse_button_pressed(MouseButton::Left) && inside_map {
-                        let source = current_map.source_rect();
-                        let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
-                            .floor() as u32;
-                        let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
-                            .floor() as u32;
-                        selected = current_map
-                            .province_at(
-                                pixel_x.min(current_map.width - 1),
-                                pixel_y.min(current_map.height - 1),
-                            )
-                            .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                    if current_map.dragging {
+                        current_map.last_mouse = mouse;
                     }
                 }
 
