@@ -1001,7 +1001,7 @@ fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
         let speed_w = (available / 5.0).min(39.0);
         for speed in 1..=5 {
             let x = speed_x + (speed - 1) as f32 * (speed_w + gap);
-            if time_control_button(&format!("{speed}x"), x, panel_y + 10.0, speed_w, 34.0, game.speed == speed) {
+            if time_control_button(&speed.to_string(), x, panel_y + 10.0, speed_w, 34.0, game.speed == speed) {
                 speed_clicked = Some(speed);
             }
         }
@@ -1019,7 +1019,7 @@ fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
         let speed_x = pause_x + 72.0;
         for speed in 1..=5 {
             let x = speed_x + (speed - 1) as f32 * 43.0;
-            if time_control_button(&format!("{speed}x"), x, panel_y + 9.0, 39.0, 36.0, game.speed == speed) {
+            if time_control_button(&speed.to_string(), x, panel_y + 9.0, 39.0, 36.0, game.speed == speed) {
                 speed_clicked = Some(speed);
             }
         }
