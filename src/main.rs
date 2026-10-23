@@ -343,7 +343,7 @@ fn parse_state_date(line: &str) -> Option<(u32, u32, u32)> {
 }
 
 fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u32, f32>) {
-    const MAP_DATE: (u32, u32, u32) = (1939, 9, 1);
+    const MAP_DATE: (u32, u32, u32) = (1936, 1, 1);
     let mut owners = HashMap::new();
     let mut resources = HashMap::new();
     let Ok(entries) = fs::read_dir(directory) else { return (owners, resources) };
@@ -374,7 +374,7 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                 history_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
             } else if in_history {
                 // State history may contain dated owner changes. Resolve the owner as of
-                // the 1939-09-01 bookmark instead of letting later entries overwrite it.
+                // the default 1936-01-01 bookmark instead of letting later entries overwrite it.
                 if let Some(date) = parse_state_date(clean) {
                     active_date = Some(date);
                     dated_depth = 0;
