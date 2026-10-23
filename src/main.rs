@@ -1469,7 +1469,11 @@ async fn main() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
                     let rect = map_view_rect(current_map);
-                    let inside_map = rect.contains(mouse);
+                    let time_controls_overlay = screen_width() >= 760.0
+                        && mouse.x >= screen_width() - 405.0
+                        && mouse.y >= 70.0
+                        && mouse.y <= 124.0;
+                    let inside_map = rect.contains(mouse) && !time_controls_overlay;
 
                     if is_mouse_button_pressed(MouseButton::Left) && inside_map {
                         current_map.dragging = true;
@@ -1522,7 +1526,13 @@ async fn main() {
                     current_map.clamp_pan();
                 }
 
-                if button("Reload local map", 22.0, screen_height() - 72.0, 210.0, 42.0) {
+                let compact_reload = screen_width() < 760.0;
+                let reload_clicked = if compact_reload {
+                    button("Reload map", 12.0, screen_height() - 108.0, 130.0, 34.0)
+                } else {
+                    button("Reload local map", 22.0, screen_height() - 72.0, 210.0, 42.0)
+                };
+                if reload_clicked {
                     match ProvinceMap::load() {
                         Ok(loaded) => {
                             map = Some(loaded);
