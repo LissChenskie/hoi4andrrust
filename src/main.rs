@@ -115,6 +115,7 @@ struct ProvinceMap {
     id_by_rgb: HashMap<[u8; 3], u32>,
     province_count: usize,
     state_by_province: HashMap<u32, u32>,
+    owner_by_state: HashMap<u32, String>,
     state_count: usize,
     state_load_status: String,
     state_border_texture: Option<Texture2D>,
@@ -185,7 +186,7 @@ impl ProvinceMap {
             None
         };
 
-        let (political_texture, resources_texture, terrain_texture) = build_map_mode_textures(
+        let (political_texture, resources_texture, terrain_texture, owner_by_state) = build_map_mode_textures(
             width,
             height,
             &rgba,
@@ -212,6 +213,7 @@ impl ProvinceMap {
             province_count: id_by_rgb.len(),
             id_by_rgb,
             state_by_province,
+            owner_by_state,
             state_count,
             state_load_status,
             state_border_texture,
@@ -509,7 +511,7 @@ fn build_map_mode_textures(
     state_by_province: &HashMap<u32, u32>,
     definition_text: &str,
     state_directory: &Path,
-) -> (Texture2D, Texture2D, Texture2D) {
+) -> (Texture2D, Texture2D, Texture2D, HashMap<u32, String>) {
     let (owner_by_state, resources_by_state) = parse_state_visual_data(state_directory);
     let mut terrain_by_province = HashMap::<u32, String>::new();
     let delimiter = definition_text.lines().find(|l| !l.trim().is_empty())
@@ -561,7 +563,7 @@ fn build_map_mode_textures(
         texture.set_filter(FilterMode::Linear);
         texture
     };
-    (make_texture(&political), make_texture(&resources), make_texture(&terrain))
+    (make_texture(&political), make_texture(&resources), make_texture(&terrain), owner_by_state)
 }
 
 
@@ -1202,7 +1204,10 @@ fn draw_map_viewer(
                     let state_label = map
                         .state_by_province
                         .get(&id)
-                        .map(|state_id| format!("State ID: {state_id}"))
+                        .map(|state_id| {
+                            let owner = map.owner_by_state.get(state_id).map(String::as_str).unwrap_or("—");
+                            format!("State {state_id}  •  Owner: {owner}")
+                        })
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
                     draw_ui_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
                 } else {
@@ -1244,9 +1249,12 @@ fn draw_map_viewer(
                     let state_label = map
                         .state_by_province
                         .get(&id)
-                        .map(|state_id| format!("State ID: {state_id}"))
+                        .map(|state_id| {
+                            let owner = map.owner_by_state.get(state_id).map(String::as_str).unwrap_or("—");
+                            format!("State ID: {state_id}  |  Owner: {owner}")
+                        })
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_ui_text(&state_label, 38.0, 380.0, 14.0, LIGHTGRAY);
+                    draw_ui_text(&state_label, 38.0, 380.0, 13.0, LIGHTGRAY);
                 } else {
                     draw_ui_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
                     draw_ui_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
