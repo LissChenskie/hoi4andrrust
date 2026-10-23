@@ -128,7 +128,7 @@ impl Default for BuildingRules {
                 base_cost: building.default_base_cost(),
                 per_level_extra_cost: building.default_per_level_extra_cost(),
                 per_controlled_building_extra_cost: 0.0,
-                infrastructure_construction_effect: true,
+                infrastructure_construction_effect: false,
             });
         }
         Self { definitions }
