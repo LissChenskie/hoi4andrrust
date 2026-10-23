@@ -514,13 +514,22 @@ fn build_map_mode_textures(
 ) -> (Texture2D, Texture2D, Texture2D, HashMap<u32, String>) {
     let (owner_by_state, resources_by_state) = parse_state_visual_data(state_directory);
     let mut terrain_by_province = HashMap::<u32, String>::new();
+    let mut water_provinces = HashSet::<u32>::new();
     let delimiter = definition_text.lines().find(|l| !l.trim().is_empty())
         .map(|l| if l.contains(';') { ';' } else { ',' }).unwrap_or(';');
     for line in definition_text.lines().skip(1) {
         let fields: Vec<&str> = line.split(delimiter).collect();
         if fields.len() < 7 { continue; }
         if let Ok(id) = fields[0].trim().trim_start_matches('\u{feff}').parse::<u32>() {
-            terrain_by_province.insert(id, fields[6].trim().to_owned());
+            let province_type = fields[4].trim().to_ascii_lowercase();
+            let terrain_name = fields[6].trim().to_owned();
+            let terrain_lower = terrain_name.to_ascii_lowercase();
+            if matches!(province_type.as_str(), "sea" | "lake")
+                || matches!(terrain_lower.as_str(), "ocean" | "sea" | "lake" | "lakes")
+            {
+                water_provinces.insert(id);
+            }
+            terrain_by_province.insert(id, terrain_name);
         }
     }
     let max_resources = resources_by_state.values().copied().fold(0.0f32, f32::max).max(1.0);
@@ -548,9 +557,10 @@ fn build_map_mode_textures(
         terrain[offset + 3] = 255;
 
         let amount = resources_by_state.get(&state_id).copied().unwrap_or(0.0);
-        // Missing/zero resource data must be neutral, not the low end of the heat ramp.
-        // Otherwise a failed state-history parse paints the entire world green.
-        let resource_color = if amount <= 0.0 {
+        // Keep sea and lake pixels in their normal water colours in resource mode.
+        let resource_color = if water_provinces.contains(&province_id) {
+            base_terrain
+        } else if amount <= 0.0 {
             [54, 59, 65]
         } else {
             let strength = (amount / max_resources).clamp(0.0, 1.0);
