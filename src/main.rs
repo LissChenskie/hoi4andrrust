@@ -341,18 +341,6 @@ fn build_state_border_texture(
 /// Parse HOI4 definition.csv into an RGB -> province ID index.
 /// Vanilla HOI4 files are semicolon-delimited; comma-delimited input is also accepted.
 
-fn parse_state_date(line: &str) -> Option<(u32, u32, u32)> {
-    let (left, _) = line.split_once('=')?;
-    let mut parts = left.trim().split('.');
-    let year = parts.next()?.parse().ok()?;
-    let month = parts.next()?.parse().ok()?;
-    let day = parts.next()?.parse().ok()?;
-    if parts.next().is_some() || month == 0 || month > 12 || day == 0 || day > 31 {
-        return None;
-    }
-    Some((year, month, day))
-}
-
 fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u32, f32>) {
     const MAP_DATE: (u32, u32, u32) = (1936, 1, 1);
     let mut owners = HashMap::new();
@@ -361,15 +349,17 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
-        let Ok(source) = fs::read_to_string(path) else { continue };
+        let Ok(source) = fs::read_to_string(&path) else { continue };
+
+        // Reuse the Clausewitz parser that reads state membership so line layout
+        // cannot cause owner assignments to be silently skipped.
+        if let Ok(file_owners) = state::parse_state_owners(&source, MAP_DATE) {
+            owners.extend(file_owners);
+        }
+
         let mut state_id = None;
-        let mut in_history = false;
-        let mut history_depth = 0i32;
-        let mut active_date: Option<(u32, u32, u32)> = None;
-        let mut dated_depth = 0i32;
         let mut in_resources = false;
         let mut resource_depth = 0i32;
-
         for line in source.lines() {
             let clean = line.split('#').next().unwrap_or("").trim();
             if clean.is_empty() { continue; }
@@ -379,46 +369,6 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                 }
             }
             let Some(id) = state_id else { continue };
-
-            if clean.starts_with("history") && clean.contains('{') {
-                in_history = true;
-                history_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-
-                // Some state files put the whole history block on one line. Parse
-                // owner assignments after the opening brace too, rather than skipping
-                // them because this line enters the history block.
-                if let Some((_, tail)) = clean.split_once('{') {
-                    parse_owner_assignment(tail, id, active_date, MAP_DATE, &mut owners);
-                }
-                if history_depth <= 0 {
-                    in_history = false;
-                }
-            } else if in_history {
-                // State history may contain dated owner changes. Resolve the owner as of
-                // the default 1936-01-01 bookmark instead of letting later entries overwrite it.
-                if let Some(date) = parse_state_date(clean) {
-                    active_date = Some(date);
-                    dated_depth = 0;
-                }
-                let owner_is_in_date = active_date.map(|date| date > MAP_DATE).unwrap_or(false);
-                if !owner_is_in_date {
-                    parse_owner_assignment(clean, id, active_date, MAP_DATE, &mut owners);
-                }
-
-                if active_date.is_some() {
-                    dated_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-                    if dated_depth <= 0 {
-                        active_date = None;
-                        dated_depth = 0;
-                    }
-                }
-                history_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-                if history_depth <= 0 {
-                    in_history = false;
-                    active_date = None;
-                    dated_depth = 0;
-                }
-            }
 
             if clean.starts_with("resources") && clean.contains('{') {
                 in_resources = true;
@@ -435,29 +385,6 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
         }
     }
     (owners, resources)
-}
-
-fn parse_owner_assignment(
-    line: &str,
-    state_id: u32,
-    active_date: Option<(u32, u32, u32)>,
-    map_date: (u32, u32, u32),
-    owners: &mut HashMap<u32, String>,
-) {
-    if active_date.is_some_and(|date| date > map_date) {
-        return;
-    }
-
-    // Match an actual "owner" key rather than any larger key containing that word.
-    for segment in line.split("owner") {
-        let Some((_, after)) = segment.split_once('=') else { continue };
-        let tag = after.trim().trim_matches(|c: char| c == '}' || c == '{' || c.is_whitespace() || c == '"');
-        let tag = tag.split_whitespace().next().unwrap_or("").trim_matches(|c: char| c == '}' || c == '{' || c == '"');
-        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            owners.insert(state_id, tag.to_owned());
-            return;
-        }
-    }
 }
 
 fn parse_resource_values(line: &str, state_id: u32, resources: &mut HashMap<u32, f32>) {
@@ -572,11 +499,14 @@ fn build_map_mode_textures(
         let owner_color = owner.map(|tag| tag_color(tag));
         let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
         let offset = pixel_index * 4;
-        // Political mode keeps terrain details visible under a translucent national tint.
-        // States with no parsed owner remain terrain-coloured instead of becoming grey blocks.
-        let political_color = owner_color
-            .map(|country| blend_country(base_terrain, country, 0.48))
-            .unwrap_or(base_terrain);
+        // Political mode is country-first. Terrain belongs in Terrain mode;
+        // missing owners are neutral gray instead of being mistaken for terrain.
+        // Water remains blue in political mode.
+        let political_color = if water_provinces.contains(&province_id) {
+            [55, 105, 155]
+        } else {
+            owner_color.unwrap_or([92, 96, 101])
+        };
         political[offset..offset + 3].copy_from_slice(&political_color);
         political[offset + 3] = 255;
 
@@ -1020,22 +950,7 @@ fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_definition_text, parse_owner_assignment};
-    use std::collections::HashMap;
-
-    #[test]
-    fn parses_owner_from_inline_history_block() {
-        let mut owners = HashMap::new();
-        parse_owner_assignment(" owner = GER }", 42, None, (1936, 1, 1), &mut owners);
-        assert_eq!(owners.get(&42).map(String::as_str), Some("GER"));
-    }
-
-    #[test]
-    fn ignores_owner_assignments_after_start_date() {
-        let mut owners = HashMap::new();
-        parse_owner_assignment(" owner = SOV", 42, Some((1939, 9, 1)), (1936, 1, 1), &mut owners);
-        assert!(owners.get(&42).is_none());
-    }
+    use super::parse_definition_text;
 
     #[test]
     fn parses_hoi4_semicolon_delimited_definitions() {
