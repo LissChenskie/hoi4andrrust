@@ -19,7 +19,7 @@ enum Screen {
     Settings,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum MapMode {
     Political,
     Resources,
@@ -47,6 +47,9 @@ struct ProvinceMap {
     state_count: usize,
     state_load_status: String,
     state_border_texture: Option<Texture2D>,
+    political_texture: Texture2D,
+    resources_texture: Texture2D,
+    terrain_texture: Texture2D,
     zoom: f32,
     pan: Vec2,
     last_mouse: Vec2,
@@ -106,6 +109,16 @@ impl ProvinceMap {
             None
         };
 
+        let (political_texture, resources_texture, terrain_texture) = build_map_mode_textures(
+            width,
+            height,
+            &rgba,
+            &id_by_rgb,
+            &state_by_province,
+            &definition_text,
+            Path::new(STATE_DIRECTORY_PATH),
+        );
+
         Ok(Self {
             texture,
             width,
@@ -117,6 +130,9 @@ impl ProvinceMap {
             state_count,
             state_load_status,
             state_border_texture,
+            political_texture,
+            resources_texture,
+            terrain_texture,
             zoom: 1.0,
             pan: Vec2::ZERO,
             last_mouse: Vec2::ZERO,
@@ -229,6 +245,146 @@ fn build_state_border_texture(
 
 /// Parse HOI4 definition.csv into an RGB -> province ID index.
 /// Vanilla HOI4 files are semicolon-delimited; comma-delimited input is also accepted.
+
+fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u32, f32>) {
+    let mut owners = HashMap::new();
+    let mut resources = HashMap::new();
+    let Ok(entries) = fs::read_dir(directory) else { return (owners, resources) };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
+        let Ok(source) = fs::read_to_string(path) else { continue };
+        let mut state_id = None;
+        let mut in_resources = false;
+        let mut resource_depth = 0i32;
+        for line in source.lines() {
+            let clean = line.split('#').next().unwrap_or("").trim();
+            if clean.starts_with("id") && clean.split('=').count() >= 2 {
+                if let Some(value) = clean.split('=').nth(1).and_then(|v| v.trim().parse::<u32>().ok()) {
+                    state_id = Some(value);
+                }
+            }
+            if let Some(id) = state_id {
+                if clean.starts_with("owner") {
+                    if let Some(tag) = clean.split('=').nth(1) {
+                        let tag = tag.trim().trim_matches('"');
+                        if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
+                    }
+                }
+                if clean.starts_with("resources") && clean.contains('{') {
+                    in_resources = true;
+                    resource_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                } else if in_resources {
+                    resource_depth += clean.matches('{').count() as i32;
+                    resource_depth -= clean.matches('}').count() as i32;
+                    if let Some((key, value)) = clean.split_once('=') {
+                        if matches!(key.trim(), "steel" | "aluminium" | "aluminum" | "rubber" | "tungsten" | "chromium" | "oil") {
+                            if let Ok(amount) = value.trim().trim_matches('"').parse::<f32>() {
+                                *resources.entry(id).or_insert(0.0) += amount;
+                            }
+                        }
+                    }
+                    if resource_depth <= 0 { in_resources = false; }
+                }
+            }
+        }
+    }
+    (owners, resources)
+}
+
+fn tag_color(tag: &str) -> [u8; 3] {
+    // Stable fallback palette keyed by country tag until vanilla country RGB definitions are imported.
+    let hash = tag.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+    [
+        70 + ((hash & 0x7f) as u8),
+        70 + (((hash >> 8) & 0x7f) as u8),
+        70 + (((hash >> 16) & 0x7f) as u8),
+    ]
+}
+
+fn terrain_color(name: &str) -> [u8; 3] {
+    match name.to_ascii_lowercase().as_str() {
+        "plains" => [190, 176, 112],
+        "forest" | "forests" => [74, 119, 75],
+        "hills" => [147, 132, 91],
+        "mountain" | "mountains" => [133, 128, 122],
+        "desert" => [215, 184, 113],
+        "marsh" => [92, 127, 105],
+        "jungle" => [48, 105, 63],
+        "urban" => [135, 132, 137],
+        "ocean" | "sea" => [55, 105, 155],
+        "lakes" | "lake" => [70, 130, 174],
+        "river" => [76, 143, 185],
+        "unknown" => [95, 101, 107],
+        _ => [115, 123, 100],
+    }
+}
+
+fn blend_country(base: [u8; 3], country: [u8; 3], alpha: f32) -> [u8; 3] {
+    [
+        (base[0] as f32 * (1.0 - alpha) + country[0] as f32 * alpha) as u8,
+        (base[1] as f32 * (1.0 - alpha) + country[1] as f32 * alpha) as u8,
+        (base[2] as f32 * (1.0 - alpha) + country[2] as f32 * alpha) as u8,
+    ]
+}
+
+fn build_map_mode_textures(
+    width: u32,
+    height: u32,
+    source_rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_by_province: &HashMap<u32, u32>,
+    definition_text: &str,
+    state_directory: &Path,
+) -> (Texture2D, Texture2D, Texture2D) {
+    let (owner_by_state, resources_by_state) = parse_state_visual_data(state_directory);
+    let mut terrain_by_province = HashMap::<u32, String>::new();
+    let delimiter = definition_text.lines().find(|l| !l.trim().is_empty())
+        .map(|l| if l.contains(';') { ';' } else { ',' }).unwrap_or(';');
+    for line in definition_text.lines().skip(1) {
+        let fields: Vec<&str> = line.split(delimiter).collect();
+        if fields.len() < 7 { continue; }
+        if let Ok(id) = fields[0].trim().trim_start_matches('\u{feff}').parse::<u32>() {
+            terrain_by_province.insert(id, fields[6].trim().to_owned());
+        }
+    }
+    let max_resources = resources_by_state.values().copied().fold(0.0f32, f32::max).max(1.0);
+    let mut political = source_rgba.to_vec();
+    let mut resources = vec![0u8; source_rgba.len()];
+    let mut terrain = vec![0u8; source_rgba.len()];
+    for (pixel_index, pixel) in source_rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        let province_id = id_by_rgb.get(&rgb).copied().unwrap_or(0);
+        let state_id = state_by_province.get(&province_id).copied().unwrap_or(0);
+        let owner_color = owner_by_state.get(&state_id).map(|tag| tag_color(tag)).unwrap_or([105, 110, 115]);
+        let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
+        let offset = pixel_index * 4;
+        let political_color = blend_country([pixel[0], pixel[1], pixel[2]], owner_color, 0.58);
+        political[offset..offset + 3].copy_from_slice(&political_color);
+        political[offset + 3] = 255;
+
+        let terrain_final = blend_country(base_terrain, owner_color, 0.30);
+        terrain[offset..offset + 3].copy_from_slice(&terrain_final);
+        terrain[offset + 3] = 255;
+
+        let amount = resources_by_state.get(&state_id).copied().unwrap_or(0.0);
+        let strength = (amount / max_resources).clamp(0.0, 1.0);
+        let resource_color = [
+            (55.0 + strength * 190.0) as u8,
+            (70.0 + (1.0 - strength) * 105.0) as u8,
+            (80.0 + (1.0 - strength) * 35.0) as u8,
+        ];
+        resources[offset..offset + 3].copy_from_slice(&resource_color);
+        resources[offset + 3] = 255;
+    }
+    let make_texture = |bytes: &[u8]| {
+        let texture = Texture2D::from_rgba8(width as u16, height as u16, bytes);
+        texture.set_filter(FilterMode::Linear);
+        texture
+    };
+    (make_texture(&political), make_texture(&resources), make_texture(&terrain))
+}
+
 fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
     let delimiter = text
         .lines()
@@ -562,8 +718,13 @@ fn draw_map_viewer(
             let rect = map_view_rect(map);
             draw_rectangle(rect.x - 1.0, rect.y - 1.0, rect.w + 2.0, rect.h + 2.0, Color::from_rgba(62, 78, 90, 255));
             let source_rect = map.source_rect();
+            let mode_texture = match map.map_mode {
+                MapMode::Political => &map.political_texture,
+                MapMode::Resources => &map.resources_texture,
+                MapMode::Terrain => &map.terrain_texture,
+            };
             draw_texture_ex(
-                &map.texture,
+                mode_texture,
                 rect.x,
                 rect.y,
                 WHITE,
