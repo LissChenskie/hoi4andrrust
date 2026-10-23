@@ -1486,7 +1486,14 @@ fn draw_map_viewer(
                     13.0,
                     LIGHTGRAY,
                 );
-                draw_ui_text("Select a state to inspect it", 24.0, 160.0, 13.0, LIGHTGRAY);
+                if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
+                    &map.world, tag, construction::CountryConstructionPolicy::default(),
+                )) {
+                    draw_ui_text(&format!("CIV for building: {} / {} (laws pending)",
+                        capacity.available, capacity.total_civilian), 24.0, 160.0, 12.0, LIGHTGRAY);
+                } else {
+                    draw_ui_text("Select a state to inspect it", 24.0, 160.0, 13.0, LIGHTGRAY);
+                }
             } else {
                 draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
                 draw_ui_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
@@ -1516,6 +1523,13 @@ fn draw_map_viewer(
                 let status: String = map.state_load_status.chars().take(27).collect();
                 draw_ui_text(&status, 28.0, 263.0, 12.0, LIGHTGRAY);
                 draw_ui_text("Select a state on the map", 28.0, 290.0, 14.0, LIGHTGRAY);
+                if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
+                    &map.world, tag, construction::CountryConstructionPolicy::default(),
+                )) {
+                    draw_ui_text(&format!("Civilian: {}  |  free: {}", capacity.total_civilian,
+                        capacity.available), 28.0, 318.0, 14.0, Color::from_rgba(220, 190, 125, 255));
+                    draw_ui_text("Consumer goods & trade laws: pending", 28.0, 340.0, 11.0, LIGHTGRAY);
+                }
             }
 
             // HOI4-style map-mode selector. The data-driven overlays are added in the next layer.
