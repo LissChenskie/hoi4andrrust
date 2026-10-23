@@ -31,6 +31,9 @@ struct ProvinceMap {
     state_load_status: String,
     state_border_texture: Option<Texture2D>,
     zoom: f32,
+    pan: Vec2,
+    last_mouse: Vec2,
+    dragging: bool,
 }
 
 impl ProvinceMap {
@@ -96,18 +99,35 @@ impl ProvinceMap {
             state_load_status,
             state_border_texture,
             zoom: 1.0,
+            pan: Vec2::ZERO,
+            last_mouse: Vec2::ZERO,
+            dragging: false,
         })
     }
 
     fn source_rect(&self) -> Rect {
         let source_width = self.width as f32 / self.zoom;
         let source_height = self.height as f32 / self.zoom;
+        let max_x = self.width as f32 - source_width;
+        let max_y = self.height as f32 - source_height;
         Rect::new(
-            (self.width as f32 - source_width) * 0.5,
-            (self.height as f32 - source_height) * 0.5,
+            (max_x * 0.5 + self.pan.x).clamp(0.0, max_x),
+            (max_y * 0.5 + self.pan.y).clamp(0.0, max_y),
             source_width,
             source_height,
         )
+    }
+
+    fn set_zoom(&mut self, factor: f32) {
+        self.zoom = (self.zoom * factor).clamp(1.0, 12.0);
+        self.clamp_pan();
+    }
+
+    fn clamp_pan(&mut self) {
+        let max_x = self.width as f32 - self.width as f32 / self.zoom;
+        let max_y = self.height as f32 - self.height as f32 / self.zoom;
+        self.pan.x = self.pan.x.clamp(-max_x * 0.5, max_x * 0.5);
+        self.pan.y = self.pan.y.clamp(-max_y * 0.5, max_y * 0.5);
     }
 
     fn province_at(&self, x: u32, y: u32) -> Option<(u32, [u8; 3])> {
@@ -367,10 +387,10 @@ fn draw_map_viewer(
     if compact {
         if let Some(map) = map.as_deref_mut() {
             if button("+", screen_width() - 176.0, 15.0, 34.0, 38.0) {
-                map.zoom = (map.zoom * 1.25).clamp(1.0, 12.0);
+                map.set_zoom(1.25);
             }
             if button("−", screen_width() - 134.0, 15.0, 34.0, 38.0) {
-                map.zoom = (map.zoom / 1.25).clamp(1.0, 12.0);
+                map.set_zoom(1.0 / 1.25);
             }
         }
         if button("Back", screen_width() - 86.0, 15.0, 72.0, 38.0) {
@@ -389,6 +409,7 @@ fn draw_map_viewer(
             }
             if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
                 map.zoom = 1.0;
+                map.pan = Vec2::ZERO;
             }
         }
     }
@@ -397,7 +418,7 @@ fn draw_map_viewer(
         let (_, wheel_y) = mouse_wheel();
         let mouse = vec2(mouse_position().0, mouse_position().1);
         if wheel_y != 0.0 && map_view_rect(map).contains(mouse) {
-            map.zoom = (map.zoom * 1.12_f32.powf(wheel_y)).clamp(1.0, 12.0);
+            map.set_zoom(1.12_f32.powf(wheel_y));
         }
     }
     if compact {
@@ -571,21 +592,38 @@ async fn main() {
             Screen::MainMenu => draw_main_menu(),
             Screen::MapViewer => {
                 let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, selected);
-                if let Some(current_map) = map.as_ref() {
-                    if is_mouse_button_pressed(MouseButton::Left) {
-                        let (mouse_x, mouse_y) = mouse_position();
-                        let rect = map_view_rect(current_map);
-                        if mouse_x >= rect.x && mouse_x <= rect.x + rect.w
-                            && mouse_y >= rect.y && mouse_y <= rect.y + rect.h
-                        {
+                if let Some(current_map) = map.as_mut() {
+                    let (mouse_x, mouse_y) = mouse_position();
+                    let mouse = vec2(mouse_x, mouse_y);
+                    let rect = map_view_rect(current_map);
+                    let inside_map = rect.contains(mouse);
+
+                    if is_mouse_button_down(MouseButton::Left) && inside_map {
+                        if current_map.dragging {
+                            let delta = mouse - current_map.last_mouse;
                             let source = current_map.source_rect();
-                            let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
-                                .floor() as u32;
-                            let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
-                                .floor() as u32;
-                            selected = current_map.province_at(pixel_x, pixel_y)
-                                .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                            current_map.pan.x -= delta.x / rect.w * source.w;
+                            current_map.pan.y -= delta.y / rect.h * source.h;
+                            current_map.clamp_pan();
                         }
+                        current_map.dragging = true;
+                    } else {
+                        current_map.dragging = false;
+                    }
+                    current_map.last_mouse = mouse;
+
+                    if is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                        let source = current_map.source_rect();
+                        let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
+                            .floor() as u32;
+                        let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
+                            .floor() as u32;
+                        selected = current_map
+                            .province_at(
+                                pixel_x.min(current_map.width - 1),
+                                pixel_y.min(current_map.height - 1),
+                            )
+                            .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
                     }
                 }
 
