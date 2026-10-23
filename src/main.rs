@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -51,43 +51,7 @@ impl ProvinceMap {
 
         let definition_text = fs::read_to_string(definition_path)
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
-        let mut id_by_rgb = HashMap::new();
-
-        for (line_index, line) in definition_text.lines().enumerate() {
-            let mut fields = line.split(',');
-            let Some(id_text) = fields.next() else { continue };
-            let Some(r_text) = fields.next() else { continue };
-            let Some(g_text) = fields.next() else { continue };
-            let Some(b_text) = fields.next() else { continue };
-
-            let parsed = (
-                id_text.trim().parse::<u32>(),
-                r_text.trim().parse::<u8>(),
-                g_text.trim().parse::<u8>(),
-                b_text.trim().parse::<u8>(),
-            );
-
-            let (Ok(id), Ok(r), Ok(g), Ok(b)) = parsed else {
-                // The header or a malformed row is ignored for this first prototype.
-                continue;
-            };
-
-            if id == 0 {
-                continue;
-            }
-
-            let rgb = [r, g, b];
-            if id_by_rgb.insert(rgb, id).is_some() {
-                return Err(format!(
-                    "Duplicate province RGB colour at definition.csv line {}",
-                    line_index + 1
-                ));
-            }
-        }
-
-        if id_by_rgb.is_empty() {
-            return Err("definition.csv contained no valid province definitions".to_owned());
-        }
+        let id_by_rgb = parse_definition_text(&definition_text)?;
 
         Ok(Self {
             texture,
@@ -107,6 +71,85 @@ impl ProvinceMap {
         let offset = ((y as usize * self.width as usize) + x as usize) * 4;
         let rgb = [self.rgba[offset], self.rgba[offset + 1], self.rgba[offset + 2]];
         self.id_by_rgb.get(&rgb).copied().map(|id| (id, rgb))
+    }
+}
+
+/// Parse HOI4 definition.csv into an RGB -> province ID index.
+/// Vanilla HOI4 files are semicolon-delimited; comma-delimited input is also accepted.
+fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
+    let delimiter = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| if line.contains(';') { ';' } else { ',' })
+        .unwrap_or(';');
+
+    let mut id_by_rgb = HashMap::new();
+    let mut ids_seen = HashSet::new();
+
+    for (line_index, line) in text.lines().enumerate() {
+        let mut fields = line.split(delimiter);
+        let Some(id_text) = fields.next() else { continue };
+        let Some(r_text) = fields.next() else { continue };
+        let Some(g_text) = fields.next() else { continue };
+        let Some(b_text) = fields.next() else { continue };
+
+        let parsed = (
+            id_text.trim().trim_start_matches('\u{feff}').parse::<u32>(),
+            r_text.trim().parse::<u8>(),
+            g_text.trim().parse::<u8>(),
+            b_text.trim().parse::<u8>(),
+        );
+        let (Ok(id), Ok(r), Ok(g), Ok(b)) = parsed else {
+            // Skip the header and malformed rows in this initial parser.
+            continue;
+        };
+        if id == 0 {
+            continue;
+        }
+        if !ids_seen.insert(id) {
+            return Err(format!("Duplicate province ID {id} at definition.csv line {}", line_index + 1));
+        }
+        let rgb = [r, g, b];
+        if id_by_rgb.insert(rgb, id).is_some() {
+            return Err(format!("Duplicate province RGB colour at definition.csv line {}", line_index + 1));
+        }
+    }
+
+    if id_by_rgb.is_empty() {
+        return Err("definition.csv contained no valid province definitions".to_owned());
+    }
+    Ok(id_by_rgb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_definition_text;
+
+    #[test]
+    fn parses_hoi4_semicolon_delimited_definitions() {
+        let source = "province;red;green;blue;type;coastal;terrain;continent\n1;10;20;30;land;false;plains;1\n2;40;50;60;sea;true;ocean;1\n";
+        let index = parse_definition_text(source).expect("valid HOI4 definition");
+        assert_eq!(index.get(&[10, 20, 30]), Some(&1));
+        assert_eq!(index.get(&[40, 50, 60]), Some(&2));
+    }
+
+    #[test]
+    fn accepts_comma_delimited_definitions() {
+        let source = "province,red,green,blue,type,coastal,terrain,continent\n7,1,2,3,land,false,plains,1\n";
+        let index = parse_definition_text(source).expect("valid comma-delimited definition");
+        assert_eq!(index.get(&[1, 2, 3]), Some(&7));
+    }
+
+    #[test]
+    fn rejects_duplicate_province_ids() {
+        let source = "province;red;green;blue\n4;1;2;3\n4;4;5;6\n";
+        assert!(parse_definition_text(source).unwrap_err().contains("Duplicate province ID 4"));
+    }
+
+    #[test]
+    fn rejects_duplicate_rgb_colours() {
+        let source = "province;red;green;blue\n4;1;2;3\n5;1;2;3\n";
+        assert!(parse_definition_text(source).unwrap_err().contains("Duplicate province RGB colour"));
     }
 }
 
