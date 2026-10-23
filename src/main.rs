@@ -499,13 +499,14 @@ fn build_map_mode_textures(
         let owner_color = owner.map(|tag| tag_color(tag));
         let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
         let offset = pixel_index * 4;
-        // Political mode is country-first. Terrain belongs in Terrain mode;
-        // missing owners are neutral gray instead of being mistaken for terrain.
-        // Water remains blue in political mode.
+        // Political mode blends the terrain palette with the owning country's color.
+        // Unowned/unparsed provinces stay neutral gray, and water remains blue.
         let political_color = if water_provinces.contains(&province_id) {
             [55, 105, 155]
         } else {
-            owner_color.unwrap_or([92, 96, 101])
+            owner_color
+                .map(|country| blend_country(base_terrain, country, 0.48))
+                .unwrap_or([92, 96, 101])
         };
         political[offset..offset + 3].copy_from_slice(&political_color);
         political[offset + 3] = 255;
