@@ -112,7 +112,6 @@ impl MapMode {
 }
 
 struct ProvinceMap {
-    texture: Texture2D,
     width: u32,
     height: u32,
     rgb_pixels: Vec<u8>,
@@ -120,7 +119,6 @@ struct ProvinceMap {
     province_count: usize,
     state_by_province: HashMap<u32, u32>,
     owner_by_state: HashMap<u32, String>,
-    state_name_by_id: HashMap<u32, String>,
     world: World,
     state_count: usize,
     state_load_status: String,
@@ -168,9 +166,6 @@ impl ProvinceMap {
         // Release the decoder's original image buffer before allocating map layers.
         // The RGBA buffer is now the single CPU-side source for the remaining load steps.
         drop(decoded);
-        let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
-        texture.set_filter(FilterMode::Linear);
-
         let definition_text = fs::read_to_string(definition_path)
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
         let id_by_rgb = parse_definition_text(&definition_text)?;
@@ -221,7 +216,6 @@ impl ProvinceMap {
             .sum();
 
         Ok(Self {
-            texture,
             width,
             height,
             rgb_pixels,
@@ -229,7 +223,6 @@ impl ProvinceMap {
             id_by_rgb,
             state_by_province,
             owner_by_state,
-            state_name_by_id,
             world,
             state_count,
             state_load_status,
@@ -264,11 +257,6 @@ impl ProvinceMap {
             source_width,
             source_height,
         )
-    }
-
-    fn set_zoom(&mut self, factor: f32) {
-        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 12.0);
-        self.clamp_pan();
     }
 
     fn set_zoom_at(&mut self, factor: f32, anchor: Vec2, view: Rect) {
