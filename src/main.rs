@@ -683,12 +683,35 @@ fn build_city_markers(
 }
 
 fn parse_victory_point_pairs(line: &str, points: &mut HashMap<u32, u32>) {
-    let tokens: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == '{' || c == '}').filter(|s| !s.is_empty()).collect();
-    for window in tokens.windows(3) {
-        if window[1] != "=" { continue; }
-        if let (Ok(province), Ok(value)) = (window[0].parse::<u32>(), window[2].parse::<u32>()) {
-            points.insert(province, value);
+    // HOI4 state files usually encode victory points as "province_id value"
+    // (for example: victory_points = { 1234 5 }), not "province_id = value".
+    let tokens: Vec<&str> = line
+        .split(|c: char| c.is_whitespace() || c == '{' || c == '}')
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // Support both the vanilla pair format and explicit key=value variants.
+    let mut i = 0;
+    while i < tokens.len() {
+        if i + 2 < tokens.len() && tokens[i + 1] == "=" {
+            if let (Ok(province), Ok(value)) =
+                (tokens[i].parse::<u32>(), tokens[i + 2].parse::<u32>())
+            {
+                points.insert(province, value);
+                i += 3;
+                continue;
+            }
         }
+        if i + 1 < tokens.len() {
+            if let (Ok(province), Ok(value)) =
+                (tokens[i].parse::<u32>(), tokens[i + 1].parse::<u32>())
+            {
+                points.insert(province, value);
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
     }
 }
 
