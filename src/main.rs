@@ -183,7 +183,7 @@ fn build_state_border_texture(
     }
 
     let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
-    texture.set_filter(FilterMode::Nearest);
+    texture.set_filter(FilterMode::Linear);
     texture
 }
 
