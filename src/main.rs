@@ -548,13 +548,30 @@ fn build_map_mode_textures(
         terrain[offset + 3] = 255;
 
         let amount = resources_by_state.get(&state_id).copied().unwrap_or(0.0);
-        let strength = (amount / max_resources).clamp(0.0, 1.0);
-        // Dark neutral map with a clear low-to-high resource heat ramp (not all-green).
-        let resource_color = [
-            (44.0 + strength * 190.0) as u8,
-            (49.0 + (1.0 - strength) * 65.0) as u8,
-            (58.0 + (1.0 - strength) * 40.0) as u8,
-        ];
+        // Missing/zero resource data must be neutral, not the low end of the heat ramp.
+        // Otherwise a failed state-history parse paints the entire world green.
+        let resource_color = if amount <= 0.0 {
+            [54, 59, 65]
+        } else {
+            let strength = (amount / max_resources).clamp(0.0, 1.0);
+            if strength < 0.5 {
+                // Blue -> yellow for low to medium resource states.
+                let t = strength * 2.0;
+                [
+                    (45.0 + t * 190.0) as u8,
+                    (90.0 + t * 95.0) as u8,
+                    (155.0 - t * 115.0) as u8,
+                ]
+            } else {
+                // Yellow -> red for the richest states.
+                let t = (strength - 0.5) * 2.0;
+                [
+                    235,
+                    (185.0 - t * 135.0) as u8,
+                    (40.0 - t * 5.0) as u8,
+                ]
+            }
+        };
         resources[offset..offset + 3].copy_from_slice(&resource_color);
         resources[offset + 3] = 255;
     }
