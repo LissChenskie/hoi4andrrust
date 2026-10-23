@@ -11,6 +11,8 @@ pub const MAX_CIVILIAN_FACTORIES_PER_LINE: u32 = 15;
 pub const MAX_SHARED_BUILDING_SLOTS: u16 = 30;
 pub const BUILDING_DEFINITIONS_DIRECTORY: &str = "data/hoi4/common/buildings";
 pub const DEFINES_DIRECTORY: &str = "data/hoi4/common/defines";
+pub const DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT: f32 = 1.0;
+pub const MAX_INFRASTRUCTURE_LEVEL: u16 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildingType {
@@ -120,6 +122,7 @@ pub struct BuildingDefinition {
 pub struct BuildingRules {
     definitions: HashMap<BuildingType, BuildingDefinition>,
     pub base_factory_speed: f32,
+    pub infra_max_construction_cost_effect: f32,
 }
 
 impl Default for BuildingRules {
@@ -133,7 +136,7 @@ impl Default for BuildingRules {
                 infrastructure_construction_effect: true,
             });
         }
-        Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY }
+        Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT }
     }
 }
 
@@ -187,6 +190,11 @@ impl BuildingRules {
                             rules.base_factory_speed = value;
                         }
                     }
+                    if let Some(value) = find_lua_number(&text, "INFRA_MAX_CONSTRUCTION_COST_EFFECT") {
+                        if value.is_finite() && value >= 0.0 {
+                            rules.infra_max_construction_cost_effect = value;
+                        }
+                    }
                 }
             }
         }
@@ -197,14 +205,21 @@ impl BuildingRules {
         self.definitions.get(&building).copied().unwrap_or_else(|| BuildingRules::default().definitions[&building])
     }
 
-    pub fn project(&self, building: BuildingType, level: u16, controlled_building_count: u32) -> ConstructionProject {
+    pub fn project(&self, building: BuildingType, level: u16, controlled_building_count: u32, infrastructure: u16) -> ConstructionProject {
         let definition = self.definition(building);
+        let raw_cost = definition.base_cost
+            + f32::from(level) * definition.per_level_extra_cost
+            + definition.per_controlled_building_extra_cost * controlled_building_count as f32;
+        let infrastructure_multiplier = if definition.infrastructure_construction_effect {
+            1.0 + f32::from(infrastructure.min(MAX_INFRASTRUCTURE_LEVEL))
+                * self.infra_max_construction_cost_effect / f32::from(MAX_INFRASTRUCTURE_LEVEL)
+        } else {
+            1.0
+        };
         ConstructionProject {
             building,
             progress: 0.0,
-            cost: (definition.base_cost
-                + f32::from(level) * definition.per_level_extra_cost
-                + definition.per_controlled_building_extra_cost * controlled_building_count as f32).max(1.0),
+            cost: (raw_cost / infrastructure_multiplier).max(1.0),
         }
     }
 }
@@ -313,7 +328,7 @@ pub struct ConstructionProject {
 
 impl ConstructionProject {
     pub fn new(building: BuildingType, state_level: u16) -> Self {
-        BuildingRules::default().project(building, state_level, 0)
+        BuildingRules::default().project(building, state_level, 0, 0)
     }
 
     pub fn progress_fraction(&self) -> f32 {
@@ -364,20 +379,13 @@ pub fn advance_day(world: &mut World, country_tag: &str, queues: &mut Constructi
 
     for (state_id, assigned) in active_ids.into_iter().zip(assignments) {
         if assigned == 0 { continue; }
-        let infrastructure = match world.states.get(&state_id) {
-            Some(state) => state.economy.infrastructure,
-            None => continue,
-        };
         let project = match queues.get_mut(&state_id).and_then(|queue| queue.front_mut()) {
             Some(project) => project,
             None => continue,
         };
-        let infrastructure_bonus = if rules.definition(project.building).infrastructure_construction_effect {
-            (1.0 + f32::from(infrastructure) * 0.1).min(1.5)
-        } else {
-            1.0
-        };
-        project.progress += assigned as f32 * rules.base_factory_speed * infrastructure_bonus;
+        // Infrastructure reduces the IC cost of eligible shared buildings; it
+        // does not change the amount of construction output produced per day.
+        project.progress += assigned as f32 * rules.base_factory_speed;
 
         if project.progress + f32::EPSILON >= project.cost {
             let building = project.building;
@@ -430,8 +438,9 @@ mod tests {
 
     #[test]
     fn defines_parser_reads_base_factory_speed() {
-        let source = "NBuildings = {\n BASE_FACTORY_SPEED = 5.0\n}";
+        let source = "NBuildings = {\n BASE_FACTORY_SPEED = 5.0\n INFRA_MAX_CONSTRUCTION_COST_EFFECT = 1.0\n}";
         assert_eq!(find_lua_number(source, "BASE_FACTORY_SPEED"), Some(5.0));
+        assert_eq!(find_lua_number(source, "INFRA_MAX_CONSTRUCTION_COST_EFFECT"), Some(1.0));
     }
 
     #[test]
@@ -443,7 +452,7 @@ mod tests {
             per_controlled_building_extra_cost: 5.0,
             infrastructure_construction_effect: false,
         });
-        assert_eq!(rules.project(BuildingType::Dockyard, 2, 3).cost, 155.0);
+        assert_eq!(rules.project(BuildingType::Dockyard, 2, 3, 0).cost, 155.0);
     }
 
     #[test]
@@ -454,14 +463,18 @@ mod tests {
     }
 
     #[test]
-    fn daily_tick_uses_civilian_factories_and_infrastructure() {
+    fn infrastructure_reduces_eligible_building_cost_not_daily_output() {
+        let rules = BuildingRules::default();
+        let no_infra = rules.project(BuildingType::CivilianFactory, 0, 0, 0);
+        let max_infra = rules.project(BuildingType::CivilianFactory, 0, 0, 5);
+        assert_eq!(no_infra.cost, 10_800.0);
+        assert_eq!(max_infra.cost, 5_400.0);
+
         let mut world = test_world();
         let mut queues = ConstructionQueues::new();
         queues.insert(1, VecDeque::from([ConstructionProject { building: BuildingType::CivilianFactory, progress: 0.0, cost: 1_000.0 }]));
-        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
-        // Two civilian factories × 5 IC/day × (1 + 5 × 0.1) infrastructure bonus.
-        assert_eq!(queues[&1][0].progress, 15.0);
-        assert_eq!(world.states[&1].economy.civilian_factories, 2);
+        advance_day(&mut world, "TST", &mut queues, &rules);
+        assert_eq!(queues[&1][0].progress, 10.0);
     }
 
     #[test]
@@ -483,7 +496,7 @@ mod tests {
 
         advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
 
-        assert_eq!(queues[&1][0].progress, 7.5);
+        assert_eq!(queues[&1][0].progress, 5.0);
         assert_eq!(queues[&2][0].progress, 5.0);
     }
 
