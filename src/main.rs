@@ -943,6 +943,88 @@ fn window_conf() -> Conf {
     }
 }
 
+fn time_control_button(label: &str, x: f32, y: f32, width: f32, height: f32, active: bool) -> bool {
+    let (mouse_x, mouse_y) = mouse_position();
+    let hovered = mouse_x >= x
+        && mouse_x <= x + width
+        && mouse_y >= y
+        && mouse_y <= y + height;
+    let background = if active {
+        Color::from_rgba(111, 52, 46, 255)
+    } else if hovered {
+        Color::from_rgba(57, 92, 125, 255)
+    } else {
+        Color::from_rgba(35, 54, 76, 255)
+    };
+    draw_rectangle(x, y, width, height, background);
+    draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(91, 125, 154, 255));
+    let font_size = if width < 40.0 { 13.0 } else { 15.0 };
+    let text_width = measure_ui_text(label, font_size as u16).width;
+    draw_ui_text(label, x + (width - text_width) * 0.5, y + height * 0.64, font_size, WHITE);
+    hovered && is_mouse_button_pressed(MouseButton::Left)
+}
+
+fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
+    let width = screen_width();
+    let compact = width < 760.0;
+    let (panel_x, panel_y, panel_w, panel_h) = if compact {
+        (8.0, screen_height() - 62.0, (width - 16.0).max(1.0), 54.0)
+    } else {
+        ((width - 405.0).max(265.0), 70.0, 395.0, 54.0)
+    };
+    draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(18, 30, 43, 248));
+    draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.0, Color::from_rgba(62, 86, 106, 255));
+
+    let date_label = game.date.display();
+    let date_x = panel_x + 8.0;
+    let date_y = panel_y + 33.0;
+    let mut pause_clicked = false;
+    let mut speed_clicked = None;
+
+    if compact {
+        let date_width = (panel_w * 0.255).clamp(70.0, 91.0);
+        draw_ui_text(&date_label, date_x, date_y, 12.0, WHITE);
+        let pause_x = panel_x + date_width;
+        pause_clicked = time_control_button(
+            if game.paused { ">" } else { "||" },
+            pause_x,
+            panel_y + 10.0,
+            39.0,
+            34.0,
+            false,
+        );
+        let gap = 4.0;
+        let speed_x = pause_x + 39.0 + gap;
+        let available = (panel_x + panel_w - 6.0 - speed_x - gap * 4.0).max(5.0);
+        let speed_w = (available / 5.0).min(39.0);
+        for speed in 1..=5 {
+            let x = speed_x + (speed - 1) as f32 * (speed_w + gap);
+            if time_control_button(&format!("{speed}x"), x, panel_y + 10.0, speed_w, 34.0, game.speed == speed) {
+                speed_clicked = Some(speed);
+            }
+        }
+    } else {
+        draw_ui_text(&date_label, date_x, date_y, 14.0, WHITE);
+        let pause_x = panel_x + 112.0;
+        pause_clicked = time_control_button(
+            if game.paused { "PLAY" } else { "PAUSE" },
+            pause_x,
+            panel_y + 9.0,
+            66.0,
+            36.0,
+            false,
+        );
+        let speed_x = pause_x + 72.0;
+        for speed in 1..=5 {
+            let x = speed_x + (speed - 1) as f32 * 43.0;
+            if time_control_button(&format!("{speed}x"), x, panel_y + 9.0, 39.0, 36.0, game.speed == speed) {
+                speed_clicked = Some(speed);
+            }
+        }
+    }
+    (pause_clicked, speed_clicked)
+}
+
 fn button(label: &str, x: f32, y: f32, width: f32, height: f32) -> bool {
     let (mouse_x, mouse_y) = mouse_position();
     let hovered = mouse_x >= x
@@ -1358,40 +1440,30 @@ async fn main() {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(),
             Screen::MapViewer => {
+                // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::Space) {
                     game.toggle_pause();
                 }
-                if is_key_pressed(KeyCode::Key1) {
-                    game.set_speed(1);
-                } else if is_key_pressed(KeyCode::Key2) {
-                    game.set_speed(2);
-                } else if is_key_pressed(KeyCode::Key3) {
-                    game.set_speed(3);
+                for (key, speed) in [
+                    (KeyCode::Key1, 1),
+                    (KeyCode::Key2, 2),
+                    (KeyCode::Key3, 3),
+                    (KeyCode::Key4, 4),
+                    (KeyCode::Key5, 5),
+                ] {
+                    if is_key_pressed(key) {
+                        game.set_speed(speed);
+                    }
                 }
                 game.update(get_frame_time());
 
                 let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, selected);
-                let clock_status = if game.paused { "PAUSED" } else { "RUNNING" };
-                if screen_width() < 760.0 {
-                    draw_ui_text(
-                        &format!("{}  {}  x{} | Space: pause, 1-3: speed", game.date.display(), clock_status, game.speed),
-                        24.0,
-                        184.0,
-                        11.0,
-                        WHITE,
-                    );
-                } else {
-                    let panel_x = screen_width() - 330.0;
-                    draw_rectangle(panel_x, 70.0, 316.0, 50.0, Color::from_rgba(18, 30, 43, 245));
-                    draw_rectangle_lines(panel_x, 70.0, 316.0, 50.0, 1.0, Color::from_rgba(62, 86, 106, 255));
-                    draw_ui_text(
-                        &format!("DATE {}  {}  SPEED x{}", game.date.display(), clock_status, game.speed),
-                        panel_x + 10.0,
-                        91.0,
-                        14.0,
-                        WHITE,
-                    );
-                    draw_ui_text("Space: pause/resume   1 / 2 / 3: speed", panel_x + 10.0, 109.0, 11.0, LIGHTGRAY);
+                let (pause_clicked, speed_clicked) = draw_time_controls(&game);
+                if pause_clicked {
+                    game.toggle_pause();
+                }
+                if let Some(speed) = speed_clicked {
+                    game.set_speed(speed);
                 }
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
