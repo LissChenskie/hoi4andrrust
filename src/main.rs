@@ -294,11 +294,15 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                     }
                 }
             } else if in_history {
-                if clean.starts_with("owner") {
-                    if let Some(tag) = clean.split('=').nth(1) {
-                        let tag = tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
+                // Owner may be nested inside a dated history block, e.g.
+                // 1936.1.1 = { owner = TAG }. Do not restrict it to line start.
+                if let Some((_, assignment)) = clean.split_once("owner") {
+                    if let Some((_, raw_tag)) = assignment.split_once('=') {
+                        let tag = raw_tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
                         let tag = tag.split_whitespace().next().unwrap_or("").trim_matches('}');
-                        if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
+                        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            owners.insert(id, tag.to_owned());
+                        }
                     }
                 }
                 history_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
