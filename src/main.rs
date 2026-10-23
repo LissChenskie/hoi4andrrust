@@ -1711,9 +1711,9 @@ fn draw_map_viewer(
         // Shared factory slots come from the state's actual state_category definition.
         // Infrastructure remains separate: it changes construction speed, not slot capacity.
         let built = usize::from(economy.occupied_shared_slots());
-        let state_queue = state_id.and_then(|id| construction_queue.get(&id));
-        let queued_count = state_queue.map_or(0, |queue| queue.len());
-        let queued_shared = state_queue.map_or(0, construction::queued_shared_slots);
+        let state_queue = state_id.and_then(|id| construction_queue.get(&id).cloned());
+        let queued_count = state_queue.as_ref().map_or(0, |queue| queue.len());
+        let queued_shared = state_queue.as_ref().map_or(0, construction::queued_shared_slots);
         // State categories own the shared-slot limit; infrastructure uses its own level cap.
         let slot_count = state_id.and_then(|id| construction::shared_slot_limit(&map.world, id, building_rules)).unwrap_or(0);
         let free_slots = slot_count.saturating_sub(built + queued_shared);
@@ -1737,7 +1737,7 @@ fn draw_map_viewer(
         slot_types.extend(std::iter::repeat_n(("F", Color::from_rgba(185, 147, 65, 255)), usize::from(economy.fuel_silos)));
         slot_types.extend(std::iter::repeat_n(("R", Color::from_rgba(182, 93, 154, 255)), usize::from(economy.rocket_sites)));
         slot_types.extend(std::iter::repeat_n(("A", Color::from_rgba(105, 143, 185, 255)), usize::from(economy.nuclear_reactors)));
-        if let Some(queue) = state_queue {
+        if let Some(queue) = state_queue.as_ref() {
             for project in queue {
                 if project.building.shares_slots() {
                     let color = Color::from_rgba(112, 126, 139, 255);
@@ -1842,7 +1842,7 @@ fn draw_map_viewer(
                     *construction_menu = None;
                 }
             } else if queued_count > 0 {
-                if let Some(project) = state_queue.and_then(|queue| queue.front()) {
+                if let Some(project) = state_queue.as_ref().and_then(|queue| queue.front()) {
                     let priority = construction_priority.iter().position(|candidate| *candidate == id)
                         .map_or(0, |index| index + 1);
                     draw_ui_text(
