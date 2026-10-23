@@ -26,6 +26,14 @@ enum MapMode {
     Terrain,
 }
 
+#[derive(Clone)]
+struct ResourceMarker {
+    x: f32,
+    y: f32,
+    label: &'static str,
+    color: Color,
+}
+
 impl MapMode {
     fn label(self) -> &'static str {
         match self {
@@ -50,6 +58,7 @@ struct ProvinceMap {
     political_texture: Texture2D,
     resources_texture: Texture2D,
     terrain_texture: Texture2D,
+    resource_markers: Vec<ResourceMarker>,
     zoom: f32,
     pan: Vec2,
     last_mouse: Vec2,
@@ -118,6 +127,9 @@ impl ProvinceMap {
             &definition_text,
             Path::new(STATE_DIRECTORY_PATH),
         );
+        let resource_markers = build_resource_markers(
+            width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
+        );
 
         Ok(Self {
             texture,
@@ -133,6 +145,7 @@ impl ProvinceMap {
             political_texture,
             resources_texture,
             terrain_texture,
+            resource_markers,
             zoom: 1.0,
             pan: Vec2::ZERO,
             last_mouse: Vec2::ZERO,
@@ -407,6 +420,121 @@ fn build_map_mode_textures(
         texture
     };
     (make_texture(&political), make_texture(&resources), make_texture(&terrain))
+}
+
+
+fn build_resource_markers(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_by_province: &HashMap<u32, u32>,
+    state_directory: &Path,
+) -> Vec<ResourceMarker> {
+    let mut resource_types = HashMap::<u32, Vec<(String, f32)>>::new();
+    let Ok(entries) = fs::read_dir(state_directory) else { return Vec::new() };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
+        let Ok(source) = fs::read_to_string(path) else { continue };
+        let mut state_id = None;
+        let mut in_resources = false;
+        let mut depth = 0i32;
+        for line in source.lines() {
+            let clean = line.split('#').next().unwrap_or("").trim();
+            if clean.starts_with("id") {
+                state_id = clean.split_once('=').and_then(|(_, v)| v.trim().parse::<u32>().ok()).or(state_id);
+            }
+            if clean.starts_with("resources") && clean.contains('{') {
+                in_resources = true;
+                depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if let Some(id) = state_id {
+                    for (key, value) in resource_pairs(clean) {
+                        if let Ok(amount) = value.parse::<f32>() {
+                            if amount > 0.0 { resource_types.entry(id).or_default().push((key, amount)); }
+                        }
+                    }
+                }
+                if depth <= 0 { in_resources = false; }
+                continue;
+            }
+            if in_resources {
+                if let Some(id) = state_id {
+                    for (key, value) in resource_pairs(clean) {
+                        if let Ok(amount) = value.parse::<f32>() {
+                            if amount > 0.0 { resource_types.entry(id).or_default().push((key, amount)); }
+                        }
+                    }
+                }
+                depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if depth <= 0 { in_resources = false; }
+            }
+        }
+    }
+
+    let mut sums = HashMap::<u32, (f64, f64, u32)>::new();
+    for (pixel_index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        let Some(province) = id_by_rgb.get(&rgb) else { continue };
+        let Some(state_id) = state_by_province.get(province) else { continue };
+        let x = (pixel_index % width as usize) as f64;
+        let y = (pixel_index / width as usize) as f64;
+        let item = sums.entry(*state_id).or_insert((0.0, 0.0, 0));
+        item.0 += x; item.1 += y; item.2 += 1;
+    }
+
+    let mut markers = Vec::new();
+    let mut states: Vec<u32> = resource_types.keys().copied().collect();
+    states.sort_unstable();
+    for state_id in states {
+        let Some((sx, sy, count)) = sums.get(&state_id).copied() else { continue };
+        if count == 0 { continue; }
+        let (cx, cy) = ((sx / count as f64) as f32, (sy / count as f64) as f32);
+        let mut values = resource_types.remove(&state_id).unwrap_or_default();
+        values.sort_by(|a, b| b.1.total_cmp(&a.1));
+        // Keep every resource type visible, offset around the state's center to reduce overlap.
+        let take = values.len().min(6);
+        for (index, (name, _amount)) in values.into_iter().take(take).enumerate() {
+            let (label, color) = match name.as_str() {
+                "oil" => ("OIL", Color::from_rgba(55, 55, 62, 255)),
+                "steel" => ("Fe", Color::from_rgba(110, 145, 165, 255)),
+                "aluminium" | "aluminum" => ("Al", Color::from_rgba(170, 175, 185, 255)),
+                "rubber" => ("R", Color::from_rgba(70, 145, 85, 255)),
+                "tungsten" => ("W", Color::from_rgba(160, 125, 75, 255)),
+                "chromium" => ("Cr", Color::from_rgba(145, 105, 160, 255)),
+                _ => continue,
+            };
+            let angle = index as f32 * 1.15;
+            markers.push(ResourceMarker {
+                x: cx + angle.cos() * 5.0,
+                y: cy + angle.sin() * 5.0,
+                label,
+                color,
+            });
+        }
+    }
+    markers
+}
+
+fn resource_pairs(line: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for part in line.split(|c: char| c == '{' || c == '}' || c.is_whitespace()) {
+        if let Some((key, value)) = part.split_once('=') {
+            let key = key.trim().to_owned();
+            let value = value.trim().trim_matches('"').to_owned();
+            if matches!(key.as_str(), "oil" | "steel" | "aluminium" | "aluminum" | "rubber" | "tungsten" | "chromium") {
+                pairs.push((key, value));
+            }
+        }
+    }
+    // Clausewitz usually separates key and '=' with spaces, so parse token triplets too.
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    for window in tokens.windows(3) {
+        if window[1] == "=" && matches!(window[0], "oil" | "steel" | "aluminium" | "aluminum" | "rubber" | "tungsten" | "chromium") {
+            pairs.push((window[0].to_owned(), window[2].trim_matches(|c: char| c == '}' || c == '{' || c == '"').to_owned()));
+        }
+    }
+    pairs
 }
 
 fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
@@ -758,6 +886,22 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
+            if map.map_mode == MapMode::Resources {
+                // HOI4-like resource badges are drawn in map space, so they follow pan and zoom.
+                let scale = (map.zoom.sqrt() * 0.85).clamp(0.75, 1.35);
+                for marker in &map.resource_markers {
+                    if marker.x < source_rect.x || marker.x > source_rect.x + source_rect.w
+                        || marker.y < source_rect.y || marker.y > source_rect.y + source_rect.h { continue; }
+                    let x = rect.x + (marker.x - source_rect.x) / source_rect.w * rect.w;
+                    let y = rect.y + (marker.y - source_rect.y) / source_rect.h * rect.h;
+                    let radius = 10.0 * scale;
+                    draw_circle(x, y, radius, marker.color);
+                    draw_circle_lines(x, y, radius, 1.2, Color::from_rgba(225, 225, 215, 255));
+                    let size = (10.0 * scale).clamp(8.0, 13.0);
+                    let tw = measure_text(marker.label, None, size as u16, 1.0).width;
+                    draw_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
+                }
+            }
             if let Some(state_texture) = &map.state_border_texture {
                 draw_texture_ex(
                     state_texture,
