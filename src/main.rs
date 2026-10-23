@@ -1258,14 +1258,14 @@ fn draw_map_viewer(
                     draw_ui_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
                 } else {
                     draw_ui_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 13.0, LIGHTGRAY);
-                    draw_ui_text(&format!("States loaded: {}", map.state_count), 24.0, 160.0, 13.0, LIGHTGRAY);
+                    draw_ui_text(&format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()), 24.0, 160.0, 13.0, LIGHTGRAY);
                 }
             } else {
                 draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
                 draw_ui_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
                 draw_ui_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
                 draw_ui_text(
-                    &format!("States loaded: {}", map.state_count),
+                    &format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()),
                     28.0,
                     228.0,
                     14.0,
