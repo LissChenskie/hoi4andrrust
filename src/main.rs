@@ -1,5 +1,6 @@
 mod state;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -11,6 +12,56 @@ use state::load_state_membership;
 const MAP_BITMAP_PATH: &str = "data/hoi4/map/provinces.bmp";
 const MAP_DEFINITION_PATH: &str = "data/hoi4/map/definition.csv";
 const STATE_DIRECTORY_PATH: &str = "data/hoi4/history/states";
+
+thread_local! {
+    static UI_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
+}
+
+fn init_ui_font() {
+    let candidates = [
+        "data/hoi4/gfx/fonts/RobotoCondensed-Regular.ttf",
+        "data/hoi4/gfx/fonts/RobotoCondensed.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ];
+    for path in candidates {
+        if let Ok(bytes) = fs::read(path) {
+            if let Ok(font) = load_ttf_font_from_bytes(&bytes) {
+                UI_FONT.with(|slot| *slot.borrow_mut() = Some(font));
+                return;
+            }
+        }
+    }
+}
+
+fn draw_ui_text(text: &str, x: f32, y: f32, size: f32, color: Color) {
+    UI_FONT.with(|slot| {
+        if let Some(font) = slot.borrow().as_ref() {
+            draw_text_ex(text, x, y, TextParams {
+                font: Some(font),
+                font_size: size.round().clamp(1.0, 128.0) as u16,
+                font_scale: 1.0,
+                color,
+                ..Default::default()
+            });
+        } else {
+            draw_text(text, x, y, size, color);
+        }
+    });
+}
+
+fn measure_ui_text(text: &str, size: u16) -> TextDimensions {
+    UI_FONT.with(|slot| {
+        if let Some(font) = slot.borrow().as_ref() {
+            measure_text(text, Some(font), size, 1.0)
+        } else {
+            measure_text(text, None, size, 1.0)
+        }
+    })
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
@@ -806,7 +857,7 @@ fn button(label: &str, x: f32, y: f32, width: f32, height: f32) -> bool {
 
     draw_rectangle(x, y, width, height, background);
     draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(91, 125, 154, 255));
-    draw_text(label, x + 20.0, y + height * 0.63, 23.0, WHITE);
+    draw_ui_text(label, x + 20.0, y + height * 0.63, 23.0, WHITE);
 
     hovered && is_mouse_button_pressed(MouseButton::Left)
 }
@@ -824,8 +875,8 @@ fn draw_main_menu() -> Screen {
 
     let width = screen_width();
     let height = screen_height();
-    draw_text("HOI4 MOBILE", 72.0, 110.0, 48.0, WHITE);
-    draw_text("Independent Rust strategy prototype", 75.0, 143.0, 19.0, Color::from_rgba(160, 177, 195, 255));
+    draw_ui_text("HOI4 MOBILE", 72.0, 110.0, 48.0, WHITE);
+    draw_ui_text("Independent Rust strategy prototype", 75.0, 143.0, 19.0, Color::from_rgba(160, 177, 195, 255));
 
     // Decorative map-like shapes only; these are not real HOI4 geography.
     let panel_x = width * 0.48;
@@ -837,7 +888,7 @@ fn draw_main_menu() -> Screen {
     draw_ellipse(panel_x + panel_w * 0.29, panel_y + panel_h * 0.32, panel_w * 0.22, panel_h * 0.12, 0.2, Color::from_rgba(57, 80, 72, 255));
     draw_ellipse(panel_x + panel_w * 0.55, panel_y + panel_h * 0.48, panel_w * 0.25, panel_h * 0.17, -0.3, Color::from_rgba(57, 80, 72, 255));
     draw_ellipse(panel_x + panel_w * 0.70, panel_y + panel_h * 0.75, panel_w * 0.11, panel_h * 0.08, 0.1, Color::from_rgba(57, 80, 72, 255));
-    draw_text("MAP PREVIEW", panel_x + 20.0, panel_y + panel_h - 24.0, 16.0, Color::from_rgba(160, 177, 195, 255));
+    draw_ui_text("MAP PREVIEW", panel_x + 20.0, panel_y + panel_h - 24.0, 16.0, Color::from_rgba(160, 177, 195, 255));
 
     let button_x = 74.0;
     let button_w = (width * 0.34).clamp(250.0, 360.0);
@@ -848,15 +899,15 @@ fn draw_main_menu() -> Screen {
         return Screen::Settings;
     }
 
-    draw_text("Prototype milestone 01: menu + local map raster viewer", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
+    draw_ui_text("Prototype milestone 01: menu + local map raster viewer", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
     Screen::MainMenu
 }
 
 
 fn draw_main_menu_compact() -> Screen {
     draw_background();
-    draw_text("HOI4 MOBILE", 22.0, 82.0, 36.0, WHITE);
-    draw_text("Independent Rust strategy prototype", 24.0, 111.0, 15.0, LIGHTGRAY);
+    draw_ui_text("HOI4 MOBILE", 22.0, 82.0, 36.0, WHITE);
+    draw_ui_text("Independent Rust strategy prototype", 24.0, 111.0, 15.0, LIGHTGRAY);
 
     let button_x = 20.0;
     let button_w = (screen_width() - 40.0).max(180.0);
@@ -867,7 +918,7 @@ fn draw_main_menu_compact() -> Screen {
     if button("Map data / import guide", button_x, first_y + 68.0, button_w, 54.0) {
         return Screen::Settings;
     }
-    draw_text("Prototype milestone 01", 22.0, screen_height() - 28.0, 14.0, LIGHTGRAY);
+    draw_ui_text("Prototype milestone 01", 22.0, screen_height() - 28.0, 14.0, LIGHTGRAY);
     Screen::MainMenu
 }
 
@@ -896,7 +947,7 @@ fn draw_map_viewer(
 ) -> Screen {
     draw_background();
     draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
-    draw_text("WORLD MAP", 22.0, 42.0, 25.0, WHITE);
+    draw_ui_text("WORLD MAP", 22.0, 42.0, 25.0, WHITE);
 
     let compact = screen_width() < 760.0;
     if compact {
@@ -944,13 +995,13 @@ fn draw_map_viewer(
         draw_rectangle(12.0, 74.0, screen_width() - 24.0, 116.0, Color::from_rgba(18, 30, 43, 255));
     } else {
         draw_rectangle(12.0, 78.0, 242.0, screen_height() - 92.0, Color::from_rgba(18, 30, 43, 255));
-        draw_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
+        draw_ui_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
     }
 
     match map {
         Some(map) => {
             if compact {
-                draw_text(
+                draw_ui_text(
                     &format!("{} × {}  |  {} provinces", map.width, map.height, map.province_count),
                     24.0,
                     104.0,
@@ -958,7 +1009,7 @@ fn draw_map_viewer(
                     LIGHTGRAY,
                 );
                 if let Some((id, rgb, x, y)) = selected {
-                    draw_text(
+                    draw_ui_text(
                         &format!("Province {id} at {x},{y}  RGB {},{},{}", rgb[0], rgb[1], rgb[2]),
                         24.0,
                         133.0,
@@ -970,16 +1021,16 @@ fn draw_map_viewer(
                         .get(&id)
                         .map(|state_id| format!("State ID: {state_id}"))
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
+                    draw_ui_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
                 } else {
-                    draw_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 13.0, LIGHTGRAY);
-                    draw_text(&format!("States loaded: {}", map.state_count), 24.0, 160.0, 13.0, LIGHTGRAY);
+                    draw_ui_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 13.0, LIGHTGRAY);
+                    draw_ui_text(&format!("States loaded: {}", map.state_count), 24.0, 160.0, 13.0, LIGHTGRAY);
                 }
             } else {
-                draw_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
-                draw_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
-                draw_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
-                draw_text(
+                draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
+                draw_ui_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
+                draw_ui_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
+                draw_ui_text(
                     &format!("States loaded: {}", map.state_count),
                     28.0,
                     228.0,
@@ -989,21 +1040,21 @@ fn draw_map_viewer(
 
                 if let Some((id, rgb, x, y)) = selected {
                     draw_rectangle(26.0, 248.0, 210.0, 154.0, Color::from_rgba(27, 44, 59, 255));
-                    draw_text("SELECTED PIXEL", 38.0, 273.0, 15.0, WHITE);
-                    draw_text(&format!("Province ID: {id}"), 38.0, 300.0, 17.0, WHITE);
-                    draw_text(&format!("Pixel: {x}, {y}"), 38.0, 327.0, 15.0, LIGHTGRAY);
-                    draw_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 352.0, 14.0, LIGHTGRAY);
+                    draw_ui_text("SELECTED PIXEL", 38.0, 273.0, 15.0, WHITE);
+                    draw_ui_text(&format!("Province ID: {id}"), 38.0, 300.0, 17.0, WHITE);
+                    draw_ui_text(&format!("Pixel: {x}, {y}"), 38.0, 327.0, 15.0, LIGHTGRAY);
+                    draw_ui_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 352.0, 14.0, LIGHTGRAY);
                     let state_label = map
                         .state_by_province
                         .get(&id)
                         .map(|state_id| format!("State ID: {state_id}"))
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_text(&state_label, 38.0, 380.0, 14.0, LIGHTGRAY);
+                    draw_ui_text(&state_label, 38.0, 380.0, 14.0, LIGHTGRAY);
                 } else {
-                    draw_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
-                    draw_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
+                    draw_ui_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
+                    draw_ui_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
                     let status: String = map.state_load_status.chars().take(27).collect();
-                    draw_text(&status, 28.0, 320.0, 12.0, LIGHTGRAY);
+                    draw_ui_text(&status, 28.0, 320.0, 12.0, LIGHTGRAY);
                 }
             }
 
@@ -1027,8 +1078,8 @@ fn draw_map_viewer(
                     MapMode::Terrain => "Terrain",
                 };
                 let text_size = if compact { 14.0 } else { 17.0 };
-                let text_w = measure_text(label, None, text_size as u16, 1.0).width;
-                draw_text(label, x + (mode_w - text_w) * 0.5, mode_y + 22.0, text_size, WHITE);
+                let text_w = measure_ui_text(label, text_size as u16).width;
+                draw_ui_text(label, x + (mode_w - text_w) * 0.5, mode_y + 22.0, text_size, WHITE);
                 let (mx, my) = mouse_position();
                 if is_mouse_button_pressed(MouseButton::Left)
                     && mx >= x && mx <= x + mode_w && my >= mode_y && my <= mode_y + 34.0
@@ -1069,9 +1120,9 @@ fn draw_map_viewer(
                     if map.zoom >= 1.8 {
                         let size = (11.0 * label_scale).clamp(9.0, 15.0);
                         let label = if city.name.is_empty() { format!("VP {}", city.victory_points) } else { city.name.clone() };
-                        let tw = measure_text(&label, None, size as u16, 1.0).width;
+                        let tw = measure_ui_text(&label, size as u16).width;
                         draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
-                        draw_text(&label, x + 9.0, y - 2.0, size, WHITE);
+                        draw_ui_text(&label, x + 9.0, y - 2.0, size, WHITE);
                     }
                 }
             }
@@ -1088,7 +1139,7 @@ fn draw_map_viewer(
                     draw_circle_lines(x, y, radius, 1.2, Color::from_rgba(225, 225, 215, 255));
                     let size = (10.0 * scale).clamp(8.0, 13.0);
                     let tw = measure_text(marker.label, None, size as u16, 1.0).width;
-                    draw_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
+                    draw_ui_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
                 }
             }
             if let Some(state_texture) = &map.state_border_texture {
@@ -1104,7 +1155,7 @@ fn draw_map_viewer(
                     },
                 );
             }
-            draw_text(
+            draw_ui_text(
                 &format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom),
                 rect.x,
                 screen_height() - 12.0,
@@ -1114,19 +1165,19 @@ fn draw_map_viewer(
         }
         None => {
             if compact {
-                draw_text("Map raster not loaded", 24.0, 104.0, 17.0, Color::from_rgba(236, 187, 126, 255));
+                draw_ui_text("Map raster not loaded", 24.0, 104.0, 17.0, Color::from_rgba(236, 187, 126, 255));
                 let short_error: String = load_error.chars().take(38).collect();
-                draw_text(&short_error, 24.0, 128.0, 12.0, Color::from_rgba(220, 155, 135, 255));
-                draw_text("Need provinces.bmp + definition.csv", 24.0, 158.0, 13.0, LIGHTGRAY);
+                draw_ui_text(&short_error, 24.0, 128.0, 12.0, Color::from_rgba(220, 155, 135, 255));
+                draw_ui_text("Need provinces.bmp + definition.csv", 24.0, 158.0, 13.0, LIGHTGRAY);
             } else {
-                draw_text("Map raster not loaded", 28.0, 145.0, 18.0, Color::from_rgba(236, 187, 126, 255));
+                draw_ui_text("Map raster not loaded", 28.0, 145.0, 18.0, Color::from_rgba(236, 187, 126, 255));
                 let short_error: String = load_error.chars().take(29).collect();
-                draw_text(&short_error, 28.0, 166.0, 13.0, Color::from_rgba(220, 155, 135, 255));
-                draw_text("Expected local files:", 28.0, 204.0, 15.0, LIGHTGRAY);
-                draw_text("data/hoi4/map/", 28.0, 228.0, 15.0, WHITE);
-                draw_text("provinces.bmp", 28.0, 252.0, 15.0, WHITE);
-                draw_text("definition.csv", 28.0, 275.0, 15.0, WHITE);
-                draw_text("No game map assets are bundled.", 28.0, 320.0, 13.0, LIGHTGRAY);
+                draw_ui_text(&short_error, 28.0, 166.0, 13.0, Color::from_rgba(220, 155, 135, 255));
+                draw_ui_text("Expected local files:", 28.0, 204.0, 15.0, LIGHTGRAY);
+                draw_ui_text("data/hoi4/map/", 28.0, 228.0, 15.0, WHITE);
+                draw_ui_text("provinces.bmp", 28.0, 252.0, 15.0, WHITE);
+                draw_ui_text("definition.csv", 28.0, 275.0, 15.0, WHITE);
+                draw_ui_text("No game map assets are bundled.", 28.0, 320.0, 13.0, LIGHTGRAY);
             }
 
             let x = if compact { 12.0 } else { 280.0 };
@@ -1135,8 +1186,8 @@ fn draw_map_viewer(
             let h = screen_height() - y - 24.0;
             draw_rectangle(x, y, w, h, Color::from_rgba(17, 31, 43, 255));
             draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(48, 69, 84, 255));
-            draw_text("Import a local province raster to view the real map.", x + 20.0, y + h * 0.48, if compact { 16.0 } else { 21.0 }, WHITE);
-            draw_text("No fake province data is shown.", x + 20.0, y + h * 0.48 + 32.0, 14.0, LIGHTGRAY);
+            draw_ui_text("Import a local province raster to view the real map.", x + 20.0, y + h * 0.48, if compact { 16.0 } else { 21.0 }, WHITE);
+            draw_ui_text("No fake province data is shown.", x + 20.0, y + h * 0.48 + 32.0, 14.0, LIGHTGRAY);
         }
     }
 
@@ -1146,25 +1197,25 @@ fn draw_map_viewer(
 fn draw_settings() -> Screen {
     if screen_width() < 760.0 {
         draw_background();
-        draw_text("MAP DATA / IMPORT", 20.0, 70.0, 23.0, WHITE);
-        draw_text("Create this folder beside Cargo.toml:", 20.0, 119.0, 15.0, LIGHTGRAY);
-        draw_text("data/hoi4/map/", 20.0, 147.0, 17.0, WHITE);
-        draw_text("Add provinces.bmp and definition.csv.", 20.0, 181.0, 14.0, WHITE);
-        draw_text("Only use data you are allowed to use.", 20.0, 211.0, 14.0, LIGHTGRAY);
-        draw_text("Android file import is not ready yet.", 20.0, 247.0, 14.0, Color::from_rgba(236, 187, 126, 255));
+        draw_ui_text("MAP DATA / IMPORT", 20.0, 70.0, 23.0, WHITE);
+        draw_ui_text("Create this folder beside Cargo.toml:", 20.0, 119.0, 15.0, LIGHTGRAY);
+        draw_ui_text("data/hoi4/map/", 20.0, 147.0, 17.0, WHITE);
+        draw_ui_text("Add provinces.bmp and definition.csv.", 20.0, 181.0, 14.0, WHITE);
+        draw_ui_text("Only use data you are allowed to use.", 20.0, 211.0, 14.0, LIGHTGRAY);
+        draw_ui_text("Android file import is not ready yet.", 20.0, 247.0, 14.0, Color::from_rgba(236, 187, 126, 255));
         if button("Back to menu", 20.0, screen_height() - 82.0, 220.0, 50.0) {
             return Screen::MainMenu;
         }
         return Screen::Settings;
     }
     draw_background();
-    draw_text("MAP DATA / IMPORT GUIDE", 48.0, 86.0, 30.0, WHITE);
-    draw_text("The viewer reads files from a local folder; the repository does not include game assets.", 50.0, 132.0, 17.0, LIGHTGRAY);
-    draw_text("1. Create data/hoi4/map/ beside Cargo.toml.", 50.0, 185.0, 18.0, WHITE);
-    draw_text("2. Put your legally obtained provinces.bmp and definition.csv there.", 50.0, 218.0, 18.0, WHITE);
-    draw_text("3. Return to the map viewer; it loads the bitmap and resolves pixel colours to province IDs.", 50.0, 251.0, 18.0, WHITE);
-    draw_text("State files and state-boundary overlays are a later milestone.", 50.0, 284.0, 17.0, LIGHTGRAY);
-    draw_text("Android file picker / SAF import is not implemented yet.", 50.0, 322.0, 17.0, Color::from_rgba(236, 187, 126, 255));
+    draw_ui_text("MAP DATA / IMPORT GUIDE", 48.0, 86.0, 30.0, WHITE);
+    draw_ui_text("The viewer reads files from a local folder; the repository does not include game assets.", 50.0, 132.0, 17.0, LIGHTGRAY);
+    draw_ui_text("1. Create data/hoi4/map/ beside Cargo.toml.", 50.0, 185.0, 18.0, WHITE);
+    draw_ui_text("2. Put your legally obtained provinces.bmp and definition.csv there.", 50.0, 218.0, 18.0, WHITE);
+    draw_ui_text("3. Return to the map viewer; it loads the bitmap and resolves pixel colours to province IDs.", 50.0, 251.0, 18.0, WHITE);
+    draw_ui_text("State files and state-boundary overlays are a later milestone.", 50.0, 284.0, 17.0, LIGHTGRAY);
+    draw_ui_text("Android file picker / SAF import is not implemented yet.", 50.0, 322.0, 17.0, Color::from_rgba(236, 187, 126, 255));
 
     if button("Back to menu", 50.0, 380.0, 220.0, 52.0) {
         Screen::MainMenu
@@ -1175,6 +1226,7 @@ fn draw_settings() -> Screen {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    init_ui_font();
     let mut screen = Screen::MainMenu;
     let (mut map, mut load_error) = match ProvinceMap::load() {
         Ok(loaded) => (Some(loaded), String::new()),
