@@ -1126,7 +1126,7 @@ fn time_control_button(label: &str, x: f32, y: f32, width: f32, height: f32, act
     hovered && is_mouse_button_pressed(MouseButton::Left)
 }
 
-fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
+fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) {
     let width = screen_width();
     let compact = width < 760.0;
     let (panel_x, panel_y, panel_w, panel_h) = if compact {
@@ -1137,7 +1137,6 @@ fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
     draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(18, 30, 43, 248));
     draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.0, Color::from_rgba(62, 86, 106, 255));
 
-    let date_label = game.date.display();
     let date_x = panel_x + 8.0;
     let date_y = panel_y + 33.0;
     let mut pause_clicked = false;
@@ -1145,7 +1144,7 @@ fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
 
     if compact {
         let date_width = (panel_w * 0.255).clamp(70.0, 91.0);
-        draw_ui_text(&date_label, date_x, date_y, 12.0, WHITE);
+        draw_ui_text(date_label, date_x, date_y, 12.0, WHITE);
         let pause_x = panel_x + date_width;
         pause_clicked = time_control_button(
             if game.paused { ">" } else { "||" },
@@ -1166,7 +1165,7 @@ fn draw_time_controls(game: &GameState) -> (bool, Option<u8>) {
             }
         }
     } else {
-        draw_ui_text(&date_label, date_x, date_y, 14.0, WHITE);
+        draw_ui_text(date_label, date_x, date_y, 14.0, WHITE);
         let pause_x = panel_x + 112.0;
         pause_clicked = time_control_button(
             if game.paused { "PLAY" } else { "PAUSE" },
@@ -1628,6 +1627,9 @@ async fn main() {
     };
     let mut selected: Option<(u32, [u8; 3], u32, u32)> = None;
     let mut game = GameState::default();
+    // Rebuild the date label only when the simulation date changes, not every rendered frame.
+    let mut cached_date = game.date;
+    let mut cached_date_label = game.date.display();
 
     loop {
         let next_screen = match screen {
@@ -1649,9 +1651,13 @@ async fn main() {
                     }
                 }
                 game.update(get_frame_time());
+                if game.date != cached_date {
+                    cached_date = game.date;
+                    cached_date_label = game.date.display();
+                }
 
                 let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, &mut selected);
-                let (pause_clicked, speed_clicked) = draw_time_controls(&game);
+                let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
                     game.toggle_pause();
                 }
