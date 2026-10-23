@@ -22,16 +22,62 @@ enum Entry {
     Bare(String),
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StateEconomy {
+    pub infrastructure: u16,
+    pub civilian_factories: u16,
+    pub military_factories: u16,
+    pub dockyards: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateDefinition {
     pub id: u32,
     pub province_ids: Vec<u32>,
+    pub economy: StateEconomy,
 }
 
 #[derive(Debug, Default)]
 pub struct StateMembership {
     pub state_by_province: HashMap<u32, u32>,
+    pub economy_by_state: HashMap<u32, StateEconomy>,
     pub state_count: usize,
+}
+
+fn read_building_counts(entries: &[Entry], economy: &mut StateEconomy) {
+    for entry in entries {
+        let Entry::Pair(key, Value::Atom(raw)) = entry else { continue };
+        let Ok(value) = raw.parse::<u16>() else { continue };
+        match key.as_str() {
+            "infrastructure" => economy.infrastructure = value,
+            "industrial_complex" => economy.civilian_factories = value,
+            "arms_factory" => economy.military_factories = value,
+            "dockyard" => economy.dockyards = value,
+            _ => {}
+        }
+    }
+}
+
+fn read_economy(fields: &[Entry]) -> StateEconomy {
+    let mut economy = StateEconomy::default();
+    for field in fields {
+        match field {
+            Entry::Pair(name, Value::Block(buildings)) if name == "buildings" => {
+                read_building_counts(buildings, &mut economy);
+            }
+            Entry::Pair(name, Value::Block(history)) if name == "history" => {
+                for history_field in history {
+                    if let Entry::Pair(building_name, Value::Block(buildings)) = history_field {
+                        if building_name == "buildings" {
+                            read_building_counts(buildings, &mut economy);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    economy
 }
 
 fn tokenize(source: &str) -> Result<Vec<Token>, String> {
@@ -174,8 +220,7 @@ fn numeric_atom(value: &Value, field: &str) -> Result<u32, String> {
     }
 }
 
-/// Parse one Clausewitz state file. Only top-level state IDs and province membership are read;
-/// nested history/building data is tokenized safely but not interpreted yet.
+/// Parse state IDs, province membership, and initial state-level industry from Clausewitz data.
 pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
     let tokens = tokenize(source)?;
     let mut cursor = 0;
@@ -190,6 +235,7 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
             continue;
         }
 
+        let economy = read_economy(&block);
         let mut id = None;
         let mut provinces = None;
         for field in block {
@@ -240,7 +286,7 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
                 return Err(format!("State {id} lists province {province_id} more than once"));
             }
         }
-        states.push(StateDefinition { id, province_ids });
+        states.push(StateDefinition { id, province_ids, economy });
     }
 
     if states.is_empty() {
@@ -369,6 +415,7 @@ pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String
             if !state_ids.insert(state.id) {
                 return Err(format!("Duplicate state ID {} (found in {})", state.id, path.display()));
             }
+            membership.economy_by_state.insert(state.id, state.economy);
             for province_id in state.province_ids {
                 if let Some(previous_state) = membership.state_by_province.insert(province_id, state.id) {
                     return Err(format!(
@@ -437,6 +484,7 @@ mod tests {
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].id, 12);
         assert_eq!(states[0].province_ids, vec![101, 102, 103]);
+        assert_eq!(states[0].economy, super::StateEconomy::default());
     }
 
     #[test]
@@ -448,6 +496,41 @@ mod tests {
         "#;
         let states = parse_state_file(source).expect("valid state definitions");
         assert_eq!(states.iter().map(|state| state.id).collect::<Vec<_>>(), vec![1, 2]);
+    }
+
+
+    #[test]
+    fn parses_state_industry_from_history_buildings_without_counting_province_blocks() {
+        let source = r#"
+            state = {
+                id = 12
+                provinces = { 101 102 }
+                history = {
+                    owner = GER
+                    buildings = {
+                        infrastructure = 6
+                        industrial_complex = 4
+                        arms_factory = 3
+                        dockyard = 2
+                        101 = { naval_base = 4 }
+                    }
+                }
+            }
+        "#;
+        let states = parse_state_file(source).unwrap();
+        assert_eq!(states[0].economy, super::StateEconomy {
+            infrastructure: 6,
+            civilian_factories: 4,
+            military_factories: 3,
+            dockyards: 2,
+        });
+    }
+
+    #[test]
+    fn defaults_missing_industry_to_zero() {
+        let source = r#"state = { id = 7 provinces = { 71 } history = { owner = FRA } }"#;
+        let states = parse_state_file(source).unwrap();
+        assert_eq!(states[0].economy, super::StateEconomy::default());
     }
 
     #[test]
