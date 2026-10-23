@@ -1820,7 +1820,8 @@ fn draw_map_viewer(
                                     .map(|state| u32::from(building.built_count(state.economy)))
                                     .sum::<u32>())
                                 .unwrap_or(0);
-                            queue.push_back(building_rules.project(*building, level, controlled_count));
+                            let infrastructure = selected_state.map(|state| state.economy.infrastructure).unwrap_or(0);
+                            queue.push_back(building_rules.project(*building, level, controlled_count, infrastructure));
                         }
                         *construction_menu = None;
                     }
