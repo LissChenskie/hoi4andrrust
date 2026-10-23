@@ -170,14 +170,15 @@ impl ProvinceMap {
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
         let id_by_rgb = parse_definition_text(&definition_text)?;
 
-        let (state_by_province, state_count, state_load_status) =
+        let (state_by_province, economy_by_state, state_count, state_load_status) =
             match load_state_membership(Path::new(STATE_DIRECTORY_PATH)) {
                 Ok(membership) => (
                     membership.state_by_province,
+                    membership.economy_by_state,
                     membership.state_count,
                     "State membership loaded".to_owned(),
                 ),
-                Err(error) => (HashMap::new(), 0, error),
+                Err(error) => (HashMap::new(), HashMap::new(), 0, error),
             };
 
         let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
@@ -200,7 +201,9 @@ impl ProvinceMap {
             width, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
         let city_markers = build_city_markers(width, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
-        let world = World::from_map_data(&state_by_province, &owner_by_state, &state_name_by_id);
+        let world = World::from_map_data(
+            &state_by_province, &owner_by_state, &state_name_by_id, &economy_by_state,
+        );
 
         // CPU-side hit testing only needs RGB. Drop the fourth alpha byte per pixel
         // after every map texture and marker has been built.
@@ -1565,6 +1568,21 @@ fn draw_map_viewer(
         draw_ui_text(&format!("Owner: {owner}"), panel_x + 210.0, info_y, 13.0, WHITE);
         draw_ui_text(&format!("Map pixel: {px}, {py}  ·  RGB {}, {}, {}", rgb[0], rgb[1], rgb[2]),
             panel_x + 210.0, info_y + 24.0, 12.0, LIGHTGRAY);
+        if let Some(state) = state_id.and_then(|id| map.world.states.get(&id)) {
+            draw_ui_text(
+                &format!(
+                    "Industry: CIV {}  ·  MIL {}  ·  Dockyards {}  ·  Infrastructure {}",
+                    state.economy.civilian_factories,
+                    state.economy.military_factories,
+                    state.economy.dockyards,
+                    state.economy.infrastructure,
+                ),
+                panel_x + 14.0,
+                panel_y + 105.0,
+                if compact { 10.0 } else { 12.0 },
+                Color::from_rgba(177, 205, 180, 255),
+            );
+        }
         if state_id.is_some() {
             draw_ui_text("Selected state boundary highlighted", panel_x + 14.0, panel_y + panel_h - 12.0, 11.0,
                 Color::from_rgba(235, 198, 120, 255));
