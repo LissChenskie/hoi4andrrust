@@ -28,6 +28,23 @@ pub struct StateEconomy {
     pub civilian_factories: u16,
     pub military_factories: u16,
     pub dockyards: u16,
+    pub synthetic_refineries: u16,
+    pub fuel_silos: u16,
+    pub rocket_sites: u16,
+    pub nuclear_reactors: u16,
+}
+
+impl StateEconomy {
+    /// Number of built structures that consume a shared state building slot.
+    pub fn occupied_shared_slots(self) -> u16 {
+        self.civilian_factories
+            .saturating_add(self.military_factories)
+            .saturating_add(self.dockyards)
+            .saturating_add(self.synthetic_refineries)
+            .saturating_add(self.fuel_silos)
+            .saturating_add(self.rocket_sites)
+            .saturating_add(self.nuclear_reactors)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,6 +73,10 @@ fn read_building_counts(entries: &[Entry], economy: &mut StateEconomy) {
             "industrial_complex" => economy.civilian_factories = value,
             "arms_factory" => economy.military_factories = value,
             "dockyard" => economy.dockyards = value,
+            "synthetic_refinery" => economy.synthetic_refineries = value,
+            "fuel_silo" => economy.fuel_silos = value,
+            "rocket_site" => economy.rocket_sites = value,
+            "nuclear_reactor" => economy.nuclear_reactors = value,
             _ => {}
         }
     }
@@ -615,6 +636,10 @@ mod tests {
                         industrial_complex = 4
                         arms_factory = 3
                         dockyard = 2
+                        synthetic_refinery = 1
+                        fuel_silo = 1
+                        rocket_site = 2
+                        nuclear_reactor = 1
                         101 = { naval_base = 4 }
                     }
                 }
@@ -626,7 +651,12 @@ mod tests {
             civilian_factories: 4,
             military_factories: 3,
             dockyards: 2,
+            synthetic_refineries: 1,
+            fuel_silos: 1,
+            rocket_sites: 2,
+            nuclear_reactors: 1,
         });
+        assert_eq!(states[0].economy.occupied_shared_slots(), 14);
     }
 
     #[test]
