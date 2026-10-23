@@ -14,6 +14,7 @@ pub struct State {
     pub name: Option<String>,
     pub owner: Option<String>,
     pub province_ids: Vec<u32>,
+    pub shared_building_slots: u16,
     pub economy: StateEconomy,
 }
 
@@ -46,6 +47,7 @@ impl World {
         owner_by_state: &HashMap<u32, String>,
         state_names: &HashMap<u32, String>,
         economy_by_state: &HashMap<u32, StateEconomy>,
+        shared_slots_by_state: &HashMap<u32, u16>,
     ) -> Self {
         let mut world = Self::default();
 
@@ -59,6 +61,7 @@ impl World {
                 name: state_names.get(&state_id).cloned(),
                 owner: owner_by_state.get(&state_id).cloned(),
                 province_ids: Vec::new(),
+                shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
                 economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             }).province_ids.push(province_id);
         }
@@ -70,6 +73,7 @@ impl World {
                 name: state_names.get(&state_id).cloned(),
                 owner: None,
                 province_ids: Vec::new(),
+                shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
                 economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             });
             state.owner = Some(owner.clone());
@@ -80,6 +84,7 @@ impl World {
                 name: Some(name.clone()),
                 owner: owner_by_state.get(&state_id).cloned(),
                 province_ids: Vec::new(),
+                shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
                 economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             }).name = Some(name.clone());
         }
@@ -156,7 +161,7 @@ mod tests {
         let membership = HashMap::from([(101, 1), (102, 1), (201, 2)]);
         let owners = HashMap::from([(1, "GER".to_owned()), (2, "POL".to_owned())]);
         let names = HashMap::from([(1, "State One".to_owned()), (2, "State Two".to_owned())]);
-        World::from_map_data(&membership, &owners, &names, &HashMap::new())
+        World::from_map_data(&membership, &owners, &names, &HashMap::new(), &HashMap::new())
     }
 
     #[test]
@@ -182,7 +187,7 @@ mod tests {
             (1, StateEconomy { infrastructure: 5, civilian_factories: 3, military_factories: 2, dockyards: 1 }),
             (2, StateEconomy { infrastructure: 7, civilian_factories: 4, military_factories: 1, dockyards: 2 }),
         ]);
-        let world = World::from_map_data(&membership, &owners, &names, &economies);
+        let world = World::from_map_data(&membership, &owners, &names, &economies, &HashMap::new());
         let totals = world.country_economy("GER").unwrap();
         assert_eq!(totals.states, 2);
         assert_eq!(totals.civilian_factories, 7);
