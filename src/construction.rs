@@ -585,12 +585,12 @@ mod tests {
     #[test]
     fn project_cost_and_progress_are_explicit() {
         let project = ConstructionProject::new(BuildingType::MilitaryFactory, 2);
-        assert_eq!(project.cost, 10_800.0);
+        assert_eq!(project.cost, 7_200.0);
         assert_eq!(project.progress_fraction(), 0.0);
     }
 
     #[test]
-    fn infrastructure_reduces_eligible_building_cost_not_daily_output() {
+    fn infrastructure_boosts_daily_output_without_changing_cost() {
         let rules = BuildingRules::default();
         let no_infra = rules.project(BuildingType::CivilianFactory, 0, 0, 0);
         let max_infra = rules.project(BuildingType::CivilianFactory, 0, 0, 5);
@@ -676,7 +676,7 @@ mod tests {
         q.insert(2, VecDeque::from([ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 10000.0 }]));
         advance_day_ordered(&mut world, "TST", &mut q, &[2, 1], &rules, CountryConstructionPolicy::default());
         assert_eq!(q[&2][0].progress, 75.0);
-        assert_eq!(q[&1][0].progress, 20.0);
+        assert_eq!(q[&1][0].progress, 50.0);
         let cap = country_capacity(&world, "TST", CountryConstructionPolicy {
             consumer_goods_fraction: 0.5, trade_civilian_factories: 2, construction_speed_bonus: 0.0,
         }).unwrap();
