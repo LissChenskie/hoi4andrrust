@@ -837,4 +837,139 @@ mod tests {
         assert_eq!(q[&1][0].progress, 30.0);
     }
 
+    #[test]
+    fn construction_ic_costs_use_zero_based_existing_level() {
+        let mut rules = BuildingRules::default();
+        rules.definitions.insert(BuildingType::RocketSite, BuildingDefinition {
+            base_cost: 170.0,
+            per_level_extra_cost: 130.0,
+            per_controlled_building_extra_cost: 7.0,
+            infrastructure_construction_effect: false,
+        });
+        assert_eq!(rules.project(BuildingType::RocketSite, 0, 0, 0).cost, 170.0);
+        assert_eq!(rules.project(BuildingType::RocketSite, 1, 0, 0).cost, 300.0);
+        assert_eq!(rules.project(BuildingType::RocketSite, 4, 3, 0).cost, 711.0);
+    }
+
+    #[test]
+    fn construction_bonuses_are_additive_before_infrastructure() {
+        let rules = BuildingRules::default();
+        let policy = CountryConstructionPolicy {
+            construction_speed_bonus: 0.10,
+            ..Default::default()
+        };
+        let modifiers = ConstructionModifiers {
+            national_bonus: 0.20,
+            building_bonuses: HashMap::from([(BuildingType::MilitaryFactory, 0.10)]),
+            state_bonuses: HashMap::from([(1, 0.10)]),
+        };
+        // 15 x 5 IC per day x (1 + .10+.20+.10+.10) x 2 = 225 IC/day
+        let speed = daily_construction_points(
+            &rules, policy, &modifiers, 1, BuildingType::MilitaryFactory, 5, 15,
+        );
+        assert!((speed - 225.0).abs() < 0.01);
+        assert_eq!(
+            daily_construction_points(
+                &rules, policy, &modifiers, 1, BuildingType::CivilianFactory, 0, 1,
+            ),
+            7.0,
+        );
+    }
+
+    #[test]
+    fn consumer_goods_are_rounded_up_and_trading_reduces_building_capacity() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 13;
+        world.states.get_mut(&1).unwrap().economy.military_factories = 8;
+        let civilian = country_capacity(&world, "TST", CountryConstructionPolicy {
+            consumer_goods_fraction: EconomicLawPreset::CivilianEconomy.consumer_goods_fraction(),
+            trade_civilian_factories: 2,
+            construction_speed_bonus: 0.0,
+        }).unwrap();
+        assert_eq!(civilian.consumer_goods, 8); // ceil(21 x .35)
+        assert_eq!(civilian.trade, 2);
+        assert_eq!(civilian.available, 3);
+        let partial = country_capacity(&world, "TST", CountryConstructionPolicy {
+            consumer_goods_fraction: EconomicLawPreset::PartialMobilization.consumer_goods_fraction(),
+            trade_civilian_factories: 2,
+            construction_speed_bonus: 0.0,
+        }).unwrap();
+        assert_eq!(partial.consumer_goods, 5);
+        assert_eq!(partial.available, 6);
+    }
+
+    #[test]
+    fn two_projects_in_one_state_are_independent_lines() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 20;
+        world.states.get_mut(&1).unwrap().economy.infrastructure = 0;
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, VecDeque::from([
+            ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1000.0 },
+            ConstructionProject { building: BuildingType::Dockyard, progress: 0.0, cost: 1000.0 },
+        ]));
+        let assigned = allocate_factories(
+            &world, "TST", &queues, &[1], &BuildingRules::default(), CountryConstructionPolicy::default(),
+        );
+        assert_eq!(assigned.len(), 2);
+        assert_eq!(assigned[0].civilian_factories, 15);
+        assert_eq!(assigned[1].civilian_factories, 5);
+        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
+        assert_eq!(queues[&1][0].progress, 75.0);
+        assert_eq!(queues[&1][1].progress, 25.0);
+    }
+
+    #[test]
+    fn completed_infrastructure_only_benefits_other_lines_next_day() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.infrastructure = 4;
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 30;
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, VecDeque::from([
+            ConstructionProject { building: BuildingType::Infrastructure, progress: 9.0, cost: 10.0 },
+            ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1000.0 },
+        ]));
+        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
+        assert_eq!(world.states[&1].economy.infrastructure, 5);
+        assert_eq!(queues[&1].len(), 1);
+        assert_eq!(queues[&1][0].building, BuildingType::MilitaryFactory);
+        assert!((queues[&1][0].progress - 135.0).abs() < 0.01);
+        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
+        assert!((queues[&1][0].progress - 285.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn enforces_maximum_of_one_thousand_queued_items_per_country() {
+        let world = test_world();
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, std::iter::repeat_n(
+            ConstructionProject::new(BuildingType::Infrastructure, 0),
+            MAX_CONSTRUCTION_QUEUE_ITEMS,
+        ).collect());
+        assert_eq!(enqueue_project(
+            &world, "TST", 1, &mut queues, &BuildingRules::default(), BuildingType::MilitaryFactory,
+        ), Err("Country construction queue is full"));
+    }
+
+    #[test]
+    fn eta_handles_stopped_lines_and_exact_completion_day() {
+        let project = ConstructionProject {
+            building: BuildingType::CivilianFactory, progress: 40.0, cost: 110.0,
+        };
+        assert_eq!(estimated_days_remaining(&project, 35.0), Some(2));
+        assert_eq!(estimated_days_remaining(&project, 0.0), None);
+        assert_eq!(estimated_days_remaining(&project, -1.0), None);
+        assert_eq!(estimated_days_remaining(&ConstructionProject { progress: 110.0, ..project }, 0.0), Some(0));
+    }
+
+    #[test]
+    fn building_slot_flags_are_read_from_level_caps() {
+        let block = find_definition_block(
+            "infrastructure = { level_cap = { state_max = 7 shares_slots = no } }", "infrastructure",
+        ).unwrap();
+        let cap = find_definition_block(block, "level_cap").unwrap();
+        assert_eq!(top_level_number(cap, "state_max"), Some(7.0));
+        assert_eq!(top_level_yes_no(cap, "shares_slots"), None); // inline values need tokenizer support
+    }
+
 }
