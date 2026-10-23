@@ -330,7 +330,20 @@ fn build_state_border_texture(
 /// Parse HOI4 definition.csv into an RGB -> province ID index.
 /// Vanilla HOI4 files are semicolon-delimited; comma-delimited input is also accepted.
 
+fn parse_state_date(line: &str) -> Option<(u32, u32, u32)> {
+    let (left, _) = line.split_once('=')?;
+    let mut parts = left.trim().split('.');
+    let year = parts.next()?.parse().ok()?;
+    let month = parts.next()?.parse().ok()?;
+    let day = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || month == 0 || month > 12 || day == 0 || day > 31 {
+        return None;
+    }
+    Some((year, month, day))
+}
+
 fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u32, f32>) {
+    const MAP_DATE: (u32, u32, u32) = (1939, 9, 1);
     let mut owners = HashMap::new();
     let mut resources = HashMap::new();
     let Ok(entries) = fs::read_dir(directory) else { return (owners, resources) };
@@ -341,8 +354,11 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
         let mut state_id = None;
         let mut in_history = false;
         let mut history_depth = 0i32;
+        let mut active_date: Option<(u32, u32, u32)> = None;
+        let mut dated_depth = 0i32;
         let mut in_resources = false;
         let mut resource_depth = 0i32;
+
         for line in source.lines() {
             let clean = line.split('#').next().unwrap_or("").trim();
             if clean.is_empty() { continue; }
@@ -352,33 +368,45 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
                 }
             }
             let Some(id) = state_id else { continue };
+
             if clean.starts_with("history") && clean.contains('{') {
                 in_history = true;
                 history_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-                if let Some((_, tail)) = clean.split_once('{') {
-                    if let Some((_, owner)) = tail.split_once("owner") {
-                        if let Some((_, tag)) = owner.split_once('=') {
-                            let tag = tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
+            } else if in_history {
+                // State history may contain dated owner changes. Resolve the owner as of
+                // the 1939-09-01 bookmark instead of letting later entries overwrite it.
+                if let Some(date) = parse_state_date(clean) {
+                    active_date = Some(date);
+                    dated_depth = 0;
+                }
+                let owner_is_in_date = active_date.map(|date| date > MAP_DATE).unwrap_or(false);
+                if !owner_is_in_date {
+                    if let Some((_, assignment)) = clean.split_once("owner") {
+                        if let Some((_, raw_tag)) = assignment.split_once('=') {
+                            let tag = raw_tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
                             let tag = tag.split_whitespace().next().unwrap_or("").trim_matches('}');
-                            if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
+                            if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                                owners.insert(id, tag.to_owned());
+                            }
                         }
                     }
                 }
-            } else if in_history {
-                // Owner may be nested inside a dated history block, e.g.
-                // 1936.1.1 = { owner = TAG }. Do not restrict it to line start.
-                if let Some((_, assignment)) = clean.split_once("owner") {
-                    if let Some((_, raw_tag)) = assignment.split_once('=') {
-                        let tag = raw_tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
-                        let tag = tag.split_whitespace().next().unwrap_or("").trim_matches('}');
-                        if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                            owners.insert(id, tag.to_owned());
-                        }
+
+                if active_date.is_some() {
+                    dated_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                    if dated_depth <= 0 {
+                        active_date = None;
+                        dated_depth = 0;
                     }
                 }
                 history_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-                if history_depth <= 0 { in_history = false; }
+                if history_depth <= 0 {
+                    in_history = false;
+                    active_date = None;
+                    dated_depth = 0;
+                }
             }
+
             if clean.starts_with("resources") && clean.contains('{') {
                 in_resources = true;
                 resource_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
