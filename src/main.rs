@@ -30,6 +30,7 @@ struct ProvinceMap {
     state_count: usize,
     state_load_status: String,
     state_border_texture: Option<Texture2D>,
+    zoom: f32,
 }
 
 impl ProvinceMap {
@@ -94,7 +95,19 @@ impl ProvinceMap {
             state_count,
             state_load_status,
             state_border_texture,
+            zoom: 1.0,
         })
+    }
+
+    fn source_rect(&self) -> Rect {
+        let source_width = self.width as f32 / self.zoom;
+        let source_height = self.height as f32 / self.zoom;
+        Rect::new(
+            (self.width as f32 - source_width) * 0.5,
+            (self.height as f32 - source_height) * 0.5,
+            source_width,
+            source_height,
+        )
     }
 
     fn province_at(&self, x: u32, y: u32) -> Option<(u32, [u8; 3])> {
@@ -342,7 +355,7 @@ fn map_view_rect(map: &ProvinceMap) -> Rect {
 }
 
 fn draw_map_viewer(
-    map: Option<&ProvinceMap>,
+    mut map: Option<&mut ProvinceMap>,
     load_error: &str,
     selected: Option<(u32, [u8; 3], u32, u32)>,
 ) -> Screen {
@@ -350,11 +363,43 @@ fn draw_map_viewer(
     draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
     draw_text("WORLD MAP", 22.0, 42.0, 25.0, WHITE);
 
-    if button("Main menu", screen_width() - 160.0, 15.0, 138.0, 38.0) {
-        return Screen::MainMenu;
+    let compact = screen_width() < 760.0;
+    if compact {
+        if let Some(map) = map.as_deref_mut() {
+            if button("+", screen_width() - 176.0, 15.0, 34.0, 38.0) {
+                map.zoom = (map.zoom * 1.25).clamp(1.0, 12.0);
+            }
+            if button("−", screen_width() - 134.0, 15.0, 34.0, 38.0) {
+                map.zoom = (map.zoom / 1.25).clamp(1.0, 12.0);
+            }
+        }
+        if button("Back", screen_width() - 86.0, 15.0, 72.0, 38.0) {
+            return Screen::MainMenu;
+        }
+    } else {
+        if button("Main menu", screen_width() - 160.0, 15.0, 138.0, 38.0) {
+            return Screen::MainMenu;
+        }
+        if let Some(map) = map.as_deref_mut() {
+            if button("Zoom +", 22.0, screen_height() - 174.0, 96.0, 38.0) {
+                map.zoom = (map.zoom * 1.25).clamp(1.0, 12.0);
+            }
+            if button("Zoom -", 132.0, screen_height() - 174.0, 100.0, 38.0) {
+                map.zoom = (map.zoom / 1.25).clamp(1.0, 12.0);
+            }
+            if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
+                map.zoom = 1.0;
+            }
+        }
     }
 
-    let compact = screen_width() < 760.0;
+    if let Some(map) = map.as_deref_mut() {
+        let (_, wheel_y) = mouse_wheel();
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if wheel_y != 0.0 && map_view_rect(map).contains(mouse) {
+            map.zoom = (map.zoom * 1.12_f32.powf(wheel_y)).clamp(1.0, 12.0);
+        }
+    }
     if compact {
         draw_rectangle(12.0, 74.0, screen_width() - 24.0, 116.0, Color::from_rgba(18, 30, 43, 255));
     } else {
@@ -424,12 +469,14 @@ fn draw_map_viewer(
 
             let rect = map_view_rect(map);
             draw_rectangle(rect.x - 1.0, rect.y - 1.0, rect.w + 2.0, rect.h + 2.0, Color::from_rgba(62, 78, 90, 255));
+            let source_rect = map.source_rect();
             draw_texture_ex(
                 &map.texture,
                 rect.x,
                 rect.y,
                 WHITE,
                 DrawTextureParams {
+                    source: Some(source_rect),
                     dest_size: Some(vec2(rect.w, rect.h)),
                     ..Default::default()
                 },
@@ -441,6 +488,7 @@ fn draw_map_viewer(
                     rect.y,
                     WHITE,
                     DrawTextureParams {
+                        source: Some(source_rect),
                         dest_size: Some(vec2(rect.w, rect.h)),
                         ..Default::default()
                     },
@@ -522,7 +570,7 @@ async fn main() {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(),
             Screen::MapViewer => {
-                let rendered_screen = draw_map_viewer(map.as_ref(), &load_error, selected);
+                let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, selected);
                 if let Some(current_map) = map.as_ref() {
                     if is_mouse_button_pressed(MouseButton::Left) {
                         let (mouse_x, mouse_y) = mouse_position();
@@ -530,9 +578,10 @@ async fn main() {
                         if mouse_x >= rect.x && mouse_x <= rect.x + rect.w
                             && mouse_y >= rect.y && mouse_y <= rect.y + rect.h
                         {
-                            let pixel_x = (((mouse_x - rect.x) / rect.w) * current_map.width as f32)
+                            let source = current_map.source_rect();
+                            let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
                                 .floor() as u32;
-                            let pixel_y = (((mouse_y - rect.y) / rect.h) * current_map.height as f32)
+                            let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
                                 .floor() as u32;
                             selected = current_map.province_at(pixel_x, pixel_y)
                                 .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
