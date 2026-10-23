@@ -378,7 +378,7 @@ mod tests {
         world.states.get_mut(&1).unwrap().economy.civilian_factories = 0;
         let mut queues = ConstructionQueues::new();
         queues.insert(1, VecDeque::from([ConstructionProject::new(BuildingType::Dockyard, 0)]));
-        advance_day(&mut world, "TST", &mut queues);
+        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
         assert_eq!(queues[&1][0].progress, 0.0);
     }
 }
