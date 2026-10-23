@@ -116,6 +116,7 @@ struct ProvinceMap {
     province_count: usize,
     state_by_province: HashMap<u32, u32>,
     owner_by_state: HashMap<u32, String>,
+    state_name_by_id: HashMap<u32, String>,
     state_count: usize,
     state_load_status: String,
     state_border_texture: Option<Texture2D>,
@@ -186,6 +187,7 @@ impl ProvinceMap {
             None
         };
 
+        let state_name_by_id = load_state_names(Path::new(STATE_DIRECTORY_PATH));
         let (political_texture, resources_texture, terrain_texture, owner_by_state) = build_map_mode_textures(
             width,
             height,
@@ -214,6 +216,7 @@ impl ProvinceMap {
             id_by_rgb,
             state_by_province,
             owner_by_state,
+            state_name_by_id,
             state_count,
             state_load_status,
             state_border_texture,
@@ -817,6 +820,66 @@ fn localisation_roots() -> Vec<std::path::PathBuf> {
     roots
 }
 
+fn load_state_names(state_directory: &Path) -> HashMap<u32, String> {
+    fn visit_localisation(directory: &Path, names: &mut HashMap<String, String>) {
+        let Ok(entries) = fs::read_dir(directory) else { return };
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for path in paths {
+            if path.is_dir() {
+                visit_localisation(&path, names);
+            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("yml")) {
+                let Ok(source) = fs::read_to_string(&path) else { continue };
+                for line in source.lines() {
+                    let line = line.trim().trim_start_matches('\u{feff}');
+                    let Some((key, raw_value)) = line.split_once(':') else { continue };
+                    let key = key.trim().trim_matches('"');
+                    if !key.starts_with("STATE_") { continue; }
+                    let raw_value = raw_value.split('#').next().unwrap_or("").trim();
+                    let value = raw_value.strip_prefix("0").map(str::trim_start).unwrap_or(raw_value);
+                    let value = value.trim().trim_matches('"').trim();
+                    if !value.is_empty() && !value.starts_with("STATE_") {
+                        names.insert(key.to_owned(), value.to_owned());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut key_by_id = HashMap::<u32, String>::new();
+    let Ok(entries) = fs::read_dir(state_directory) else { return HashMap::new() };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
+        let Ok(source) = fs::read_to_string(path) else { continue };
+        let mut state_id = None;
+        let mut state_key = None;
+        for line in source.lines() {
+            let clean = line.split('#').next().unwrap_or("").trim();
+            if state_id.is_none() && clean.starts_with("id") {
+                state_id = clean.split_once('=').and_then(|(_, value)| value.trim().parse::<u32>().ok());
+            }
+            if state_key.is_none() && clean.starts_with("name") {
+                state_key = clean.split_once('=').map(|(_, value)| value.trim().trim_matches('"').to_owned());
+            }
+            if state_id.is_some() && state_key.is_some() { break; }
+        }
+        if let (Some(id), Some(key)) = (state_id, state_key) {
+            key_by_id.insert(id, key);
+        }
+    }
+
+    let mut localised = HashMap::<String, String>::new();
+    for root in localisation_roots() {
+        visit_localisation(&root, &mut localised);
+    }
+
+    key_by_id.into_iter().map(|(id, key)| {
+        let name = localised.get(&key).cloned().unwrap_or_else(|| format!("State {id}"));
+        (id, name)
+    }).collect()
+}
+
 fn load_victory_point_names() -> HashMap<u32, String> {
     fn visit(directory: &Path, names: &mut HashMap<u32, String>) {
         let Ok(entries) = fs::read_dir(directory) else { return };
@@ -1268,7 +1331,7 @@ fn draw_map_viewer(
                 );
 
                 if let Some((id, rgb, x, y)) = selected {
-                    draw_rectangle(26.0, 248.0, 210.0, 154.0, Color::from_rgba(27, 44, 59, 255));
+                    draw_rectangle(26.0, 248.0, 210.0, 180.0, Color::from_rgba(27, 44, 59, 255));
                     draw_ui_text("SELECTED PIXEL", 38.0, 273.0, 15.0, WHITE);
                     draw_ui_text(&format!("Province ID: {id}"), 38.0, 300.0, 17.0, WHITE);
                     draw_ui_text(&format!("Pixel: {x}, {y}"), 38.0, 327.0, 15.0, LIGHTGRAY);
@@ -1281,7 +1344,11 @@ fn draw_map_viewer(
                             format!("State ID: {state_id}  |  Owner: {owner}")
                         })
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_ui_text(&state_label, 38.0, 380.0, 13.0, LIGHTGRAY);
+                    draw_ui_text(&state_label, 38.0, 380.0, 12.0, LIGHTGRAY);
+                    if let Some(state_id) = map.state_by_province.get(&id) {
+                        let state_name = map.state_name_by_id.get(state_id).map(String::as_str).unwrap_or("Unknown state");
+                        draw_ui_text(state_name, 38.0, 405.0, 13.0, WHITE);
+                    }
                 } else {
                     draw_ui_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
                     draw_ui_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
