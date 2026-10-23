@@ -97,6 +97,8 @@ struct CityMarker {
     x: f32,
     y: f32,
     name: String,
+    display_name: bool,
+    label_width: f32,
 }
 
 impl MapMode {
@@ -780,14 +782,30 @@ fn build_city_markers(
     for province_id in ids {
         let Some((sx, sy, count)) = sums.get(&province_id).copied() else { continue };
         if count == 0 { continue; }
+        let name = names.get(&province_id).cloned().unwrap_or_default();
+        let lower = name.to_ascii_lowercase();
+        let display_name = !name.trim().is_empty()
+            && !lower.starts_with("vp_")
+            && !lower.starts_with("victory_points_")
+            && !lower.starts_with("victory_points.");
+        // Cache text measurement at the maximum label size; never measure text in the frame loop.
+        let label_width = if display_name {
+            measure_ui_text(name.trim(), 13).width
+        } else {
+            0.0
+        };
         markers.push(CityMarker {
             province_id,
             victory_points: points[&province_id],
             x: (sx / count as f64) as f32,
             y: (sy / count as f64) as f32,
-            name: names.get(&province_id).cloned().unwrap_or_default(),
+            name,
+            display_name,
+            label_width,
         });
     }
+    // High-value cities get label priority when the visible-label budget is reached.
+    markers.sort_by(|a, b| b.victory_points.cmp(&a.victory_points).then_with(|| a.province_id.cmp(&b.province_id)));
     markers
 }
 
@@ -1425,6 +1443,10 @@ fn draw_map_viewer(
             // Show city markers from zoom 8.5; city names appear only at zoom 20.
             if map.zoom >= 8.5 {
                 let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
+                // Text rendering is much more expensive than map sprites, especially on mobile GPUs.
+                // Keep markers visible, but cap actual city-name labels per frame.
+                const MAX_CITY_LABELS_PER_FRAME: usize = 72;
+                let mut city_labels_drawn = 0usize;
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
                         || city.y < source_rect.y || city.y > source_rect.y + source_rect.h { continue; }
@@ -1432,15 +1454,17 @@ fn draw_map_viewer(
                     let y = rect.y + (city.y - source_rect.y) / source_rect.h * rect.h;
                     draw_circle(x, y, 3.0 * label_scale, Color::from_rgba(245, 224, 168, 255));
                     draw_circle_lines(x, y, 4.3 * label_scale, 1.0, Color::from_rgba(25, 31, 38, 255));
-                    // Don't display placeholder localisation keys (for example, vp_5) as city names.
-                    let name = city.name.trim();
-                    let lower = name.to_ascii_lowercase();
-                    let looks_like_key = lower.starts_with("vp_") || lower.starts_with("victory_points_") || lower.starts_with("victory_points.");
-                    if map.zoom >= 20.0 && !name.is_empty() && !looks_like_key {
+                    if map.zoom >= 20.0
+                        && city.display_name
+                        && city_labels_drawn < MAX_CITY_LABELS_PER_FRAME
+                    {
+                        let name = city.name.trim();
                         let size = (10.0 * label_scale).clamp(9.0, 13.0);
-                        let tw = measure_ui_text(name, size as u16).width;
-                        draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
+                        let width_scale = size / 13.0;
+                        let text_width = city.label_width * width_scale;
+                        draw_rectangle(x + 6.0, y - size - 3.0, text_width + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
                         draw_ui_text(name, x + 9.0, y - 2.0, size, WHITE);
+                        city_labels_drawn += 1;
                     }
                 }
             }
