@@ -1296,7 +1296,8 @@ fn draw_map_viewer(
                         .get(&id)
                         .map(|state_id| {
                             let owner = map.owner_by_state.get(state_id).map(String::as_str).unwrap_or("—");
-                            format!("State {state_id}  •  Owner: {owner}")
+                            let name = map.state_name_by_id.get(state_id).map(String::as_str).unwrap_or("Unknown state");
+                            format!("{state_id}: {name}  •  {owner}")
                         })
                         .unwrap_or_else(|| "State ID: not mapped".to_owned());
                     draw_ui_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
