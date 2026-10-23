@@ -1,0 +1,18 @@
+[package]
+name = "hoi4-mobile"
+version = "0.1.0"
+edition = "2024"
+description = "An independent Rust grand-strategy prototype with a province-map viewer"
+license = "MIT"
+
+[dependencies]
+macroquad = "0.4"
+image = { version = "0.25", default-features = false, features = ["bmp"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
