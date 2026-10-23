@@ -90,7 +90,6 @@ impl GameState {
             return 0;
         }
 
-        self.accumulator += delta_seconds.min(0.25);
         let speed_multiplier = match self.speed {
             1 => 1.0,
             2 => 2.0,
@@ -98,10 +97,12 @@ impl GameState {
             4 => 8.0,
             _ => 16.0,
         };
-        let day_duration = Self::SECONDS_PER_DAY / speed_multiplier;
+        // Accumulate game-time progress, not raw real seconds. This keeps partial-day
+        // progress correct when the player changes simulation speed mid-day.
+        self.accumulator += delta_seconds.min(0.25) * speed_multiplier / Self::SECONDS_PER_DAY;
         let mut ticks = 0;
-        while self.accumulator >= day_duration {
-            self.accumulator -= day_duration;
+        while self.accumulator >= 1.0 {
+            self.accumulator -= 1.0;
             self.date.advance_one_day();
             ticks += 1;
         }
