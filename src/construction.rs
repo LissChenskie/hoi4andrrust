@@ -172,8 +172,9 @@ impl Default for BuildingRules {
 impl BuildingRules {
     pub fn load(directory: impl AsRef<Path>) -> Self {
         let mut rules = Self::default();
-        let Ok(entries) = fs::read_dir(directory) else { return rules; };
-        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path())
+        // Missing local building files must NOT skip loading the defines.
+        let mut paths: Vec<_> = fs::read_dir(directory).into_iter().flatten()
+            .flatten().map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|ext| ext == "txt"))
             .collect();
         paths.sort();
@@ -286,14 +287,19 @@ impl BuildingRules {
 }
 
 fn find_lua_number(text: &str, field: &str) -> Option<f32> {
+    let mut last = None;
     for raw_line in text.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
+        let line = raw_line.split("--").next().unwrap_or("")
+            .split('#').next().unwrap_or("").trim();
         let Some((name, value)) = line.split_once('=') else { continue; };
-        if name.trim() != field { continue; }
-        let token = value.trim().trim_end_matches(',').split_whitespace().next()?;
-        if let Ok(number) = token.parse::<f32>() { return Some(number); }
+        // Both BASE_FACTORY_SPEED and NDefines.NBuildings.BASE_FACTORY_SPEED
+        // are used by HOI4 define files/overrides.
+        if name.trim().rsplit('.').next() != Some(field) { continue; }
+        let Some(token) = value.split_whitespace().next() else { continue; };
+        let token = token.trim_end_matches(',');
+        if let Ok(number) = token.parse::<f32>() { last = Some(number); }
     }
-    None
+    last
 }
 
 fn find_definition_block<'a>(text: &'a str, key: &str) -> Option<&'a str> {
@@ -343,41 +349,64 @@ fn find_definition_block<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     None
 }
 
-fn top_level_number(block: &str, field: &str) -> Option<f32> {
-    let mut depth = 1i32;
-    for raw_line in block.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if depth == 1 {
-            if let Some((name, value)) = line.split_once('=') {
-                if name.trim() == field {
-                    let token = value.split_whitespace().next()?.trim_matches('"');
-                    if let Ok(number) = token.parse::<f32>() { return Some(number); }
+/// Read scalar fields only at the root of a building block. Handles compact
+/// Clausewitz lines (e.g. state_max=5 shares_slots=yes) and nested blocks.
+fn top_level_scalar<'a>(block: &'a str, field: &str) -> Option<&'a str> {
+    let bytes = block.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'#' => {
+                while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
+            }
+            b'"' => {
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' { i = (i + 2).min(bytes.len()); continue; }
+                    if bytes[i] == b'"' { i += 1; break; }
+                    i += 1;
                 }
             }
+            b'{' => { depth += 1; i += 1; }
+            b'}' => { depth = depth.saturating_sub(1); i += 1; }
+            b'=' | b' ' | b'\n' | b'\r' | b'\t' => i += 1,
+            _ => {
+                let key_start = i;
+                while i < bytes.len() && !matches!(bytes[i], b'{' | b'}' | b'=' | b'#' | b'"' | b' ' | b'\n' | b'\r' | b'\t') {
+                    i += 1;
+                }
+                if depth != 0 || block.get(key_start..i) != Some(field) { continue; }
+                let mut cursor = i;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() { cursor += 1; }
+                if cursor >= bytes.len() || bytes[cursor] != b'=' { continue; }
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() { cursor += 1; }
+                if cursor == bytes.len() { return None; }
+                let quoted = bytes[cursor] == b'"';
+                if quoted { cursor += 1; }
+                let start = cursor;
+                while cursor < bytes.len() && !matches!(bytes[cursor], b'{' | b'}' | b'#' | b' ' | b'\n' | b'\r' | b'\t' | b'"') {
+                    cursor += 1;
+                }
+                let value = block.get(start..cursor)?;
+                return if quoted && bytes.get(cursor) != Some(&b'"') { None } else { Some(value) };
+            }
         }
-        let clean = raw_line.split('#').next().unwrap_or("");
-        depth += clean.matches('{').count() as i32;
-        depth -= clean.matches('}').count() as i32;
     }
     None
 }
 
+fn top_level_number(block: &str, field: &str) -> Option<f32> {
+    top_level_scalar(block, field)?.trim_end_matches(',').parse().ok()
+}
+
 fn top_level_yes_no(block: &str, field: &str) -> Option<bool> {
-    let mut depth = 1i32;
-    for raw_line in block.lines() {
-        let line = raw_line.split('#').next().unwrap_or("").trim();
-        if depth == 1 {
-            if let Some((name, value)) = line.split_once('=') {
-                if name.trim() == field {
-                    return match value.trim() { "yes" => Some(true), "no" => Some(false), _ => None };
-                }
-            }
-        }
-        let clean = raw_line.split('#').next().unwrap_or("");
-        depth += clean.matches('{').count() as i32;
-        depth -= clean.matches('}').count() as i32;
+    match top_level_scalar(block, field)? {
+        "yes" => Some(true),
+        "no" => Some(false),
+        _ => None,
     }
-    None
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -963,13 +992,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_namespaced_lua_defines_and_trailing_comments() {
+        let lua = "NDefines.NBuildings.BASE_FACTORY_SPEED = 4.0, -- old\\nNDefines.NBuildings.BASE_FACTORY_SPEED = 5.0, -- final";
+        assert_eq!(find_lua_number(lua, "BASE_FACTORY_SPEED"), Some(5.0));
+    }
+
+    #[test]
     fn building_slot_flags_are_read_from_level_caps() {
         let block = find_definition_block(
             "infrastructure = { level_cap = { state_max = 7 shares_slots = no } }", "infrastructure",
         ).unwrap();
         let cap = find_definition_block(block, "level_cap").unwrap();
         assert_eq!(top_level_number(cap, "state_max"), Some(7.0));
-        assert_eq!(top_level_yes_no(cap, "shares_slots"), None); // inline values need tokenizer support
+        assert_eq!(top_level_yes_no(cap, "shares_slots"), Some(false));
     }
 
 }
