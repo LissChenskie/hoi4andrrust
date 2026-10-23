@@ -196,7 +196,10 @@ impl ProvinceMap {
         );
         let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
         let city_named_count = city_markers.iter().filter(|city| !city.name.is_empty()).count();
-        let localisation_file_count = count_localisation_files(Path::new("data/hoi4/localisation"));
+        let localisation_file_count = localisation_roots()
+            .iter()
+            .map(|root| count_localisation_files(root))
+            .sum();
 
         Ok(Self {
             texture,
@@ -763,11 +766,31 @@ fn count_localisation_files(root: &Path) -> usize {
     }).sum()
 }
 
+fn localisation_roots() -> Vec<std::path::PathBuf> {
+    // Prefer the project's copied game data, but also support running with the
+    // original HOI4 installation present on the user's machine.
+    let candidates = [
+        "data/hoi4/localisation",
+        "data/hoi4/localization",
+        "E:/перекид с ссд/games/Hearts of Iron IV/localisation",
+        "E:/перекид с ссд/games/Hearts of Iron IV/localization",
+    ];
+    let mut roots = Vec::new();
+    for candidate in candidates {
+        let path = Path::new(candidate);
+        if path.is_dir() && !roots.iter().any(|existing| existing == path) {
+            roots.push(path.to_path_buf());
+        }
+    }
+    roots
+}
+
 fn load_victory_point_names() -> HashMap<u32, String> {
     fn visit(directory: &Path, names: &mut HashMap<u32, String>) {
         let Ok(entries) = fs::read_dir(directory) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        paths.sort();
+        for path in paths {
             if path.is_dir() {
                 visit(&path, names);
             } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("yml")) {
@@ -779,8 +802,9 @@ fn load_victory_point_names() -> HashMap<u32, String> {
     }
 
     let mut names = HashMap::new();
-    // Search all nested localisation folders, including language/replace folders.
-    visit(Path::new("data/hoi4/localisation"), &mut names);
+    for root in localisation_roots() {
+        visit(&root, &mut names);
+    }
     names
 }
 
