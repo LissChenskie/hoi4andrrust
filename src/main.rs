@@ -179,8 +179,9 @@ fn draw_main_menu() -> Screen {
 }
 
 fn map_view_rect(map: &ProvinceMap) -> Rect {
-    let left = 270.0_f32.min(screen_width() * 0.30);
-    let top = 82.0;
+    let compact = screen_width() < 760.0;
+    let left = if compact { 12.0 } else { 270.0 };
+    let top = if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
     let available_h = (screen_height() - top - 24.0).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
@@ -207,24 +208,38 @@ fn draw_map_viewer(
         return Screen::MainMenu;
     }
 
-    draw_rectangle(12.0, 78.0, 242.0, screen_height() - 92.0, Color::from_rgba(18, 30, 43, 255));
-    draw_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
+    let compact = screen_width() < 760.0;
+    if compact {
+        draw_rectangle(12.0, 74.0, screen_width() - 24.0, 116.0, Color::from_rgba(18, 30, 43, 255));
+    } else {
+        draw_rectangle(12.0, 78.0, 242.0, screen_height() - 92.0, Color::from_rgba(18, 30, 43, 255));
+        draw_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
+    }
 
     match map {
         Some(map) => {
-            draw_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
-            draw_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
-            draw_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
-
-            if let Some((id, rgb, x, y)) = selected {
-                draw_rectangle(26.0, 238.0, 210.0, 124.0, Color::from_rgba(27, 44, 59, 255));
-                draw_text("SELECTED PIXEL", 38.0, 263.0, 15.0, WHITE);
-                draw_text(&format!("Province ID: {id}"), 38.0, 290.0, 17.0, WHITE);
-                draw_text(&format!("Pixel: {x}, {y}"), 38.0, 317.0, 15.0, LIGHTGRAY);
-                draw_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 342.0, 14.0, LIGHTGRAY);
+            if compact {
+                draw_text(&format!("{} × {}  |  {} provinces", map.width, map.height, map.province_count), 24.0, 104.0, 16.0, LIGHTGRAY);
+                if let Some((id, rgb, x, y)) = selected {
+                    draw_text(&format!("Province {id} at {x},{y}  RGB {},{},{}", rgb[0], rgb[1], rgb[2]), 24.0, 133.0, 14.0, WHITE);
+                } else {
+                    draw_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 14.0, LIGHTGRAY);
+                }
             } else {
-                draw_text("Tap a province to", 28.0, 252.0, 16.0, LIGHTGRAY);
-                draw_text("inspect its ID and RGB.", 28.0, 275.0, 16.0, LIGHTGRAY);
+                draw_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
+                draw_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
+                draw_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
+
+                if let Some((id, rgb, x, y)) = selected {
+                    draw_rectangle(26.0, 238.0, 210.0, 124.0, Color::from_rgba(27, 44, 59, 255));
+                    draw_text("SELECTED PIXEL", 38.0, 263.0, 15.0, WHITE);
+                    draw_text(&format!("Province ID: {id}"), 38.0, 290.0, 17.0, WHITE);
+                    draw_text(&format!("Pixel: {x}, {y}"), 38.0, 317.0, 15.0, LIGHTGRAY);
+                    draw_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 342.0, 14.0, LIGHTGRAY);
+                } else {
+                    draw_text("Tap a province to", 28.0, 252.0, 16.0, LIGHTGRAY);
+                    draw_text("inspect its ID and RGB.", 28.0, 275.0, 16.0, LIGHTGRAY);
+                }
             }
 
             let rect = map_view_rect(map);
@@ -242,23 +257,30 @@ fn draw_map_viewer(
             draw_text("Nearest-neighbour raster view", rect.x, screen_height() - 12.0, 14.0, LIGHTGRAY);
         }
         None => {
-            draw_text("Map raster not loaded", 28.0, 145.0, 18.0, Color::from_rgba(236, 187, 126, 255));
-            let short_error: String = load_error.chars().take(29).collect();
-            draw_text(&short_error, 28.0, 166.0, 13.0, Color::from_rgba(220, 155, 135, 255));
-            draw_text("Expected local files:", 28.0, 204.0, 15.0, LIGHTGRAY);
-            draw_text("data/hoi4/map/", 28.0, 228.0, 15.0, WHITE);
-            draw_text("provinces.bmp", 28.0, 252.0, 15.0, WHITE);
-            draw_text("definition.csv", 28.0, 275.0, 15.0, WHITE);
-            draw_text("No game map assets are bundled.", 28.0, 320.0, 13.0, LIGHTGRAY);
+            if compact {
+                draw_text("Map raster not loaded", 24.0, 104.0, 17.0, Color::from_rgba(236, 187, 126, 255));
+                let short_error: String = load_error.chars().take(38).collect();
+                draw_text(&short_error, 24.0, 128.0, 12.0, Color::from_rgba(220, 155, 135, 255));
+                draw_text("Need provinces.bmp + definition.csv", 24.0, 158.0, 13.0, LIGHTGRAY);
+            } else {
+                draw_text("Map raster not loaded", 28.0, 145.0, 18.0, Color::from_rgba(236, 187, 126, 255));
+                let short_error: String = load_error.chars().take(29).collect();
+                draw_text(&short_error, 28.0, 166.0, 13.0, Color::from_rgba(220, 155, 135, 255));
+                draw_text("Expected local files:", 28.0, 204.0, 15.0, LIGHTGRAY);
+                draw_text("data/hoi4/map/", 28.0, 228.0, 15.0, WHITE);
+                draw_text("provinces.bmp", 28.0, 252.0, 15.0, WHITE);
+                draw_text("definition.csv", 28.0, 275.0, 15.0, WHITE);
+                draw_text("No game map assets are bundled.", 28.0, 320.0, 13.0, LIGHTGRAY);
+            }
 
-            let x = 280.0;
-            let y = 92.0;
-            let w = screen_width() - x - 22.0;
+            let x = if compact { 12.0 } else { 280.0 };
+            let y = if compact { 210.0 } else { 92.0 };
+            let w = screen_width() - x - if compact { 12.0 } else { 22.0 };
             let h = screen_height() - y - 24.0;
             draw_rectangle(x, y, w, h, Color::from_rgba(17, 31, 43, 255));
             draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(48, 69, 84, 255));
-            draw_text("Import a local province raster to view the real map.", x + 28.0, y + h * 0.48, 21.0, WHITE);
-            draw_text("This empty panel is intentional; no fake province data is shown.", x + 28.0, y + h * 0.48 + 32.0, 15.0, LIGHTGRAY);
+            draw_text("Import a local province raster to view the real map.", x + 20.0, y + h * 0.48, if compact { 16.0 } else { 21.0 }, WHITE);
+            draw_text("No fake province data is shown.", x + 20.0, y + h * 0.48 + 32.0, 14.0, LIGHTGRAY);
         }
     }
 
