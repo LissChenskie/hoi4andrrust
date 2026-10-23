@@ -9,7 +9,7 @@ An independent, early-stage grand-strategy prototype. The current milestone is d
 - Loads a local BMP province raster and HOI4 definition table (semicolon-delimited vanilla format, comma-delimited also accepted).
 - Displays the source raster with nearest-neighbour filtering so province colours are not blurred.
 - Clicking/tapping a pixel resolves its RGB colour to a province ID.
-- Parses local Clausewitz state files and shows the state ID for a selected province when membership data is available.
+- Parses local Clausewitz state files, shows a selected province's state ID, and draws state boundaries as a translucent overlay when membership data is available.
 - Does not bundle Paradox map assets or decompiled game code.
 
 ## Local map input
@@ -22,7 +22,7 @@ The prototype expects files at:
 
 Put only data you are legally entitled to use in this local folder. It is ignored by Git and should not be committed. Without those files, the app shows an explicit empty-state message rather than inventing fake province data.
 
-The Android file-picker / Storage Access Framework import flow is not implemented yet; the initial data loader currently uses relative filesystem paths. State borders are not yet drawn as a separate overlay.
+The Android file-picker / Storage Access Framework import flow is not implemented yet; the initial data loader currently uses relative filesystem paths. The overlay is based on parsed province-to-state membership; country ownership colours and other map modes are not implemented.
 
 ## Run the desktop prototype
 
@@ -42,8 +42,8 @@ This command is documented but has **not been executed in the current environmen
 ## Roadmap
 
 1. Main menu and local raster viewer.
-2. Province ID lookup and optional state membership parsing (implemented in the prototype).
-3. Draw state-border overlays and add zoom/pan controls.
+2. Province ID lookup, state membership parsing, and state-border overlay (implemented in the prototype).
+3. Add zoom/pan and more touch-friendly map controls.
 4. Validate map completeness and cross-file references.
 5. Add country ownership colours and further map layers.
 6. Android import flow and on-device profiling.
