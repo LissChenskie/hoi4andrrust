@@ -183,8 +183,7 @@ impl ProvinceMap {
     }
 
     fn set_zoom(&mut self, factor: f32) {
-        self.zoom = (self.zoom * factor).clamp(1.0, 24.0);
-        self.target_zoom = self.zoom;
+        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 24.0);
         self.clamp_pan();
     }
 
@@ -200,9 +199,8 @@ impl ProvinceMap {
         let map_y = old.y + v * old.h;
 
         self.target_zoom = (self.target_zoom * factor).clamp(1.0, 24.0);
-        self.zoom = self.target_zoom;
-        let new_w = self.width as f32 / self.zoom;
-        let new_h = self.height as f32 / self.zoom;
+        let new_w = self.width as f32 / self.target_zoom;
+        let new_h = self.height as f32 / self.target_zoom;
         self.pan.x = map_x - u * new_w - (self.width as f32 - new_w) * 0.5;
         self.pan.y = map_y - v * new_h - (self.height as f32 - new_h) * 0.5;
         self.clamp_pan();
@@ -635,8 +633,9 @@ fn build_city_markers(
 
 fn parse_victory_point_pairs(line: &str, points: &mut HashMap<u32, u32>) {
     let tokens: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == '{' || c == '}').filter(|s| !s.is_empty()).collect();
-    for pair in tokens.chunks_exact(2) {
-        if let (Ok(province), Ok(value)) = (pair[0].parse::<u32>(), pair[1].parse::<u32>()) {
+    for window in tokens.windows(3) {
+        if window[1] != "=" { continue; }
+        if let (Ok(province), Ok(value)) = (window[0].parse::<u32>(), window[2].parse::<u32>()) {
             points.insert(province, value);
         }
     }
@@ -1225,6 +1224,15 @@ async fn main() {
                     if current_map.dragging {
                         current_map.last_mouse = mouse;
                     }
+
+                    // Ease zoom over several frames instead of jumping by a huge wheel delta.
+                    let zoom_delta = current_map.target_zoom - current_map.zoom;
+                    if zoom_delta.abs() < 0.001 {
+                        current_map.zoom = current_map.target_zoom;
+                    } else {
+                        current_map.zoom += zoom_delta * 0.24;
+                    }
+                    current_map.clamp_pan();
                 }
 
                 if button("Reload local map", 22.0, screen_height() - 72.0, 210.0, 42.0) {
