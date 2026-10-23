@@ -1822,11 +1822,18 @@ fn draw_map_viewer(
                     *construction_menu = None;
                 }
             } else if queued_count > 0 {
-                draw_ui_text(
-                    &format!("Construction queue: {} item(s) · paused prototype queue", queued_count),
-                    table_x, panel_y + panel_h - 12.0, legend_size,
-                    Color::from_rgba(220, 190, 125, 255),
-                );
+                if let Some(project) = state_queue.and_then(|queue| queue.front()) {
+                    draw_ui_text(
+                        &format!(
+                            "Queue {} · {} · {:.0}% ({:.0}/{:.0} IC)",
+                            queued_count, project.building.label(),
+                            project.progress_fraction() * 100.0,
+                            project.progress, project.cost,
+                        ),
+                        table_x, panel_y + panel_h - 12.0, legend_size,
+                        Color::from_rgba(220, 190, 125, 255),
+                    );
+                }
             }
         }
     }
