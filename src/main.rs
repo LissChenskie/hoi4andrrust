@@ -1409,7 +1409,9 @@ fn draw_map_viewer(
     selected: &mut Option<(u32, [u8; 3], u32, u32)>,
     player_country: Option<&str>,
     construction_queue: &mut ConstructionQueues,
+    construction_priority: &mut Vec<u32>,
     construction_menu: &mut Option<u32>,
+    construction_notice: &mut String,
     building_rules: &BuildingRules,
 ) -> Screen {
     draw_background();
@@ -1711,13 +1713,12 @@ fn draw_map_viewer(
         let built = usize::from(economy.occupied_shared_slots());
         let state_queue = state_id.and_then(|id| construction_queue.get(&id));
         let queued_count = state_queue.map_or(0, |queue| queue.len());
-        let base_slots = selected_state.map(|state| usize::from(state.shared_building_slots)).unwrap_or(0);
-        // Until technology/focus slot bonuses are simulated, never hide starting factories
-        // if they exceed the base category value in a modded or modified save.
-        let slot_count = base_slots.max(built).min(building_rules.max_shared_slots);
-        let free_slots = slot_count.saturating_sub(built + queued_count);
+        let queued_shared = state_queue.map_or(0, construction::queued_shared_slots);
+        // State categories own the shared-slot limit; infrastructure uses its own level cap.
+        let slot_count = state_id.and_then(|id| construction::shared_slot_limit(&map.world, id, building_rules)).unwrap_or(0);
+        let free_slots = slot_count.saturating_sub(built + queued_shared);
         draw_ui_text(
-            &format!("SHARED SLOTS  ·  {built} built  ·  {queued_count} queued  ·  {free_slots} empty  ·  INFRA {}", economy.infrastructure),
+            &format!("SHARED SLOTS  ·  {built} built  ·  {queued_shared} queued  ·  {free_slots} empty  ·  INFRA {}/{}", economy.infrastructure, building_rules.max_state_level(BuildingType::Infrastructure)),
             table_x, table_y + 10.0, if compact { 10.0 } else { 12.0 },
             Color::from_rgba(194, 205, 216, 255),
         );
@@ -1738,8 +1739,10 @@ fn draw_map_viewer(
         slot_types.extend(std::iter::repeat_n(("A", Color::from_rgba(105, 143, 185, 255)), usize::from(economy.nuclear_reactors)));
         if let Some(queue) = state_queue {
             for project in queue {
-                let color = Color::from_rgba(112, 126, 139, 255);
-                slot_types.push((project.building.glyph(), color));
+                if project.building.shares_slots() {
+                    let color = Color::from_rgba(112, 126, 139, 255);
+                    slot_types.push((project.building.glyph(), color));
+                }
             }
         }
         for index in 0..slot_count {
@@ -1793,12 +1796,27 @@ fn draw_map_viewer(
             table_x, legend_y + if compact { 12.0 } else { 15.0 }, legend_size, LIGHTGRAY);
 
         if let Some(id) = state_id {
+            // Infrastructure is non-shared and must be buildable even with every
+            // shared slot occupied. The build validator checks ownership and cap.
+            if button("Infra +", panel_x + panel_w - 132.0, panel_y + 33.0, 78.0, 23.0) {
+                match construction::enqueue_project(
+                    &map.world, player_country.unwrap_or(""), id,
+                    construction_queue, building_rules, BuildingType::Infrastructure,
+                ) {
+                    Ok(()) => {
+                        if !construction_priority.contains(&id) { construction_priority.push(id); }
+                        *construction_notice = "Infrastructure queued".to_owned();
+                    }
+                    Err(reason) => *construction_notice = reason.to_owned(),
+                }
+            }
             if *construction_menu == Some(id) {
-                let menu_y = panel_y + panel_h - 58.0;
-                draw_rectangle(table_x, menu_y - 5.0, table_w, 55.0, Color::from_rgba(13, 22, 31, 250));
-                let options = BuildingType::ALL;
+                let menu_y = panel_y + panel_h - if compact { 79.0 } else { 57.0 };
+                draw_rectangle(table_x, menu_y - 5.0, table_w, if compact { 78.0 } else { 55.0 },
+                    Color::from_rgba(13, 22, 31, 250));
+                let options: Vec<BuildingType> = BuildingType::ALL.into_iter()
+                    .filter(|building| building.shares_slots()).collect();
                 let columns = if compact { 4 } else { 7 };
-                let rows = (options.len() + columns - 1) / columns;
                 let option_gap = 4.0;
                 let option_w = (table_w - option_gap * (columns as f32 - 1.0)) / columns as f32;
                 for (index, building) in options.iter().enumerate() {
@@ -1807,42 +1825,62 @@ fn draw_map_viewer(
                     let bx = table_x + col as f32 * (option_w + option_gap);
                     let by = menu_y + row as f32 * 25.0;
                     if button(building.short_label(), bx, by, option_w, 22.0) {
-                        let queue = construction_queue.entry(id).or_default();
-                        if built + queue.len() < slot_count {
-                            let level = selected_state
-                                .map(|state| building.built_count(state.economy))
-                                .unwrap_or(0)
-                                .saturating_add(queue.iter().filter(|p| p.building == *building).count() as u16);
-                            let controlled_count = player_country
-                                .and_then(|tag| map.world.countries.get(tag))
-                                .map(|country| country.state_ids.iter()
-                                    .filter_map(|state_id| map.world.states.get(state_id))
-                                    .map(|state| u32::from(building.built_count(state.economy)))
-                                    .sum::<u32>())
-                                .unwrap_or(0);
-                            let infrastructure = selected_state.map(|state| state.economy.infrastructure).unwrap_or(0);
-                            queue.push_back(building_rules.project(*building, level, controlled_count, infrastructure));
+                        match construction::enqueue_project(
+                            &map.world, player_country.unwrap_or(""), id,
+                            construction_queue, building_rules, *building,
+                        ) {
+                            Ok(()) => {
+                                if !construction_priority.contains(&id) { construction_priority.push(id); }
+                                *construction_notice = format!("{} queued", building.label());
+                            }
+                            Err(reason) => *construction_notice = reason.to_owned(),
                         }
                         *construction_menu = None;
                     }
                 }
-                let _ = rows;
-                if button("Cancel", panel_x + panel_w - 76.0, panel_y + 34.0, 62.0, 24.0) {
+                if button("Cancel", panel_x + panel_w - 76.0, panel_y + 59.0, 62.0, 23.0) {
                     *construction_menu = None;
                 }
             } else if queued_count > 0 {
                 if let Some(project) = state_queue.and_then(|queue| queue.front()) {
+                    let priority = construction_priority.iter().position(|candidate| *candidate == id)
+                        .map_or(0, |index| index + 1);
                     draw_ui_text(
                         &format!(
-                            "Queue {} · {} · {:.0}% ({:.0}/{:.0} IC)",
-                            queued_count, project.building.label(),
-                            project.progress_fraction() * 100.0,
+                            "Priority {priority} · Queue {queued_count} · {} · {:.0}% ({:.0}/{:.0} IC)",
+                            project.building.short_label(), project.progress_fraction() * 100.0,
                             project.progress, project.cost,
                         ),
                         table_x, panel_y + panel_h - 12.0, legend_size,
                         Color::from_rgba(220, 190, 125, 255),
                     );
                 }
+                // One state represents a serial construction line in this version.
+                // The player can reorder state lines and cancel the first project.
+                let controls_y = panel_y + panel_h - 39.0;
+                let controls_x = panel_x + panel_w - 151.0;
+                if button("Up", controls_x, controls_y, 40.0, 23.0) {
+                    if let Some(index) = construction_priority.iter().position(|candidate| *candidate == id) {
+                        if index > 0 { construction_priority.swap(index - 1, index); }
+                    }
+                }
+                if button("Down", controls_x + 43.0, controls_y, 46.0, 23.0) {
+                    if let Some(index) = construction_priority.iter().position(|candidate| *candidate == id) {
+                        if index + 1 < construction_priority.len() { construction_priority.swap(index, index + 1); }
+                    }
+                }
+                if button("X", controls_x + 92.0, controls_y, 32.0, 23.0) {
+                    if construction::cancel_project(construction_queue, id, 0) {
+                        if !construction_queue.contains_key(&id) {
+                            construction_priority.retain(|candidate| *candidate != id);
+                        }
+                        *construction_notice = "First queued project cancelled".to_owned();
+                    }
+                }
+            }
+            if !construction_notice.is_empty() && *construction_menu != Some(id) {
+                draw_ui_text(construction_notice, table_x, panel_y + 48.0,
+                    if compact { 10.0 } else { 11.0 }, Color::from_rgba(227, 199, 141, 255));
             }
         }
     }
@@ -1893,6 +1931,8 @@ async fn main() {
     let mut country_page = 0usize;
     let mut game = GameState::default();
     let mut construction_queue: ConstructionQueues = ConstructionQueues::new();
+    let mut construction_priority: Vec<u32> = Vec::new();
+    let mut construction_notice = String::new();
     let building_rules = BuildingRules::load(construction::BUILDING_DEFINITIONS_DIRECTORY);
     let mut construction_menu: Option<u32> = None;
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
@@ -1923,7 +1963,9 @@ async fn main() {
                 if daily_ticks > 0 {
                     if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
                         for _ in 0..daily_ticks {
-                            construction::advance_day(&mut current_map.world, tag, &mut construction_queue, &building_rules);
+                            construction::advance_day_ordered(&mut current_map.world, tag,
+                                &mut construction_queue, &construction_priority, &building_rules,
+                                construction::CountryConstructionPolicy::default());
                         }
                     }
                 }
@@ -1934,7 +1976,8 @@ async fn main() {
 
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
-                    &mut construction_queue, &mut construction_menu, &building_rules,
+                    &mut construction_queue, &mut construction_priority, &mut construction_menu,
+                    &mut construction_notice, &building_rules,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
