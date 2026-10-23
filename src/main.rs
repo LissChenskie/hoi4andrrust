@@ -101,7 +101,7 @@ impl ProvinceMap {
 
         let rgba = decoded.to_rgba8().into_raw();
         let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
-        texture.set_filter(FilterMode::Nearest);
+        texture.set_filter(FilterMode::Linear);
 
         let definition_text = fs::read_to_string(definition_path)
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
@@ -467,7 +467,7 @@ fn build_map_mode_textures(
     }
     let make_texture = |bytes: &[u8]| {
         let texture = Texture2D::from_rgba8(width as u16, height as u16, bytes);
-        texture.set_filter(FilterMode::Nearest);
+        texture.set_filter(FilterMode::Linear);
         texture
     };
     (make_texture(&political), make_texture(&resources), make_texture(&terrain))
@@ -673,7 +673,12 @@ fn parse_vp_localisation(source: &str, names: &mut HashMap<u32, String>) {
         let key = key.trim().trim_start_matches('\u{feff}');
         let Some(raw_id) = key.strip_prefix("VICTORY_POINTS_") else { continue };
         let Ok(id) = raw_id.parse::<u32>() else { continue };
-        let value = value.trim().trim_matches('"');
+        let mut value = value.trim();
+        // HOI4 localisation rows commonly use KEY:0 \"Name\".
+        if value.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+            if let Some((_, rest)) = value.split_once(' ') { value = rest.trim(); }
+        }
+        let value = value.trim_matches('"');
         if !value.is_empty() { names.entry(id).or_insert_with(|| value.to_owned()); }
     }
 }
