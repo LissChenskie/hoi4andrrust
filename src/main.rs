@@ -1820,7 +1820,7 @@ fn draw_map_viewer(
                     let by = menu_y + row as f32 * 25.0;
                     if button(label, bx, by, option_w, 22.0) {
                         let queue = construction_queue.entry(id).or_default();
-                        if queue.len() < free_slots {
+                        if built + queue.len() < slot_count {
                             queue.push(*kind);
                         }
                         *construction_menu = None;
