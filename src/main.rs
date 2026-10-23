@@ -1314,7 +1314,8 @@ fn map_view_rect(map: &ProvinceMap) -> Rect {
     let left = if compact { 12.0 } else { 270.0 };
     let top = if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
-    let bottom_reserve = if compact { 90.0 } else { 24.0 };
+    // Keep a dedicated lower strip for the HOI4-style state/province inspector.
+    let bottom_reserve = if compact { 190.0 } else { 178.0 };
     let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
@@ -1330,7 +1331,7 @@ fn map_view_rect(map: &ProvinceMap) -> Rect {
 fn draw_map_viewer(
     mut map: Option<&mut ProvinceMap>,
     load_error: &str,
-    selected: Option<(u32, [u8; 3], u32, u32)>,
+    selected: &mut Option<(u32, [u8; 3], u32, u32)>,
 ) -> Screen {
     draw_background();
     draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
@@ -1395,28 +1396,14 @@ fn draw_map_viewer(
                     15.0,
                     LIGHTGRAY,
                 );
-                if let Some((id, rgb, x, y)) = selected {
-                    draw_ui_text(
-                        &format!("Province {id} at {x},{y}  RGB {},{},{}", rgb[0], rgb[1], rgb[2]),
-                        24.0,
-                        133.0,
-                        13.0,
-                        WHITE,
-                    );
-                    let state_label = map
-                        .state_by_province
-                        .get(&id)
-                        .map(|state_id| {
-                            let owner = map.owner_by_state.get(state_id).map(String::as_str).unwrap_or("—");
-                            let name = map.state_name_by_id.get(state_id).map(String::as_str).unwrap_or("Unknown state");
-                            format!("{state_id}: {name}  •  {owner}")
-                        })
-                        .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_ui_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
-                } else {
-                    draw_ui_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 13.0, LIGHTGRAY);
-                    draw_ui_text(&format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()), 24.0, 160.0, 13.0, LIGHTGRAY);
-                }
+                draw_ui_text(
+                    &format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()),
+                    24.0,
+                    133.0,
+                    13.0,
+                    LIGHTGRAY,
+                );
+                draw_ui_text("Select a state to inspect it", 24.0, 160.0, 13.0, LIGHTGRAY);
             } else {
                 draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
                 draw_ui_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
@@ -1443,31 +1430,9 @@ fn draw_map_viewer(
                     LIGHTGRAY,
                 );
 
-                if let Some((id, rgb, x, y)) = selected {
-                    draw_rectangle(26.0, 248.0, 210.0, 180.0, Color::from_rgba(27, 44, 59, 255));
-                    draw_ui_text("SELECTED PIXEL", 38.0, 273.0, 15.0, WHITE);
-                    draw_ui_text(&format!("Province ID: {id}"), 38.0, 300.0, 17.0, WHITE);
-                    draw_ui_text(&format!("Pixel: {x}, {y}"), 38.0, 327.0, 15.0, LIGHTGRAY);
-                    draw_ui_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 352.0, 14.0, LIGHTGRAY);
-                    let state_label = map
-                        .state_by_province
-                        .get(&id)
-                        .map(|state_id| {
-                            let owner = map.owner_by_state.get(state_id).map(String::as_str).unwrap_or("—");
-                            format!("State ID: {state_id}  |  Owner: {owner}")
-                        })
-                        .unwrap_or_else(|| "State ID: not mapped".to_owned());
-                    draw_ui_text(&state_label, 38.0, 380.0, 12.0, LIGHTGRAY);
-                    if let Some(state_id) = map.state_by_province.get(&id) {
-                        let state_name = map.state_name_by_id.get(state_id).map(String::as_str).unwrap_or("Unknown state");
-                        draw_ui_text(state_name, 38.0, 405.0, 13.0, WHITE);
-                    }
-                } else {
-                    draw_ui_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
-                    draw_ui_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
-                    let status: String = map.state_load_status.chars().take(27).collect();
-                    draw_ui_text(&status, 28.0, 320.0, 12.0, LIGHTGRAY);
-                }
+                let status: String = map.state_load_status.chars().take(27).collect();
+                draw_ui_text(&status, 28.0, 263.0, 12.0, LIGHTGRAY);
+                draw_ui_text("Select a state on the map", 28.0, 290.0, 14.0, LIGHTGRAY);
             }
 
             // HOI4-style map-mode selector. The data-driven overlays are added in the next layer.
@@ -1601,7 +1566,7 @@ fn draw_map_viewer(
             draw_ui_text(
                 &format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom),
                 rect.x,
-                screen_height() - 12.0,
+                rect.y + rect.h - 8.0,
                 14.0,
                 LIGHTGRAY,
             );
@@ -1631,6 +1596,51 @@ fn draw_map_viewer(
             draw_rectangle_lines(x, y, w, h, 1.0, Color::from_rgba(48, 69, 84, 255));
             draw_ui_text("Import a local province raster to view the real map.", x + 20.0, y + h * 0.48, if compact { 16.0 } else { 21.0 }, WHITE);
             draw_ui_text("No fake province data is shown.", x + 20.0, y + h * 0.48 + 32.0, 14.0, LIGHTGRAY);
+        }
+    }
+
+    // HOI4-inspired bottom state inspector. Closing it also clears the map selection.
+    if let (Some(map), Some((province_id, rgb, px, py))) = (map.as_deref_mut(), *selected) {
+        let panel_x = if compact { 12.0 } else { 270.0 };
+        let panel_w = screen_width() - panel_x - 22.0;
+        let panel_h = if compact { 148.0 } else { 142.0 };
+        let panel_y = screen_height() - panel_h - 14.0;
+        draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(19, 31, 43, 248));
+        draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.5, Color::from_rgba(105, 126, 142, 255));
+        draw_rectangle(panel_x, panel_y, panel_w, 30.0, Color::from_rgba(39, 52, 65, 255));
+
+        let state_id = map.state_by_province.get(&province_id).copied();
+        let state_name = state_id
+            .and_then(|id| map.state_name_by_id.get(&id))
+            .map(String::as_str)
+            .unwrap_or("Unknown state");
+        let owner = state_id
+            .and_then(|id| map.owner_by_state.get(&id))
+            .map(String::as_str)
+            .unwrap_or("—");
+        let heading = if state_id.is_some() {
+            format!("{state_name}  ·  {owner}")
+        } else {
+            format!("Province {province_id}  ·  State not mapped")
+        };
+        draw_ui_text(&heading, panel_x + 14.0, panel_y + 21.0, if compact { 15.0 } else { 18.0 }, WHITE);
+
+        let close_x = panel_x + panel_w - 34.0;
+        if button("X", close_x, panel_y + 3.0, 28.0, 24.0) {
+            *selected = None;
+            map.highlighted_state_texture = None;
+        }
+
+        let info_y = panel_y + 57.0;
+        draw_ui_text(&format!("State ID: {}", state_id.map(|id| id.to_string()).unwrap_or_else(|| "—".to_owned())),
+            panel_x + 14.0, info_y, 13.0, LIGHTGRAY);
+        draw_ui_text(&format!("Province ID: {province_id}"), panel_x + 14.0, info_y + 24.0, 13.0, LIGHTGRAY);
+        draw_ui_text(&format!("Owner: {owner}"), panel_x + 210.0, info_y, 13.0, WHITE);
+        draw_ui_text(&format!("Map pixel: {px}, {py}  ·  RGB {}, {}, {}", rgb[0], rgb[1], rgb[2]),
+            panel_x + 210.0, info_y + 24.0, 12.0, LIGHTGRAY);
+        if state_id.is_some() {
+            draw_ui_text("Selected state boundary highlighted", panel_x + 14.0, panel_y + panel_h - 12.0, 11.0,
+                Color::from_rgba(235, 198, 120, 255));
         }
     }
 
@@ -1699,7 +1709,7 @@ async fn main() {
                 }
                 game.update(get_frame_time());
 
-                let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, selected);
+                let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, &mut selected);
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game);
                 if pause_clicked {
                     game.toggle_pause();
