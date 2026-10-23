@@ -243,11 +243,13 @@ fn draw_map_viewer(
         }
         None => {
             draw_text("Map raster not loaded", 28.0, 145.0, 18.0, Color::from_rgba(236, 187, 126, 255));
-            draw_text("Expected local files:", 28.0, 184.0, 15.0, LIGHTGRAY);
-            draw_text("data/hoi4/map/", 28.0, 208.0, 15.0, WHITE);
-            draw_text("provinces.bmp", 28.0, 232.0, 15.0, WHITE);
-            draw_text("definition.csv", 28.0, 255.0, 15.0, WHITE);
-            draw_text("No game map assets are bundled.", 28.0, 300.0, 13.0, LIGHTGRAY);
+            let short_error: String = load_error.chars().take(29).collect();
+            draw_text(&short_error, 28.0, 166.0, 13.0, Color::from_rgba(220, 155, 135, 255));
+            draw_text("Expected local files:", 28.0, 204.0, 15.0, LIGHTGRAY);
+            draw_text("data/hoi4/map/", 28.0, 228.0, 15.0, WHITE);
+            draw_text("provinces.bmp", 28.0, 252.0, 15.0, WHITE);
+            draw_text("definition.csv", 28.0, 275.0, 15.0, WHITE);
+            draw_text("No game map assets are bundled.", 28.0, 320.0, 13.0, LIGHTGRAY);
 
             let x = 280.0;
             let y = 92.0;
