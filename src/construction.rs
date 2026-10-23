@@ -178,14 +178,14 @@ impl BuildingRules {
         self.definitions.get(&building).copied().unwrap_or_else(|| BuildingRules::default().definitions[&building])
     }
 
-    pub fn project(&self, building: BuildingType, level: u16) -> ConstructionProject {
+    pub fn project(&self, building: BuildingType, level: u16, controlled_building_count: u32) -> ConstructionProject {
         let definition = self.definition(building);
         ConstructionProject {
             building,
             progress: 0.0,
             cost: (definition.base_cost
                 + f32::from(level) * definition.per_level_extra_cost
-                + definition.per_controlled_building_extra_cost * 0.0).max(1.0),
+                + definition.per_controlled_building_extra_cost * controlled_building_count as f32).max(1.0),
         }
     }
 }
@@ -283,7 +283,7 @@ pub struct ConstructionProject {
 
 impl ConstructionProject {
     pub fn new(building: BuildingType, state_level: u16) -> Self {
-        BuildingRules::default().project(building, state_level)
+        BuildingRules::default().project(building, state_level, 0)
     }
 
     pub fn progress_fraction(&self) -> f32 {
