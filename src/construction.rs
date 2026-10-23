@@ -8,6 +8,7 @@ use crate::world::World;
 
 pub const BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY: f32 = 5.0;
 pub const MAX_CIVILIAN_FACTORIES_PER_LINE: u32 = 15;
+pub const MAX_CONSTRUCTION_QUEUE_ITEMS: usize = 1000;
 pub const MAX_SHARED_BUILDING_SLOTS: u16 = 25;
 pub const BUILDING_DEFINITIONS_DIRECTORY: &str = "data/hoi4/common/buildings";
 pub const DEFINES_DIRECTORY: &str = "data/hoi4/common/defines";
@@ -143,6 +144,7 @@ pub struct BuildingDefinition {
 pub struct BuildingRules {
     definitions: HashMap<BuildingType, BuildingDefinition>,
     state_level_caps: HashMap<BuildingType, u16>,
+    shares_slots_overrides: HashMap<BuildingType, bool>,
     pub base_factory_speed: f32,
     pub infra_max_construction_cost_effect: f32,
     pub max_civilian_factories_per_line: u32,
@@ -153,6 +155,7 @@ impl Default for BuildingRules {
     fn default() -> Self {
         let mut definitions = HashMap::new();
         let mut state_level_caps = HashMap::new();
+        let shares_slots_overrides = HashMap::new();
         for building in BuildingType::ALL {
             state_level_caps.insert(building, building.default_max_level());
             definitions.insert(building, BuildingDefinition {
@@ -162,7 +165,7 @@ impl Default for BuildingRules {
                 infrastructure_construction_effect: true,
             });
         }
-        Self { definitions, state_level_caps, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT, max_civilian_factories_per_line: MAX_CIVILIAN_FACTORIES_PER_LINE, max_shared_slots: MAX_SHARED_BUILDING_SLOTS }
+        Self { definitions, state_level_caps, shares_slots_overrides, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT, max_civilian_factories_per_line: MAX_CIVILIAN_FACTORIES_PER_LINE, max_shared_slots: MAX_SHARED_BUILDING_SLOTS }
     }
 }
 
@@ -205,6 +208,9 @@ impl BuildingRules {
                             if cap.is_finite() && (1.0..=u16::MAX as f32).contains(&cap) {
                                 rules.state_level_caps.insert(building, cap as u16);
                             }
+                        }
+                        if let Some(shares) = top_level_yes_no(cap_block, "shares_slots") {
+                            rules.shares_slots_overrides.insert(building, shares);
                         }
                     }
                 }
@@ -251,6 +257,11 @@ impl BuildingRules {
 
     pub fn max_state_level(&self, building: BuildingType) -> u16 {
         self.state_level_caps.get(&building).copied().unwrap_or(building.default_max_level())
+    }
+
+    /// A building's level_cap.shares_slots flag overrides the fallback classification.
+    pub fn shares_slots(&self, building: BuildingType) -> bool {
+        self.shares_slots_overrides.get(&building).copied().unwrap_or_else(|| building.shares_slots())
     }
 
     /// Cost is fixed IC. Infrastructure changes DAILY IC throughput, not this price.
@@ -386,6 +397,62 @@ impl ConstructionProject {
     }
 }
 
+/// Parameters for independently stacking national, per-building and state speed
+/// modifiers. Additive bonuses are combined BEFORE the infrastructure multiplier.
+/// These are CONSTRUCTION bonuses, not military equipment production efficiency.
+#[derive(Debug, Clone, Default)]
+pub struct ConstructionModifiers {
+    pub national_bonus: f32,
+    pub building_bonuses: HashMap<BuildingType, f32>,
+    pub state_bonuses: HashMap<u32, f32>,
+}
+
+impl ConstructionModifiers {
+    pub fn speed_factor(&self, state_id: u32, building: BuildingType) -> f32 {
+        let bonus = self.national_bonus
+            + self.building_bonuses.get(&building).copied().unwrap_or(0.0)
+            + self.state_bonuses.get(&state_id).copied().unwrap_or(0.0);
+        if !bonus.is_finite() { return 1.0; }
+        (1.0 + bonus).max(0.0)
+    }
+}
+
+/// Two presets explicitly documented in the user's research. Unset keeps the
+/// preexisting no-law fallback until real national laws are imported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EconomicLawPreset {
+    #[default]
+    Unset,
+    CivilianEconomy,
+    PartialMobilization,
+}
+
+impl EconomicLawPreset {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Unset => Self::CivilianEconomy,
+            Self::CivilianEconomy => Self::PartialMobilization,
+            Self::PartialMobilization => Self::Unset,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unset => "Law: not imported",
+            Self::CivilianEconomy => "Civilian economy (35%)",
+            Self::PartialMobilization => "Partial mobilisation (20%)",
+        }
+    }
+
+    pub fn consumer_goods_fraction(self) -> f32 {
+        match self {
+            Self::Unset => 0.0,
+            Self::CivilianEconomy => 0.35,
+            Self::PartialMobilization => 0.20,
+        }
+    }
+}
+
 pub type ConstructionQueues = HashMap<u32, VecDeque<ConstructionProject>>;
 
 /// Country-specific economy inputs. Zeroed by default until economic laws/trade
@@ -432,6 +499,10 @@ pub fn queued_shared_slots(queue: &VecDeque<ConstructionProject>) -> usize {
     queue.iter().filter(|p| p.building.shares_slots()).count()
 }
 
+pub fn queued_shared_slots_with_rules(queue: &VecDeque<ConstructionProject>, rules: &BuildingRules) -> usize {
+    queue.iter().filter(|p| rules.shares_slots(p.building)).count()
+}
+
 pub fn shared_slot_limit(world: &World, state_id: u32, rules: &BuildingRules) -> Option<usize> {
     let state = world.states.get(&state_id)?;
     let occupied = usize::from(state.economy.occupied_shared_slots());
@@ -445,15 +516,19 @@ pub fn enqueue_project(
 ) -> Result<(), &'static str> {
     let state = world.states.get(&state_id).ok_or("Unknown state")?;
     if state.owner.as_deref() != Some(country_tag) { return Err("State is not controlled by this country"); }
+    let national_queued: usize = queues.iter()
+        .filter(|(id, _)| world.states.get(id).is_some_and(|state| state.owner.as_deref() == Some(country_tag)))
+        .map(|(_, queue)| queue.len()).sum();
+    if national_queued >= MAX_CONSTRUCTION_QUEUE_ITEMS { return Err("Country construction queue is full"); }
     let existing = queues.get(&state_id);
     let queued_type = existing.map_or(0usize, |queue| queue.iter().filter(|p| p.building == building).count());
     let current_level = usize::from(building.built_count(state.economy));
     if current_level + queued_type >= usize::from(rules.max_state_level(building)) {
         return Err("Maximum building level reached");
     }
-    if building.shares_slots() {
+    if rules.shares_slots(building) {
         let occupied = usize::from(state.economy.occupied_shared_slots());
-        let reserved = existing.map_or(0, queued_shared_slots);
+        let reserved = existing.map_or(0, |queue| queued_shared_slots_with_rules(queue, rules));
         if occupied + reserved >= shared_slot_limit(world, state_id, rules).unwrap_or(0) {
             return Err("No shared building slots available");
         }
@@ -476,52 +551,115 @@ pub fn cancel_project(queues: &mut ConstructionQueues, state_id: u32, index: usi
     removed
 }
 
-/// Simulation tick with explicit player-controlled state priority. The first line
-/// takes up to 15 CIV, then the next. Each state's queue is serial for now.
+/// One independently scheduled project. Up to 15 CIV are assigned per line.
+/// Two queued projects in the same state can use separate lines concurrently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineAllocation {
+    pub state_id: u32,
+    pub project_index: usize,
+    pub civilian_factories: u32,
+}
+
+/// An ordered state list is kept for the existing UI. All projects in a state
+/// retain insertion order, followed by unlisted states in ascending ID order.
+pub fn allocate_factories(
+    world: &World, country_tag: &str, queues: &ConstructionQueues,
+    priority: &[u32], rules: &BuildingRules, policy: CountryConstructionPolicy,
+) -> Vec<LineAllocation> {
+    let Some(capacity) = country_capacity(world, country_tag, policy) else { return Vec::new(); };
+    let mut available = capacity.available;
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    let mut ordered = Vec::new();
+    for id in priority {
+        if seen.insert(*id) { ordered.push(*id); }
+    }
+    let mut other: Vec<u32> = queues.keys().copied().filter(|id| seen.insert(*id)).collect();
+    other.sort_unstable();
+    ordered.extend(other);
+    for state_id in ordered {
+        if available == 0 { break; }
+        let Some(state) = world.states.get(&state_id) else { continue };
+        if state.owner.as_deref() != Some(country_tag) { continue; }
+        let Some(queue) = queues.get(&state_id) else { continue; };
+        for (project_index, project) in queue.iter().enumerate() {
+            if available == 0 { break; }
+            if !project.cost.is_finite() || !project.progress.is_finite() { continue; }
+            if project.progress >= project.cost { continue; }
+            let assigned = available.min(rules.max_civilian_factories_per_line);
+            if assigned == 0 { break; }
+            available -= assigned;
+            result.push(LineAllocation { state_id, project_index, civilian_factories: assigned });
+        }
+    }
+    result
+}
+
+pub fn daily_construction_points(
+    rules: &BuildingRules, policy: CountryConstructionPolicy,
+    modifiers: &ConstructionModifiers, state_id: u32, building: BuildingType,
+    infrastructure: u16, assigned_civilian: u32,
+) -> f32 {
+    let policy_bonus = if policy.construction_speed_bonus.is_finite() { policy.construction_speed_bonus } else { 0.0 };
+    let bonuses = (modifiers.speed_factor(state_id, building) + policy_bonus).max(0.0);
+    let infrastructure_factor = rules.infrastructure_speed_multiplier(infrastructure, building);
+    let speed = assigned_civilian as f32 * rules.base_factory_speed * bonuses * infrastructure_factor;
+    if speed.is_finite() { speed.max(0.0) } else { 0.0 }
+}
+
+pub fn estimated_days_remaining(project: &ConstructionProject, daily_points: f32) -> Option<u32> {
+    if !project.progress.is_finite() || !project.cost.is_finite() { return None; }
+    if project.progress >= project.cost { return Some(0); }
+    if !daily_points.is_finite() || daily_points <= 0.0 { return None; }
+    let days = ((project.cost - project.progress) / daily_points).ceil();
+    if days > u32::MAX as f32 { None } else { Some(days as u32) }
+}
+
+/// Fully configurable daily simulation. Compute every line's output against the
+/// state of the world at day start, then commit all completed buildings together.
+/// This avoids a newly completed infrastructure level affecting a different line
+/// on the SAME day, or a freshly completed civilian factory working that day.
+pub fn advance_day_with_modifiers(
+    world: &mut World, country_tag: &str, queues: &mut ConstructionQueues,
+    priority: &[u32], rules: &BuildingRules, policy: CountryConstructionPolicy,
+    modifiers: &ConstructionModifiers,
+) {
+    let allocations = allocate_factories(world, country_tag, queues, priority, rules, policy);
+    let mut completed: Vec<(u32, usize, BuildingType)> = Vec::new();
+    for line in allocations {
+        let Some(state) = world.states.get(&line.state_id) else { continue };
+        let infrastructure = state.economy.infrastructure;
+        let Some(project) = queues.get_mut(&line.state_id)
+            .and_then(|queue| queue.get_mut(line.project_index)) else { continue; };
+        let speed = daily_construction_points(
+            rules, policy, modifiers, line.state_id, project.building,
+            infrastructure, line.civilian_factories,
+        );
+        project.progress += speed;
+        if project.progress + f32::EPSILON >= project.cost {
+            completed.push((line.state_id, line.project_index, project.building));
+        }
+    }
+    // Indices are removed in descending order, or the next removal would shift.
+    completed.sort_unstable_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    for (state_id, index, building) in completed {
+        if let Some(state) = world.states.get_mut(&state_id) {
+            building.add_one(&mut state.economy);
+        }
+        cancel_project(queues, state_id, index);
+    }
+}
+
 pub fn advance_day_ordered(
     world: &mut World, country_tag: &str, queues: &mut ConstructionQueues,
     priority: &[u32], rules: &BuildingRules, policy: CountryConstructionPolicy,
 ) {
-    let Some(capacity) = country_capacity(world, country_tag, policy) else { return; };
-    let mut available_factories = capacity.available;
-    if available_factories == 0 { return; }
-
-    let mut state_ids: Vec<u32> = Vec::new();
-    let mut seen = HashSet::new();
-    for id in priority {
-        if seen.insert(*id) { state_ids.push(*id); }
-    }
-    // Enqueued projects without an explicit priority remain playable, ordered
-    // by state ID. A different country's state cannot use our CIV pool.
-    let mut fallback: Vec<u32> = queues.keys().copied().filter(|id| !seen.contains(id)).collect();
-    fallback.sort_unstable();
-    state_ids.extend(fallback);
-
-    let national_multiplier = if policy.construction_speed_bonus.is_finite() {
-        (1.0 + policy.construction_speed_bonus).max(0.0)
-    } else { 1.0 };
-
-    for state_id in state_ids {
-        if available_factories == 0 { break; }
-        let Some(state) = world.states.get(&state_id) else { continue; };
-        if state.owner.as_deref() != Some(country_tag) { continue; }
-        let infrastructure = state.economy.infrastructure;
-        let Some(project) = queues.get_mut(&state_id).and_then(|queue| queue.front_mut()) else { continue; };
-        let assigned = available_factories.min(rules.max_civilian_factories_per_line);
-        available_factories -= assigned;
-        let multiplier = rules.infrastructure_speed_multiplier(infrastructure, project.building) * national_multiplier;
-        project.progress += assigned as f32 * rules.base_factory_speed * multiplier;
-        if project.progress + f32::EPSILON >= project.cost {
-            let building = project.building;
-            if let Some(state) = world.states.get_mut(&state_id) {
-                building.add_one(&mut state.economy);
-            }
-            cancel_project(queues, state_id, 0);
-        }
-    }
+    advance_day_with_modifiers(
+        world, country_tag, queues, priority, rules, policy, &ConstructionModifiers::default(),
+    );
 }
 
-/// Legacy entry point used in tests; no explicit priority or economic policy.
+/// Legacy entry point for a default economy (laws are not inferred from a tag).
 pub fn advance_day(world: &mut World, country_tag: &str, queues: &mut ConstructionQueues, rules: &BuildingRules) {
     advance_day_ordered(world, country_tag, queues, &[], rules, CountryConstructionPolicy::default());
 }
