@@ -249,6 +249,99 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
     Ok(states)
 }
 
+
+fn parse_state_owner_history(entries: &[Entry], map_date: (u32, u32, u32)) -> Option<String> {
+    let mut owner = None;
+    let mut latest_date = None;
+
+    // The undated owner is the default. A dated history block overrides it only
+    // when its date is at or before the selected bookmark.
+    for entry in entries {
+        let Entry::Pair(key, value) = entry else { continue };
+        if key == "owner" {
+            if let Value::Atom(tag) = value {
+                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    owner = Some(tag.clone());
+                }
+            }
+            continue;
+        }
+
+        let Some(date) = parse_history_date(key) else { continue };
+        if date > map_date || latest_date.is_some_and(|previous| date < previous) {
+            continue;
+        }
+        let Value::Block(date_entries) = value else { continue };
+        if let Some(tag) = date_entries.iter().find_map(|entry| match entry {
+            Entry::Pair(field, Value::Atom(tag))
+                if field == "owner"
+                    && !tag.is_empty()
+                    && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                Some(tag.clone())
+            }
+            _ => None,
+        }) {
+            owner = Some(tag);
+            latest_date = Some(date);
+        }
+    }
+
+    owner
+}
+
+fn parse_history_date(value: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = value.split('.');
+    let year = parts.next()?.parse::<u32>().ok()?;
+    let month = parts.next()?.parse::<u32>().ok()?;
+    let day = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || month == 0 || month > 12 || day == 0 || day > 31 {
+        return None;
+    }
+    Some((year, month, day))
+}
+
+/// Read owners from the Clausewitz syntax tree, not from line patterns.
+pub fn parse_state_owners(
+    source: &str,
+    map_date: (u32, u32, u32),
+) -> Result<HashMap<u32, String>, String> {
+    let tokens = tokenize(source)?;
+    let mut cursor = 0;
+    let root = parse_entries(&tokens, &mut cursor, false)?;
+    let mut owners = HashMap::new();
+
+    for entry in root {
+        let Entry::Pair(key, Value::Block(state_fields)) = entry else { continue };
+        if key != "state" {
+            continue;
+        }
+
+        let mut state_id = None;
+        let mut history = None;
+        for field in &state_fields {
+            match field {
+                Entry::Pair(name, value) if name == "id" => {
+                    state_id = Some(numeric_atom(value, "state ID")?);
+                }
+                Entry::Pair(name, Value::Block(entries)) if name == "history" => {
+                    history = Some(entries.as_slice());
+                }
+                _ => {}
+            }
+        }
+
+        let Some(id) = state_id else { continue };
+        if let Some(entries) = history {
+            if let Some(owner) = parse_state_owner_history(entries, map_date) {
+                owners.insert(id, owner);
+            }
+        }
+    }
+
+    Ok(owners)
+}
+
 pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("Could not read state directory {}: {error}", directory.display()))?;
@@ -294,6 +387,38 @@ pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String
 #[cfg(test)]
 mod tests {
     use super::parse_state_file;
+
+
+    #[test]
+    fn parses_owner_from_inline_history_block() {
+        let source = r#"state = { id = 42 history = { owner = GER } provinces = { 100 101 } }"#;
+        let owners = super::parse_state_owners(source, (1936, 1, 1)).unwrap();
+        assert_eq!(owners.get(&42).map(String::as_str), Some("GER"));
+    }
+
+    #[test]
+    fn uses_latest_owner_date_not_after_bookmark() {
+        let source = r#"
+            state = {
+                id = 42
+                history = {
+                    owner = GER
+                    1936.1.1 = { owner = POL }
+                    1939.9.1 = { owner = SOV }
+                }
+                provinces = { 100 }
+            }
+        "#;
+        let owners = super::parse_state_owners(source, (1936, 1, 1)).unwrap();
+        assert_eq!(owners.get(&42).map(String::as_str), Some("POL"));
+    }
+
+    #[test]
+    fn does_not_treat_add_owner_as_state_owner() {
+        let source = r#"state = { id = 42 history = { add_owner = GER } provinces = { 100 } }"#;
+        let owners = super::parse_state_owners(source, (1936, 1, 1)).unwrap();
+        assert!(owners.get(&42).is_none());
+    }
 
     #[test]
     fn parses_state_id_and_provinces_while_ignoring_nested_history() {
