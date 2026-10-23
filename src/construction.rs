@@ -378,6 +378,39 @@ mod tests {
     }
 
     #[test]
+    fn parser_reads_top_level_building_cost_fields() {
+        let source = r#"
+            industrial_complex = {
+                base_cost = 12345
+                per_level_extra_cost = 250
+                per_controlled_building_extra_cost = 75
+                infrastructure_construction_effect = yes
+                icon = {
+                    x = 1
+                }
+            }
+        "#;
+        let block = find_definition_block(source, "industrial_complex").unwrap();
+        assert_eq!(top_level_number(block, "base_cost"), Some(12345.0));
+        assert_eq!(top_level_number(block, "per_level_extra_cost"), Some(250.0));
+        assert_eq!(top_level_number(block, "per_controlled_building_extra_cost"), Some(75.0));
+        assert_eq!(top_level_yes_no(block, "infrastructure_construction_effect"), Some(true));
+        assert_eq!(top_level_number(block, "x"), None);
+    }
+
+    #[test]
+    fn project_cost_includes_controlled_building_surcharge() {
+        let mut rules = BuildingRules::default();
+        rules.definitions.insert(BuildingType::Dockyard, BuildingDefinition {
+            base_cost: 100.0,
+            per_level_extra_cost: 20.0,
+            per_controlled_building_extra_cost: 5.0,
+            infrastructure_construction_effect: false,
+        });
+        assert_eq!(rules.project(BuildingType::Dockyard, 2, 3).cost, 155.0);
+    }
+
+    #[test]
     fn project_cost_and_progress_are_explicit() {
         let project = ConstructionProject::new(BuildingType::MilitaryFactory, 2);
         assert_eq!(project.cost, 10_800.0);
