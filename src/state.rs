@@ -34,6 +34,8 @@ pub struct StateEconomy {
 pub struct StateDefinition {
     pub id: u32,
     pub province_ids: Vec<u32>,
+    pub state_category: Option<String>,
+    pub shared_building_slots: u16,
     pub economy: StateEconomy,
 }
 
@@ -41,6 +43,7 @@ pub struct StateDefinition {
 pub struct StateMembership {
     pub state_by_province: HashMap<u32, u32>,
     pub economy_by_state: HashMap<u32, StateEconomy>,
+    pub shared_slots_by_state: HashMap<u32, u16>,
     pub state_count: usize,
 }
 
@@ -238,10 +241,14 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
         let economy = read_economy(&block);
         let mut id = None;
         let mut provinces = None;
+        let mut state_category = None;
         for field in block {
             match field {
                 Entry::Pair(field_name, value) if field_name == "id" => {
                     id = Some(numeric_atom(&value, "state ID")?);
+                }
+                Entry::Pair(field_name, Value::Atom(category)) if field_name == "state_category" => {
+                    state_category = Some(category);
                 }
                 Entry::Pair(field_name, Value::Block(values)) if field_name == "provinces" => {
                     let mut province_ids = Vec::new();
@@ -286,7 +293,13 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
                 return Err(format!("State {id} lists province {province_id} more than once"));
             }
         }
-        states.push(StateDefinition { id, province_ids, economy });
+        states.push(StateDefinition {
+            id,
+            province_ids,
+            state_category,
+            shared_building_slots: 0,
+            economy,
+        });
     }
 
     if states.is_empty() {
@@ -388,7 +401,71 @@ pub fn parse_state_owners(
     Ok(owners)
 }
 
-pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String> {
+/// Parse state-category definitions and their base shared building-slot counts.
+pub fn parse_state_categories(source: &str) -> Result<HashMap<String, u16>, String> {
+    let tokens = tokenize(source)?;
+    let mut cursor = 0;
+    let root = parse_entries(&tokens, &mut cursor, false)?;
+    let mut categories = HashMap::new();
+
+    for entry in root {
+        let Entry::Pair(root_name, Value::Block(category_entries)) = entry else { continue };
+        if root_name != "state_categories" {
+            continue;
+        }
+        for category_entry in category_entries {
+            let Entry::Pair(category_name, Value::Block(fields)) = category_entry else { continue };
+            for field in fields {
+                if let Entry::Pair(name, Value::Atom(raw)) = field {
+                    if name == "local_building_slots" {
+                        let slots = raw.parse::<u16>().map_err(|_| {
+                            format!("Invalid local_building_slots value '{raw}' in category {category_name}")
+                        })?;
+                        categories.insert(category_name.clone(), slots);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(categories)
+}
+
+fn default_state_category_slots() -> HashMap<String, u16> {
+    [
+        ("wasteland", 0), ("enclave", 0), ("tiny_island", 0),
+        ("pastoral", 1), ("small_island", 1), ("rural", 2),
+        ("town", 4), ("large_town", 5), ("city", 6),
+        ("large_city", 8), ("metropolis", 10), ("megalopolis", 12),
+    ].into_iter().map(|(name, slots)| (name.to_owned(), slots)).collect()
+}
+
+fn load_state_category_slots(directory: &Path) -> Result<HashMap<String, u16>, String> {
+    let mut categories = default_state_category_slots();
+    if !directory.is_dir() {
+        return Ok(categories);
+    }
+
+    let entries = fs::read_dir(directory)
+        .map_err(|error| format!("Could not read state-category directory {}: {error}", directory.display()))?;
+    let mut paths: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("txt"))
+        .collect();
+    paths.sort();
+
+    for path in paths {
+        let source = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
+        let parsed = parse_state_categories(&source)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        categories.extend(parsed);
+    }
+    Ok(categories)
+}
+
+pub fn load_state_membership(directory: &Path, category_directory: &Path) -> Result<StateMembership, String> {
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("Could not read state directory {}: {error}", directory.display()))?;
     let mut paths: Vec<PathBuf> = entries
@@ -402,6 +479,7 @@ pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String
         return Err(format!("No state .txt files found in {}", directory.display()));
     }
 
+    let category_slots = load_state_category_slots(category_directory)?;
     let mut membership = StateMembership::default();
     let mut state_ids = std::collections::HashSet::new();
 
@@ -416,6 +494,11 @@ pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String
                 return Err(format!("Duplicate state ID {} (found in {})", state.id, path.display()));
             }
             membership.economy_by_state.insert(state.id, state.economy);
+            let shared_slots = state.state_category.as_ref()
+                .and_then(|category| category_slots.get(category))
+                .copied()
+                .unwrap_or(state.shared_building_slots);
+            membership.shared_slots_by_state.insert(state.id, shared_slots);
             for province_id in state.province_ids {
                 if let Some(previous_state) = membership.state_by_province.insert(province_id, state.id) {
                     return Err(format!(
@@ -433,8 +516,28 @@ pub fn load_state_membership(directory: &Path) -> Result<StateMembership, String
 
 #[cfg(test)]
 mod tests {
-    use super::parse_state_file;
+    use super::{parse_state_categories, parse_state_file};
 
+
+    #[test]
+    fn parses_state_category_and_its_shared_slot_limit() {
+        let categories = parse_state_categories(r#"
+            state_categories = {
+                rural = { local_building_slots = 2 color = { 1 2 3 } }
+                metropolis = { local_building_slots = 10 }
+            }
+        "#).unwrap();
+        assert_eq!(categories.get("rural"), Some(&2));
+        assert_eq!(categories.get("metropolis"), Some(&10));
+    }
+
+    #[test]
+    fn reads_state_category_from_state_definition() {
+        let states = parse_state_file(
+            r#"state = { id = 4 state_category = city provinces = { 41 42 } }"#
+        ).unwrap();
+        assert_eq!(states[0].state_category.as_deref(), Some("city"));
+    }
 
     #[test]
     fn parses_owner_from_inline_history_block() {
