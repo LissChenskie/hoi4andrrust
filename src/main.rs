@@ -1,9 +1,11 @@
 mod state;
 mod game;
 mod world;
+mod construction;
 
 use game::GameState;
 use world::World;
+use construction::{BuildingType, ConstructionProject, ConstructionQueues};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1406,7 +1408,7 @@ fn draw_map_viewer(
     load_error: &str,
     selected: &mut Option<(u32, [u8; 3], u32, u32)>,
     player_country: Option<&str>,
-    construction_queue: &mut HashMap<u32, Vec<&'static str>>,
+    construction_queue: &mut ConstructionQueues,
     construction_menu: &mut Option<u32>,
 ) -> Screen {
     draw_background();
@@ -1707,7 +1709,7 @@ fn draw_map_viewer(
         // Infrastructure remains separate: it changes construction speed, not slot capacity.
         let built = usize::from(economy.occupied_shared_slots());
         let state_queue = state_id.and_then(|id| construction_queue.get(&id));
-        let queued_count = state_queue.map_or(0, Vec::len);
+        let queued_count = state_queue.map_or(0, |queue| queue.len());
         let base_slots = selected_state.map(|state| usize::from(state.shared_building_slots)).unwrap_or(0);
         // Until technology/focus slot bonuses are simulated, never hide starting factories
         // if they exceed the base category value in a modded or modified save.
@@ -1734,19 +1736,9 @@ fn draw_map_viewer(
         slot_types.extend(std::iter::repeat_n(("R", Color::from_rgba(182, 93, 154, 255)), usize::from(economy.rocket_sites)));
         slot_types.extend(std::iter::repeat_n(("A", Color::from_rgba(105, 143, 185, 255)), usize::from(economy.nuclear_reactors)));
         if let Some(queue) = state_queue {
-            for kind in queue {
-                let glyph = match *kind {
-                    "Civilian factory" => "c",
-                    "Military factory" => "m",
-                    "Dockyard" => "n",
-                    "Synthetic refinery" => "s",
-                    "Fuel silo" => "f",
-                    "Rocket site" => "r",
-                    "Nuclear reactor" => "a",
-                    _ => "?",
-                };
+            for project in queue {
                 let color = Color::from_rgba(112, 126, 139, 255);
-                slot_types.push((glyph, color));
+                slot_types.push((project.building.glyph(), color));
             }
         }
         for index in 0..slot_count {
@@ -1803,25 +1795,24 @@ fn draw_map_viewer(
             if *construction_menu == Some(id) {
                 let menu_y = panel_y + panel_h - 58.0;
                 draw_rectangle(table_x, menu_y - 5.0, table_w, 55.0, Color::from_rgba(13, 22, 31, 250));
-                let options: [(&str, &'static str); 7] = [
-                    ("Civ", "Civilian factory"), ("Mil", "Military factory"),
-                    ("Dock", "Dockyard"), ("Synth", "Synthetic refinery"),
-                    ("Fuel", "Fuel silo"), ("Rocket", "Rocket site"),
-                    ("Nuke", "Nuclear reactor"),
-                ];
+                let options = BuildingType::ALL;
                 let columns = if compact { 4 } else { 7 };
                 let rows = (options.len() + columns - 1) / columns;
                 let option_gap = 4.0;
                 let option_w = (table_w - option_gap * (columns as f32 - 1.0)) / columns as f32;
-                for (index, (label, kind)) in options.iter().enumerate() {
+                for (index, building) in options.iter().enumerate() {
                     let col = index % columns;
                     let row = index / columns;
                     let bx = table_x + col as f32 * (option_w + option_gap);
                     let by = menu_y + row as f32 * 25.0;
-                    if button(label, bx, by, option_w, 22.0) {
+                    if button(building.short_label(), bx, by, option_w, 22.0) {
                         let queue = construction_queue.entry(id).or_default();
                         if built + queue.len() < slot_count {
-                            queue.push(*kind);
+                            let level = selected_state
+                                .map(|state| building.built_count(state.economy))
+                                .unwrap_or(0)
+                                .saturating_add(queue.iter().filter(|p| p.building == *building).count() as u16);
+                            queue.push_back(ConstructionProject::new(*building, level));
                         }
                         *construction_menu = None;
                     }
@@ -1885,7 +1876,7 @@ async fn main() {
     let mut selected_country: Option<String> = None;
     let mut country_page = 0usize;
     let mut game = GameState::default();
-    let mut construction_queue: HashMap<u32, Vec<&'static str>> = HashMap::new();
+    let mut construction_queue: ConstructionQueues = ConstructionQueues::new();
     let mut construction_menu: Option<u32> = None;
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
@@ -1911,7 +1902,14 @@ async fn main() {
                         game.set_speed(speed);
                     }
                 }
-                game.update(get_frame_time());
+                let daily_ticks = game.update(get_frame_time());
+                if daily_ticks > 0 {
+                    if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
+                        for _ in 0..daily_ticks {
+                            construction::advance_day(&mut current_map.world, tag, &mut construction_queue);
+                        }
+                    }
+                }
                 if game.date != cached_date {
                     cached_date = game.date;
                     cached_date_label = game.date.display();
