@@ -305,26 +305,60 @@ fn draw_map_viewer(
     match map {
         Some(map) => {
             if compact {
-                draw_text(&format!("{} × {}  |  {} provinces", map.width, map.height, map.province_count), 24.0, 104.0, 16.0, LIGHTGRAY);
+                draw_text(
+                    &format!("{} × {}  |  {} provinces", map.width, map.height, map.province_count),
+                    24.0,
+                    104.0,
+                    15.0,
+                    LIGHTGRAY,
+                );
                 if let Some((id, rgb, x, y)) = selected {
-                    draw_text(&format!("Province {id} at {x},{y}  RGB {},{},{}", rgb[0], rgb[1], rgb[2]), 24.0, 133.0, 14.0, WHITE);
+                    draw_text(
+                        &format!("Province {id} at {x},{y}  RGB {},{},{}", rgb[0], rgb[1], rgb[2]),
+                        24.0,
+                        133.0,
+                        13.0,
+                        WHITE,
+                    );
+                    let state_label = map
+                        .state_by_province
+                        .get(&id)
+                        .map(|state_id| format!("State ID: {state_id}"))
+                        .unwrap_or_else(|| "State ID: not mapped".to_owned());
+                    draw_text(&state_label, 24.0, 160.0, 13.0, LIGHTGRAY);
                 } else {
-                    draw_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 14.0, LIGHTGRAY);
+                    draw_text("Tap a province to inspect its ID and colour", 24.0, 133.0, 13.0, LIGHTGRAY);
+                    draw_text(&format!("States loaded: {}", map.state_count), 24.0, 160.0, 13.0, LIGHTGRAY);
                 }
             } else {
                 draw_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
                 draw_text(&format!("Defined provinces: {}", map.province_count), 28.0, 170.0, 16.0, LIGHTGRAY);
                 draw_text("Source raster: loaded", 28.0, 202.0, 15.0, Color::from_rgba(130, 200, 150, 255));
+                draw_text(
+                    &format!("States loaded: {}", map.state_count),
+                    28.0,
+                    228.0,
+                    14.0,
+                    LIGHTGRAY,
+                );
 
                 if let Some((id, rgb, x, y)) = selected {
-                    draw_rectangle(26.0, 238.0, 210.0, 124.0, Color::from_rgba(27, 44, 59, 255));
-                    draw_text("SELECTED PIXEL", 38.0, 263.0, 15.0, WHITE);
-                    draw_text(&format!("Province ID: {id}"), 38.0, 290.0, 17.0, WHITE);
-                    draw_text(&format!("Pixel: {x}, {y}"), 38.0, 317.0, 15.0, LIGHTGRAY);
-                    draw_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 342.0, 14.0, LIGHTGRAY);
+                    draw_rectangle(26.0, 248.0, 210.0, 154.0, Color::from_rgba(27, 44, 59, 255));
+                    draw_text("SELECTED PIXEL", 38.0, 273.0, 15.0, WHITE);
+                    draw_text(&format!("Province ID: {id}"), 38.0, 300.0, 17.0, WHITE);
+                    draw_text(&format!("Pixel: {x}, {y}"), 38.0, 327.0, 15.0, LIGHTGRAY);
+                    draw_text(&format!("RGB: {}, {}, {}", rgb[0], rgb[1], rgb[2]), 38.0, 352.0, 14.0, LIGHTGRAY);
+                    let state_label = map
+                        .state_by_province
+                        .get(&id)
+                        .map(|state_id| format!("State ID: {state_id}"))
+                        .unwrap_or_else(|| "State ID: not mapped".to_owned());
+                    draw_text(&state_label, 38.0, 380.0, 14.0, LIGHTGRAY);
                 } else {
-                    draw_text("Tap a province to", 28.0, 252.0, 16.0, LIGHTGRAY);
-                    draw_text("inspect its ID and RGB.", 28.0, 275.0, 16.0, LIGHTGRAY);
+                    draw_text("Tap a province to", 28.0, 263.0, 16.0, LIGHTGRAY);
+                    draw_text("inspect its ID and RGB.", 28.0, 286.0, 16.0, LIGHTGRAY);
+                    let status: String = map.state_load_status.chars().take(27).collect();
+                    draw_text(&status, 28.0, 320.0, 12.0, LIGHTGRAY);
                 }
             }
 
