@@ -29,6 +29,7 @@ struct ProvinceMap {
     state_by_province: HashMap<u32, u32>,
     state_count: usize,
     state_load_status: String,
+    state_border_texture: Option<Texture2D>,
 }
 
 impl ProvinceMap {
@@ -70,6 +71,18 @@ impl ProvinceMap {
                 Err(error) => (HashMap::new(), 0, error),
             };
 
+        let state_border_texture = if state_count > 0 {
+            Some(build_state_border_texture(
+                width,
+                height,
+                &rgba,
+                &id_by_rgb,
+                &state_by_province,
+            ))
+        } else {
+            None
+        };
+
         Ok(Self {
             texture,
             width,
@@ -80,6 +93,7 @@ impl ProvinceMap {
             state_by_province,
             state_count,
             state_load_status,
+            state_border_texture,
         })
     }
 
@@ -92,6 +106,52 @@ impl ProvinceMap {
         let rgb = [self.rgba[offset], self.rgba[offset + 1], self.rgba[offset + 2]];
         self.id_by_rgb.get(&rgb).copied().map(|id| (id, rgb))
     }
+}
+
+
+fn build_state_border_texture(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_by_province: &HashMap<u32, u32>,
+) -> Texture2D {
+    let pixel_count = width as usize * height as usize;
+    let mut state_ids = vec![0u32; pixel_count];
+
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        if let Some(province_id) = id_by_rgb.get(&rgb) {
+            state_ids[index] = state_by_province.get(province_id).copied().unwrap_or(0);
+        }
+    }
+
+    let mut overlay = vec![0u8; pixel_count * 4];
+    for y in 0..height as usize {
+        for x in 0..width as usize {
+            let index = y * width as usize + x;
+            let state_id = state_ids[index];
+            if state_id == 0 {
+                continue;
+            }
+
+            let differs = (x > 0 && state_ids[index - 1] != state_id)
+                || (x + 1 < width as usize && state_ids[index + 1] != state_id)
+                || (y > 0 && state_ids[index - width as usize] != state_id)
+                || (y + 1 < height as usize && state_ids[index + width as usize] != state_id);
+            if differs {
+                let offset = index * 4;
+                overlay[offset] = 235;
+                overlay[offset + 1] = 198;
+                overlay[offset + 2] = 120;
+                overlay[offset + 3] = 230;
+            }
+        }
+    }
+
+    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+    texture.set_filter(FilterMode::Nearest);
+    texture
 }
 
 /// Parse HOI4 definition.csv into an RGB -> province ID index.
@@ -374,6 +434,18 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
+            if let Some(state_texture) = &map.state_border_texture {
+                draw_texture_ex(
+                    state_texture,
+                    rect.x,
+                    rect.y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(rect.w, rect.h)),
+                        ..Default::default()
+                    },
+                );
+            }
             draw_text("Nearest-neighbour raster view", rect.x, screen_height() - 12.0, 14.0, LIGHTGRAY);
         }
         None => {
