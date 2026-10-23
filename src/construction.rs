@@ -10,6 +10,7 @@ pub const BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY: f32 = 5.0;
 pub const MAX_CIVILIAN_FACTORIES_PER_LINE: u32 = 15;
 pub const MAX_SHARED_BUILDING_SLOTS: u16 = 30;
 pub const BUILDING_DEFINITIONS_DIRECTORY: &str = "data/hoi4/common/buildings";
+pub const DEFINES_DIRECTORY: &str = "data/hoi4/common/defines";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BuildingType {
@@ -118,6 +119,7 @@ pub struct BuildingDefinition {
 #[derive(Debug, Clone)]
 pub struct BuildingRules {
     definitions: HashMap<BuildingType, BuildingDefinition>,
+    pub base_factory_speed: f32,
 }
 
 impl Default for BuildingRules {
@@ -131,7 +133,7 @@ impl Default for BuildingRules {
                 infrastructure_construction_effect: false,
             });
         }
-        Self { definitions }
+        Self { definitions, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY }
     }
 }
 
@@ -171,6 +173,23 @@ impl BuildingRules {
                 }
             }
         }
+        // Read baseline daily output from HOI4's Lua defines when available.
+        // Missing game files are expected in CI and fall back to the vanilla default.
+        if let Ok(entries) = fs::read_dir(DEFINES_DIRECTORY) {
+            let mut define_paths: Vec<_> = entries.flatten().map(|entry| entry.path())
+                .filter(|path| path.extension().is_some_and(|ext| ext == "lua"))
+                .collect();
+            define_paths.sort();
+            for path in define_paths {
+                if let Ok(text) = fs::read_to_string(path) {
+                    if let Some(value) = find_lua_number(&text, "BASE_FACTORY_SPEED") {
+                        if value.is_finite() && value > 0.0 {
+                            rules.base_factory_speed = value;
+                        }
+                    }
+                }
+            }
+        }
         rules
     }
 
@@ -188,6 +207,17 @@ impl BuildingRules {
                 + definition.per_controlled_building_extra_cost * controlled_building_count as f32).max(1.0),
         }
     }
+}
+
+fn find_lua_number(text: &str, field: &str) -> Option<f32> {
+    for raw_line in text.lines() {
+        let line = raw_line.split('#').next().unwrap_or("").trim();
+        let Some((name, value)) = line.split_once('=') else { continue; };
+        if name.trim() != field { continue; }
+        let token = value.trim().trim_end_matches(',').split_whitespace().next()?;
+        if let Ok(number) = token.parse::<f32>() { return Some(number); }
+    }
+    None
 }
 
 fn find_definition_block<'a>(text: &'a str, key: &str) -> Option<&'a str> {
@@ -347,7 +377,7 @@ pub fn advance_day(world: &mut World, country_tag: &str, queues: &mut Constructi
         } else {
             1.0
         };
-        project.progress += assigned as f32 * BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY * infrastructure_bonus;
+        project.progress += assigned as f32 * rules.base_factory_speed * infrastructure_bonus;
 
         if project.progress + f32::EPSILON >= project.cost {
             let building = project.building;
@@ -396,6 +426,12 @@ mod tests {
         assert_eq!(top_level_number(block, "per_controlled_building_extra_cost"), Some(75.0));
         assert_eq!(top_level_yes_no(block, "infrastructure_construction_effect"), Some(true));
         assert_eq!(top_level_number(block, "x"), None);
+    }
+
+    #[test]
+    fn defines_parser_reads_base_factory_speed() {
+        let source = "NBuildings = {\n BASE_FACTORY_SPEED = 5.0\n}";
+        assert_eq!(find_lua_number(source, "BASE_FACTORY_SPEED"), Some(5.0));
     }
 
     #[test]
