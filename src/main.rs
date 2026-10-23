@@ -119,11 +119,9 @@ struct ProvinceMap {
     state_name_by_id: HashMap<u32, String>,
     state_count: usize,
     state_load_status: String,
-    province_border_texture: Texture2D,
-    country_border_texture: Option<Texture2D>,
+    map_border_texture: Texture2D,
     state_ids_by_pixel: Vec<u32>,
     highlighted_state_texture: Option<(u32, Texture2D)>,
-    state_border_texture: Option<Texture2D>,
     political_texture: Texture2D,
     resources_texture: Texture2D,
     terrain_texture: Texture2D,
@@ -179,21 +177,7 @@ impl ProvinceMap {
                 Err(error) => (HashMap::new(), 0, error),
             };
 
-        let province_border_texture = build_province_border_texture(width, height, &rgba, &id_by_rgb);
-
         let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
-
-        let state_border_texture = if state_count > 0 {
-            Some(build_state_border_texture(
-                width,
-                height,
-                &rgba,
-                &id_by_rgb,
-                &state_by_province,
-            ))
-        } else {
-            None
-        };
 
         let state_name_by_id = load_state_names(Path::new(STATE_DIRECTORY_PATH));
         let (political_texture, resources_texture, terrain_texture, owner_by_state) = build_map_mode_textures(
@@ -205,11 +189,10 @@ impl ProvinceMap {
             &definition_text,
             Path::new(STATE_DIRECTORY_PATH),
         );
-        let country_border_texture = if state_count > 0 {
-            Some(build_country_border_texture(width, height, &rgba, &id_by_rgb, &state_ids_by_pixel, &owner_by_state))
-        } else {
-            None
-        };
+        // One combined static border layer reduces GPU texture memory and draw calls.
+        let map_border_texture = build_map_border_texture(
+            width, height, &rgba, &id_by_rgb, &state_ids_by_pixel, &owner_by_state,
+        );
         let resource_markers = build_resource_markers(
             width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
@@ -232,11 +215,9 @@ impl ProvinceMap {
             state_name_by_id,
             state_count,
             state_load_status,
-            province_border_texture,
-            country_border_texture,
+            map_border_texture,
             state_ids_by_pixel,
             highlighted_state_texture: None,
-            state_border_texture,
             political_texture,
             resources_texture,
             terrain_texture,
@@ -310,51 +291,6 @@ impl ProvinceMap {
 }
 
 
-fn build_state_border_texture(
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    id_by_rgb: &HashMap<[u8; 3], u32>,
-    state_by_province: &HashMap<u32, u32>,
-) -> Texture2D {
-    let pixel_count = width as usize * height as usize;
-    let mut state_ids = vec![0u32; pixel_count];
-
-    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-        let rgb = [pixel[0], pixel[1], pixel[2]];
-        if let Some(province_id) = id_by_rgb.get(&rgb) {
-            state_ids[index] = state_by_province.get(province_id).copied().unwrap_or(0);
-        }
-    }
-
-    let mut overlay = vec![0u8; pixel_count * 4];
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let index = y * width as usize + x;
-            let state_id = state_ids[index];
-            if state_id == 0 {
-                continue;
-            }
-
-            let differs = (x > 0 && state_ids[index - 1] != state_id)
-                || (x + 1 < width as usize && state_ids[index + 1] != state_id)
-                || (y > 0 && state_ids[index - width as usize] != state_id)
-                || (y + 1 < height as usize && state_ids[index + width as usize] != state_id);
-            if differs {
-                let offset = index * 4;
-                overlay[offset] = 235;
-                overlay[offset + 1] = 198;
-                overlay[offset + 2] = 120;
-                overlay[offset + 3] = 38;
-            }
-        }
-    }
-
-    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
-    texture.set_filter(FilterMode::Linear);
-    texture
-}
-
 fn build_state_ids_by_pixel(
     width: u32,
     height: u32,
@@ -372,7 +308,7 @@ fn build_state_ids_by_pixel(
     state_ids
 }
 
-fn build_country_border_texture(
+fn build_map_border_texture(
     width: u32,
     height: u32,
     rgba: &[u8],
@@ -380,44 +316,73 @@ fn build_country_border_texture(
     state_ids: &[u32],
     owner_by_state: &HashMap<u32, String>,
 ) -> Texture2D {
-    let pixel_count = width as usize * height as usize;
+    let w = width as usize;
+    let h = height as usize;
+    let pixel_count = w * h;
+
+    let mut province_ids = vec![0u32; pixel_count];
     let mut owner_ids_by_state = HashMap::<u32, u64>::new();
     for (state_id, owner) in owner_by_state {
-        let hash = owner.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211));
+        let hash = owner.bytes().fold(1469598103934665603u64, |h, b| {
+            (h ^ b as u64).wrapping_mul(1099511628211)
+        });
         owner_ids_by_state.insert(*state_id, hash.max(1));
     }
-
     let mut owners = vec![0u64; pixel_count];
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let rgb = [pixel[0], pixel[1], pixel[2]];
-        if id_by_rgb.contains_key(&rgb) {
-            if let Some(state_id) = state_ids.get(index) {
-                owners[index] = owner_ids_by_state.get(state_id).copied().unwrap_or(0);
-            }
+        if let Some(province_id) = id_by_rgb.get(&rgb) {
+            province_ids[index] = *province_id;
+            let state_id = state_ids.get(index).copied().unwrap_or(0);
+            owners[index] = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
         }
     }
 
     let mut overlay = vec![0u8; pixel_count * 4];
-    let w = width as usize;
-    let h = height as usize;
     for y in 0..h {
         for x in 0..w {
             let index = y * w + x;
+            let province_id = province_ids[index];
+            if province_id == 0 { continue; }
+            let state_id = state_ids.get(index).copied().unwrap_or(0);
             let owner = owners[index];
-            if owner == 0 { continue; }
-            let differs = (x > 0 && owners[index - 1] != 0 && owners[index - 1] != owner)
-                || (x + 1 < w && owners[index + 1] != 0 && owners[index + 1] != owner)
-                || (y > 0 && owners[index - w] != 0 && owners[index - w] != owner)
-                || (y + 1 < h && owners[index + w] != 0 && owners[index + w] != owner);
-            if differs {
-                let o = index * 4;
-                overlay[o] = 232;
-                overlay[o + 1] = 220;
-                overlay[o + 2] = 194;
-                overlay[o + 3] = 150;
+
+            let mut country_edge = false;
+            let mut state_edge = false;
+            let mut province_edge = false;
+            let neighbours = [
+                if x > 0 { Some(index - 1) } else { None },
+                if x + 1 < w { Some(index + 1) } else { None },
+                if y > 0 { Some(index - w) } else { None },
+                if y + 1 < h { Some(index + w) } else { None },
+            ];
+            for neighbour in neighbours.into_iter().flatten() {
+                if owner != 0 && owners[neighbour] != 0 && owners[neighbour] != owner {
+                    country_edge = true;
+                } else if state_id != 0 && state_ids.get(neighbour).copied().unwrap_or(0) != state_id {
+                    state_edge = true;
+                } else if province_ids[neighbour] != province_id {
+                    province_edge = true;
+                }
             }
+
+            let (color, alpha) = if country_edge {
+                ([232u8, 220u8, 194u8], 150u8)
+            } else if state_edge {
+                ([235u8, 198u8, 120u8], 38u8)
+            } else if province_edge {
+                ([20u8, 25u8, 31u8], 34u8)
+            } else {
+                continue;
+            };
+            let o = index * 4;
+            overlay[o] = color[0];
+            overlay[o + 1] = color[1];
+            overlay[o + 2] = color[2];
+            overlay[o + 3] = alpha;
         }
     }
+
     let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
     texture.set_filter(FilterMode::Linear);
     texture
@@ -444,51 +409,6 @@ fn build_highlighted_state_texture(width: u32, height: u32, state_ids: &[u32], s
             }
         }
     }
-    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
-    texture.set_filter(FilterMode::Linear);
-    texture
-}
-
-/// Build a subtle overlay for province boundaries, separate from the stronger state borders.
-fn build_province_border_texture(
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    id_by_rgb: &HashMap<[u8; 3], u32>,
-) -> Texture2D {
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let pixel_count = width_usize * height_usize;
-    let mut province_ids = vec![0u32; pixel_count];
-
-    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-        let rgb = [pixel[0], pixel[1], pixel[2]];
-        province_ids[index] = id_by_rgb.get(&rgb).copied().unwrap_or(0);
-    }
-
-    let mut overlay = vec![0u8; pixel_count * 4];
-    for y in 0..height_usize {
-        for x in 0..width_usize {
-            let index = y * width_usize + x;
-            let province_id = province_ids[index];
-            if province_id == 0 {
-                continue;
-            }
-
-            let differs = (x > 0 && province_ids[index - 1] != province_id)
-                || (x + 1 < width_usize && province_ids[index + 1] != province_id)
-                || (y > 0 && province_ids[index - width_usize] != province_id)
-                || (y + 1 < height_usize && province_ids[index + width_usize] != province_id);
-            if differs {
-                let offset = index * 4;
-                overlay[offset] = 20;
-                overlay[offset + 1] = 25;
-                overlay[offset + 2] = 31;
-                overlay[offset + 3] = 34;
-            }
-        }
-    }
-
     let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
     texture.set_filter(FilterMode::Linear);
     texture
@@ -1485,9 +1405,9 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            // Province borders remain subtle; the state overlay drawn later is brighter.
+            // Province, state and country borders share one texture to reduce GPU memory.
             draw_texture_ex(
-                &map.province_border_texture,
+                &map.map_border_texture,
                 rect.x,
                 rect.y,
                 WHITE,
@@ -1535,32 +1455,12 @@ fn draw_map_viewer(
                     draw_ui_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
                 }
             }
-            if let Some(country_texture) = &map.country_border_texture {
-                draw_texture_ex(
-                    country_texture,
-                    rect.x, rect.y, WHITE,
-                    DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
-                );
-            }
             if let Some((state_id, highlight_texture)) = &map.highlighted_state_texture {
                 let _ = state_id;
                 draw_texture_ex(
                     highlight_texture,
                     rect.x, rect.y, WHITE,
                     DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
-                );
-            }
-            if let Some(state_texture) = &map.state_border_texture {
-                draw_texture_ex(
-                    state_texture,
-                    rect.x,
-                    rect.y,
-                    WHITE,
-                    DrawTextureParams {
-                        source: Some(source_rect),
-                        dest_size: Some(vec2(rect.w, rect.h)),
-                        ..Default::default()
-                    },
                 );
             }
             draw_ui_text(
