@@ -1220,8 +1220,8 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            // Keep city labels limited to closer zoom; this controls clutter, not whether names load.
-            if map.zoom >= 1.8 {
+            // Show city markers from zoom 8.5; city names appear only at zoom 20.
+            if map.zoom >= 8.5 {
                 let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
@@ -1234,7 +1234,7 @@ fn draw_map_viewer(
                     let name = city.name.trim();
                     let lower = name.to_ascii_lowercase();
                     let looks_like_key = lower.starts_with("vp_") || lower.starts_with("victory_points_") || lower.starts_with("victory_points.");
-                    if !name.is_empty() && !looks_like_key {
+                    if map.zoom >= 20.0 && !name.is_empty() && !looks_like_key {
                         let size = (10.0 * label_scale).clamp(9.0, 13.0);
                         let tw = measure_ui_text(name, size as u16).width;
                         draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
