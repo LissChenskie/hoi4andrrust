@@ -1382,7 +1382,7 @@ fn map_view_rect(map: &ProvinceMap) -> Rect {
     let top = if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
     // Keep a dedicated lower strip for the HOI4-style state/province inspector.
-    let bottom_reserve = if compact { 218.0 } else { 205.0 };
+    let bottom_reserve = if compact { 270.0 } else { 260.0 };
     let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
@@ -1659,7 +1659,7 @@ fn draw_map_viewer(
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
-        let panel_h = if compact { 190.0 } else { 178.0 };
+        let panel_h = if compact { 242.0 } else { 232.0 };
         let panel_y = screen_height() - panel_h - 14.0;
         draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(19, 31, 43, 248));
         draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.5, Color::from_rgba(105, 126, 142, 255));
@@ -1692,26 +1692,71 @@ fn draw_map_viewer(
         let table_x = panel_x + 14.0;
         let table_y = panel_y + 72.0;
         let table_w = (panel_w - 28.0).max(120.0);
-        let label_w = table_w * 0.72;
-        let row_h = if compact { 19.0 } else { 20.0 };
-        draw_rectangle(table_x, table_y, table_w, row_h, Color::from_rgba(39, 52, 65, 255));
-        draw_ui_text("BUILDING", table_x + 8.0, table_y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, WHITE);
-        draw_ui_text("LEVEL", table_x + label_w + 8.0, table_y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, WHITE);
         let economy = state_id.and_then(|id| map.world.states.get(&id)).map(|state| state.economy).unwrap_or_default();
-        let rows = [
-            ("Civilian factories", economy.civilian_factories),
-            ("Military factories", economy.military_factories),
-            ("Naval dockyards", economy.dockyards),
-            ("Infrastructure", economy.infrastructure),
-        ];
-        for (index, (label, value)) in rows.iter().enumerate() {
-            let y = table_y + row_h * (index as f32 + 1.0);
-            if index % 2 == 0 { draw_rectangle(table_x, y, table_w, row_h, Color::from_rgba(25, 39, 52, 255)); }
-            draw_rectangle_lines(table_x, y, table_w, row_h, 0.5, Color::from_rgba(61, 79, 96, 255));
-            draw_ui_text(label, table_x + 8.0, y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, LIGHTGRAY);
-            draw_ui_text(&value.to_string(), table_x + label_w + 8.0, y + row_h * 0.72,
-                if compact { 10.0 } else { 12.0 }, WHITE);
+
+        // HOI4-inspired construction-slot board. Filled cells represent existing
+        // state buildings; empty cells are placeholders until state-category slot
+        // limits and the construction queue are connected to the simulation.
+        let built = usize::from(economy.civilian_factories)
+            + usize::from(economy.military_factories)
+            + usize::from(economy.dockyards);
+        let slot_count = built.max(15).min(30);
+        let free_slots = slot_count.saturating_sub(built);
+        draw_ui_text(
+            &format!("CONSTRUCTION SLOTS  ·  {built} built  ·  {free_slots} empty"),
+            table_x, table_y + 10.0, if compact { 10.0 } else { 12.0 },
+            Color::from_rgba(194, 205, 216, 255),
+        );
+
+        let grid_y = table_y + 19.0;
+        let gap = if compact { 4.0 } else { 6.0 };
+        let cell_w = ((table_w - gap * 14.0) / 15.0).clamp(18.0, 54.0);
+        let cell_h = if compact { 43.0 } else { 50.0 };
+        let total_grid_w = cell_w * 15.0 + gap * 14.0;
+        let grid_x = table_x + (table_w - total_grid_w).max(0.0) * 0.5;
+        let mut slot_types = Vec::with_capacity(slot_count);
+        slot_types.extend(std::iter::repeat_n(("C", Color::from_rgba(72, 139, 188, 255))).take(usize::from(economy.civilian_factories)));
+        slot_types.extend(std::iter::repeat_n(("M", Color::from_rgba(190, 91, 70, 255))).take(usize::from(economy.military_factories)));
+        slot_types.extend(std::iter::repeat_n(("N", Color::from_rgba(80, 158, 133, 255))).take(usize::from(economy.dockyards)));
+        for index in 0..slot_count {
+            let col = index % 15;
+            let row = index / 15;
+            let x = grid_x + col as f32 * (cell_w + gap);
+            let y = grid_y + row as f32 * (cell_h + gap);
+            let filled = slot_types.get(index);
+            let bg = filled.map(|(_, color)| *color)
+                .unwrap_or_else(|| Color::from_rgba(29, 43, 56, 255));
+            draw_rectangle(x, y, cell_w, cell_h, bg);
+            draw_rectangle_lines(x, y, cell_w, cell_h, 1.0,
+                if filled.is_some() { Color::from_rgba(207, 216, 223, 190) }
+                else { Color::from_rgba(79, 100, 117, 255) });
+
+            // Small factory pictogram: roof, main building, and smokestack.
+            if filled.is_some() {
+                let icon_color = WHITE;
+                let icon_w = (cell_w * 0.44).clamp(8.0, 19.0);
+                let icon_h = (cell_h * 0.34).clamp(8.0, 16.0);
+                let icon_x = x + (cell_w - icon_w) * 0.5;
+                let icon_y = y + cell_h * 0.19;
+                draw_rectangle(icon_x, icon_y + icon_h * 0.28, icon_w, icon_h * 0.72, icon_color);
+                draw_rectangle(icon_x + icon_w * 0.12, icon_y, icon_w * 0.18, icon_h * 0.48, icon_color);
+                draw_rectangle(icon_x + icon_w * 0.46, icon_y + icon_h * 0.56, icon_w * 0.12, icon_h * 0.18, bg);
+                draw_rectangle(icon_x + icon_w * 0.70, icon_y + icon_h * 0.56, icon_w * 0.12, icon_h * 0.18, bg);
+                let label = filled.map(|(glyph, _)| *glyph).unwrap_or("");
+                let label_w = measure_ui_text(label, 9).width;
+                draw_ui_text(label, x + (cell_w - label_w) * 0.5, y + cell_h - 5.0, 9.0, WHITE);
+            } else {
+                let plus_w = measure_ui_text("+", 16).width;
+                draw_ui_text("+", x + (cell_w - plus_w) * 0.5, y + cell_h * 0.62, 16.0,
+                    Color::from_rgba(111, 137, 155, 255));
+            }
         }
+
+        let legend_y = grid_y + cell_h + gap + (if slot_count > 15 { cell_h + gap } else { 0.0 }) + 13.0;
+        let legend_size = if compact { 9.0 } else { 11.0 };
+        draw_ui_text(&format!("C Civilian: {}   M Military: {}   N Dockyards: {}   INF: {}",
+            economy.civilian_factories, economy.military_factories, economy.dockyards, economy.infrastructure),
+            table_x, legend_y, legend_size, LIGHTGRAY);
     }
 
     Screen::MapViewer
