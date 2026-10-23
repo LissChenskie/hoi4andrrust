@@ -51,6 +51,7 @@ AnalyticalEngine is an AOC3 modding layer, not a source of HOI4 geography. Its d
 
 - Android file picker / SAF import is not implemented.
 - The app currently expects a relative local path.
-- Country ownership colours, zoom/pan, map-layer switching and Android file import are not implemented.
+- Country ownership colours, map-layer switching and Android file import are not implemented.
+- Basic centered zoom and drag-to-pan are implemented; more natural touch gestures remain future work.
 - The viewer displays the source province raster with a derived state-boundary overlay when state files are present; no simulation is present.
 - No local build or Android device test has been performed. GitHub Actions is used for remote formatting/check/test validation.
