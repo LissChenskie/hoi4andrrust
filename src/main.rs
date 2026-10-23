@@ -792,8 +792,9 @@ fn parse_vp_localisation(source: &str, names: &mut HashMap<u32, String>) {
         let Some(raw_id) = key.strip_prefix("VICTORY_POINTS_") else { continue };
         let Ok(id) = raw_id.parse::<u32>() else { continue };
 
-        // Accept the usual HOI4 format: VICTORY_POINTS_123:0 "City".
-        let value = value.trim();
+        // Accept HOI4 localisation lines such as VICTORY_POINTS_123:0 "City".
+        // Ignore trailing comments and remove the numeric localisation version.
+        let value = value.split('#').next().unwrap_or("").trim();
         let value = value.strip_prefix("0").map(str::trim_start).unwrap_or(value);
         let value = value.trim_matches('"').trim();
         if value.is_empty() { continue; }
@@ -1195,8 +1196,8 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            // Keep city markers hidden at the world-map scale; reveal them only after zooming in.
-            if map.zoom >= 1.8 {
+            // Show city names as soon as the map is open; zooming still improves readability.
+            if map.zoom >= 1.0 {
                 let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
