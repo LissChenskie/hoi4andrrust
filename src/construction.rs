@@ -307,24 +307,46 @@ pub fn advance_day(world: &mut World, country_tag: &str, queues: &mut Constructi
         .filter_map(|id| world.states.get(id))
         .map(|state| u32::from(state.economy.civilian_factories))
         .sum();
-
     if available_factories == 0 { return; }
 
-    for state_id in state_ids {
-        if available_factories == 0 { break; }
-        let project = match queues.get_mut(&state_id).and_then(|q| q.front_mut()) {
+    // Allocate the national civilian-factory pool across active state projects.
+    // The round-robin allocator avoids making the lowest-ID state consume the
+    // entire pool merely because it is visited first.
+    let active_ids: Vec<u32> = state_ids.into_iter()
+        .filter(|id| queues.get(id).is_some_and(|queue| !queue.is_empty()))
+        .filter(|id| world.states.contains_key(id))
+        .collect();
+    if active_ids.is_empty() { return; }
+
+    let mut assignments = vec![0u32; active_ids.len()];
+    while available_factories > 0 {
+        let mut assigned_this_round = false;
+        for assigned in &mut assignments {
+            if available_factories == 0 { break; }
+            if *assigned < MAX_CIVILIAN_FACTORIES_PER_LINE {
+                *assigned += 1;
+                available_factories -= 1;
+                assigned_this_round = true;
+            }
+        }
+        if !assigned_this_round { break; }
+    }
+
+    for (state_id, assigned) in active_ids.into_iter().zip(assignments) {
+        if assigned == 0 { continue; }
+        let infrastructure = match world.states.get(&state_id) {
+            Some(state) => state.economy.infrastructure,
+            None => continue,
+        };
+        let project = match queues.get_mut(&state_id).and_then(|queue| queue.front_mut()) {
             Some(project) => project,
             None => continue,
         };
-        let state = match world.states.get(&state_id) {
-            Some(state) => state,
-            None => continue,
-        };
-        let assigned = available_factories.min(MAX_CIVILIAN_FACTORIES_PER_LINE);
-        available_factories -= assigned;
         let infrastructure_bonus = if rules.definition(project.building).infrastructure_construction_effect {
-            (1.0 + f32::from(state.economy.infrastructure) * 0.1).min(1.5)
-        } else { 1.0 };
+            (1.0 + f32::from(infrastructure) * 0.1).min(1.5)
+        } else {
+            1.0
+        };
         project.progress += assigned as f32 * BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY * infrastructure_bonus;
 
         if project.progress + f32::EPSILON >= project.cost {
