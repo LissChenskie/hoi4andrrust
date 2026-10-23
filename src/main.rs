@@ -183,7 +183,7 @@ impl ProvinceMap {
     }
 
     fn set_zoom(&mut self, factor: f32) {
-        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 24.0);
+        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 12.0);
         self.clamp_pan();
     }
 
@@ -935,8 +935,9 @@ fn draw_map_viewer(
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let view = map_view_rect(map);
         if wheel_y != 0.0 && view.contains(mouse) {
-            let wheel_step = wheel_y.clamp(-1.0, 1.0);
-            map.set_zoom_at((wheel_step * 0.10).exp(), mouse, view);
+            let wheel_step = wheel_y.clamp(-3.0, 3.0);
+            // Small exponential steps: each wheel notch changes scale by only a few percent.
+            map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
         }
     }
     if compact {
@@ -1056,20 +1057,22 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            if map.zoom >= 2.2 {
-                let label_scale = (map.zoom.sqrt() * 0.9).clamp(0.8, 1.25);
+            if map.zoom >= 1.15 {
+                let label_scale = (map.zoom.sqrt() * 0.78).clamp(0.65, 1.35);
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
                         || city.y < source_rect.y || city.y > source_rect.y + source_rect.h { continue; }
                     let x = rect.x + (city.x - source_rect.x) / source_rect.w * rect.w;
                     let y = rect.y + (city.y - source_rect.y) / source_rect.h * rect.h;
-                    draw_circle(x, y, 3.2 * label_scale, Color::from_rgba(245, 224, 168, 255));
-                    draw_circle_lines(x, y, 4.2 * label_scale, 1.0, Color::from_rgba(25, 31, 38, 255));
-                    let size = (11.0 * label_scale).clamp(9.0, 15.0);
-                    let label = if city.name.is_empty() { format!("VP {}", city.victory_points) } else { city.name.clone() };
-                    let tw = measure_text(&label, None, size as u16, 1.0).width;
-                    draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 205));
-                    draw_text(&label, x + 9.0, y - 2.0, size, WHITE);
+                    draw_circle(x, y, 3.0 * label_scale, Color::from_rgba(245, 224, 168, 255));
+                    draw_circle_lines(x, y, 4.3 * label_scale, 1.0, Color::from_rgba(25, 31, 38, 255));
+                    if map.zoom >= 1.8 {
+                        let size = (11.0 * label_scale).clamp(9.0, 15.0);
+                        let label = if city.name.is_empty() { format!("VP {}", city.victory_points) } else { city.name.clone() };
+                        let tw = measure_text(&label, None, size as u16, 1.0).width;
+                        draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
+                        draw_text(&label, x + 9.0, y - 2.0, size, WHITE);
+                    }
                 }
             }
             if map.map_mode == MapMode::Resources {
@@ -1230,12 +1233,13 @@ async fn main() {
                         current_map.last_mouse = mouse;
                     }
 
-                    // Ease zoom over several frames instead of jumping by a huge wheel delta.
+                    // Frame-rate-independent easing keeps zoom smooth rather than snapping.
                     let zoom_delta = current_map.target_zoom - current_map.zoom;
-                    if zoom_delta.abs() < 0.001 {
+                    if zoom_delta.abs() < 0.0005 {
                         current_map.zoom = current_map.target_zoom;
                     } else {
-                        current_map.zoom += zoom_delta * 0.24;
+                        let easing = 1.0 - (-12.0 * get_frame_time()).exp();
+                        current_map.zoom += zoom_delta * easing;
                     }
                     current_map.clamp_pan();
                 }
