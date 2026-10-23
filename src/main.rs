@@ -1,12 +1,16 @@
+mod state;
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
 use image::GenericImageView;
 use macroquad::prelude::*;
+use state::load_state_membership;
 
 const MAP_BITMAP_PATH: &str = "data/hoi4/map/provinces.bmp";
 const MAP_DEFINITION_PATH: &str = "data/hoi4/map/definition.csv";
+const STATE_DIRECTORY_PATH: &str = "data/hoi4/history/states";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
@@ -22,6 +26,9 @@ struct ProvinceMap {
     rgba: Vec<u8>,
     id_by_rgb: HashMap<[u8; 3], u32>,
     province_count: usize,
+    state_by_province: HashMap<u32, u32>,
+    state_count: usize,
+    state_load_status: String,
 }
 
 impl ProvinceMap {
@@ -53,6 +60,16 @@ impl ProvinceMap {
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
         let id_by_rgb = parse_definition_text(&definition_text)?;
 
+        let (state_by_province, state_count, state_load_status) =
+            match load_state_membership(Path::new(STATE_DIRECTORY_PATH)) {
+                Ok(membership) => (
+                    membership.state_by_province,
+                    membership.state_count,
+                    "State membership loaded".to_owned(),
+                ),
+                Err(error) => (HashMap::new(), 0, error),
+            };
+
         Ok(Self {
             texture,
             width,
@@ -60,6 +77,9 @@ impl ProvinceMap {
             rgba,
             province_count: id_by_rgb.len(),
             id_by_rgb,
+            state_by_province,
+            state_count,
+            state_load_status,
         })
     }
 
