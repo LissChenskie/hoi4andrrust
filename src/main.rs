@@ -19,6 +19,23 @@ enum Screen {
     Settings,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MapMode {
+    Political,
+    Resources,
+    Terrain,
+}
+
+impl MapMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Political => "Political",
+            Self::Resources => "Resources",
+            Self::Terrain => "Terrain",
+        }
+    }
+}
+
 struct ProvinceMap {
     texture: Texture2D,
     width: u32,
@@ -34,6 +51,7 @@ struct ProvinceMap {
     pan: Vec2,
     last_mouse: Vec2,
     dragging: bool,
+    map_mode: MapMode,
 }
 
 impl ProvinceMap {
@@ -102,6 +120,7 @@ impl ProvinceMap {
             pan: Vec2::ZERO,
             last_mouse: Vec2::ZERO,
             dragging: false,
+            map_mode: MapMode::Political,
         })
     }
 
@@ -120,6 +139,25 @@ impl ProvinceMap {
 
     fn set_zoom(&mut self, factor: f32) {
         self.zoom = (self.zoom * factor).clamp(1.0, 12.0);
+        self.clamp_pan();
+    }
+
+    fn set_zoom_at(&mut self, factor: f32, anchor: Vec2, view: Rect) {
+        if view.w <= 0.0 || view.h <= 0.0 {
+            return;
+        }
+
+        let old = self.source_rect();
+        let u = ((anchor.x - view.x) / view.w).clamp(0.0, 1.0);
+        let v = ((anchor.y - view.y) / view.h).clamp(0.0, 1.0);
+        let map_x = old.x + u * old.w;
+        let map_y = old.y + v * old.h;
+
+        self.zoom = (self.zoom * factor).clamp(1.0, 12.0);
+        let new_w = self.width as f32 / self.zoom;
+        let new_h = self.height as f32 / self.zoom;
+        self.pan.x = map_x - u * new_w - (self.width as f32 - new_w) * 0.5;
+        self.pan.y = map_y - v * new_h - (self.height as f32 - new_h) * 0.5;
         self.clamp_pan();
     }
 
@@ -417,8 +455,9 @@ fn draw_map_viewer(
     if let Some(map) = map.as_deref_mut() {
         let (_, wheel_y) = mouse_wheel();
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        if wheel_y != 0.0 && map_view_rect(map).contains(mouse) {
-            map.set_zoom(1.12_f32.powf(wheel_y));
+        let view = map_view_rect(map);
+        if wheel_y != 0.0 && view.contains(mouse) {
+            map.set_zoom_at(1.12_f32.powf(wheel_y), mouse, view);
         }
     }
     if compact {
@@ -488,6 +527,36 @@ fn draw_map_viewer(
                 }
             }
 
+            // HOI4-style map-mode selector. The data-driven overlays are added in the next layer.
+            let mode_y = if compact { 174.0 } else { 18.0 };
+            let mode_x = if compact { 12.0 } else { 280.0 };
+            let mode_w = if compact { ((screen_width() - 36.0) / 3.0).max(72.0) } else { 126.0 };
+            for (index, mode) in [MapMode::Political, MapMode::Resources, MapMode::Terrain].into_iter().enumerate() {
+                let x = mode_x + index as f32 * (mode_w + 8.0);
+                let active = map.map_mode == mode;
+                let color = if active {
+                    Color::from_rgba(111, 52, 46, 255)
+                } else {
+                    Color::from_rgba(35, 54, 76, 255)
+                };
+                draw_rectangle(x, mode_y, mode_w, 34.0, color);
+                draw_rectangle_lines(x, mode_y, mode_w, 34.0, 1.0, Color::from_rgba(91, 125, 154, 255));
+                let label = match mode {
+                    MapMode::Political => "Political",
+                    MapMode::Resources => "Resources",
+                    MapMode::Terrain => "Terrain",
+                };
+                let text_size = if compact { 14.0 } else { 17.0 };
+                let text_w = measure_text(label, None, text_size as u16, 1.0).width;
+                draw_text(label, x + (mode_w - text_w) * 0.5, mode_y + 22.0, text_size, WHITE);
+                let (mx, my) = mouse_position();
+                if is_mouse_button_pressed(MouseButton::Left)
+                    && mx >= x && mx <= x + mode_w && my >= mode_y && my <= mode_y + 34.0
+                {
+                    map.map_mode = mode;
+                }
+            }
+
             let rect = map_view_rect(map);
             draw_rectangle(rect.x - 1.0, rect.y - 1.0, rect.w + 2.0, rect.h + 2.0, Color::from_rgba(62, 78, 90, 255));
             let source_rect = map.source_rect();
@@ -515,7 +584,13 @@ fn draw_map_viewer(
                     },
                 );
             }
-            draw_text("Nearest-neighbour raster view", rect.x, screen_height() - 12.0, 14.0, LIGHTGRAY);
+            draw_text(
+                &format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom),
+                rect.x,
+                screen_height() - 12.0,
+                14.0,
+                LIGHTGRAY,
+            );
         }
         None => {
             if compact {
