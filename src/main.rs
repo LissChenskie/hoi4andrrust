@@ -1,4 +1,7 @@
 mod state;
+mod game;
+
+use game::GameState;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1349,12 +1352,47 @@ async fn main() {
         Err(error) => (None, error),
     };
     let mut selected: Option<(u32, [u8; 3], u32, u32)> = None;
+    let mut game = GameState::default();
 
     loop {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(),
             Screen::MapViewer => {
+                if is_key_pressed(KeyCode::Space) {
+                    game.toggle_pause();
+                }
+                if is_key_pressed(KeyCode::Key1) {
+                    game.set_speed(1);
+                } else if is_key_pressed(KeyCode::Key2) {
+                    game.set_speed(2);
+                } else if is_key_pressed(KeyCode::Key3) {
+                    game.set_speed(3);
+                }
+                game.update(get_frame_time());
+
                 let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, selected);
+                let clock_status = if game.paused { "PAUSED" } else { "RUNNING" };
+                if screen_width() < 760.0 {
+                    draw_ui_text(
+                        &format!("{}  {}  x{} | Space: pause, 1-3: speed", game.date.display(), clock_status, game.speed),
+                        24.0,
+                        184.0,
+                        11.0,
+                        WHITE,
+                    );
+                } else {
+                    let panel_x = screen_width() - 330.0;
+                    draw_rectangle(panel_x, 70.0, 316.0, 50.0, Color::from_rgba(18, 30, 43, 245));
+                    draw_rectangle_lines(panel_x, 70.0, 316.0, 50.0, 1.0, Color::from_rgba(62, 86, 106, 255));
+                    draw_ui_text(
+                        &format!("DATE {}  {}  SPEED x{}", game.date.display(), clock_status, game.speed),
+                        panel_x + 10.0,
+                        91.0,
+                        14.0,
+                        WHITE,
+                    );
+                    draw_ui_text("Space: pause/resume   1 / 2 / 3: speed", panel_x + 10.0, 109.0, 11.0, LIGHTGRAY);
+                }
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
