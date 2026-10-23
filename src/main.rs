@@ -1472,6 +1472,9 @@ async fn main() {
                 }
                 if let Some(speed) = speed_clicked {
                     game.set_speed(speed);
+                    // As in HOI4, choosing a speed starts the simulation; pause remains
+                    // available as a separate control.
+                    game.paused = false;
                 }
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
