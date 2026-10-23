@@ -17,6 +17,7 @@ use state::load_state_membership;
 const MAP_BITMAP_PATH: &str = "data/hoi4/map/provinces.bmp";
 const MAP_DEFINITION_PATH: &str = "data/hoi4/map/definition.csv";
 const STATE_DIRECTORY_PATH: &str = "data/hoi4/history/states";
+const STATE_CATEGORY_DIRECTORY_PATH: &str = "data/hoi4/common/state_category";
 
 thread_local! {
     static UI_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
@@ -171,15 +172,19 @@ impl ProvinceMap {
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
         let id_by_rgb = parse_definition_text(&definition_text)?;
 
-        let (state_by_province, economy_by_state, state_count, state_load_status) =
-            match load_state_membership(Path::new(STATE_DIRECTORY_PATH)) {
+        let (state_by_province, economy_by_state, shared_slots_by_state, state_count, state_load_status) =
+            match load_state_membership(
+                Path::new(STATE_DIRECTORY_PATH),
+                Path::new(STATE_CATEGORY_DIRECTORY_PATH),
+            ) {
                 Ok(membership) => (
                     membership.state_by_province,
                     membership.economy_by_state,
+                    membership.shared_slots_by_state,
                     membership.state_count,
-                    "State membership loaded".to_owned(),
+                    "State membership and category slots loaded".to_owned(),
                 ),
-                Err(error) => (HashMap::new(), HashMap::new(), 0, error),
+                Err(error) => (HashMap::new(), HashMap::new(), HashMap::new(), 0, error),
             };
 
         let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
@@ -204,6 +209,7 @@ impl ProvinceMap {
         let city_markers = build_city_markers(width, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
         let world = World::from_map_data(
             &state_by_province, &owner_by_state, &state_name_by_id, &economy_by_state,
+            &shared_slots_by_state,
         );
 
         // CPU-side hit testing only needs RGB. Drop the fourth alpha byte per pixel
@@ -1692,18 +1698,21 @@ fn draw_map_viewer(
         let table_x = panel_x + 14.0;
         let table_y = panel_y + 72.0;
         let table_w = (panel_w - 28.0).max(120.0);
-        let economy = state_id.and_then(|id| map.world.states.get(&id)).map(|state| state.economy).unwrap_or_default();
+        let selected_state = state_id.and_then(|id| map.world.states.get(&id));
+        let economy = selected_state.map(|state| state.economy).unwrap_or_default();
 
-        // HOI4-inspired construction-slot board. Filled cells represent existing
-        // state buildings; empty cells are placeholders until state-category slot
-        // limits and the construction queue are connected to the simulation.
+        // Shared factory slots come from the state's actual state_category definition.
+        // Infrastructure remains separate: it changes construction speed, not slot capacity.
         let built = usize::from(economy.civilian_factories)
             + usize::from(economy.military_factories)
             + usize::from(economy.dockyards);
-        let slot_count = built.max(15).min(30);
+        let base_slots = selected_state.map(|state| usize::from(state.shared_building_slots)).unwrap_or(0);
+        // Until technology/focus slot bonuses are simulated, never hide starting factories
+        // if they exceed the base category value in a modded or modified save.
+        let slot_count = base_slots.max(built).min(30);
         let free_slots = slot_count.saturating_sub(built);
         draw_ui_text(
-            &format!("CONSTRUCTION SLOTS  ·  {built} built  ·  {free_slots} empty"),
+            &format!("SHARED SLOTS  ·  {built} built  ·  {free_slots} empty  ·  INFRA {}", economy.infrastructure),
             table_x, table_y + 10.0, if compact { 10.0 } else { 12.0 },
             Color::from_rgba(194, 205, 216, 255),
         );
