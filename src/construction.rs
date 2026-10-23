@@ -1,6 +1,6 @@
 //! Data-driven starter model for HOI4-style state construction.
-//! Costs and speed constants are isolated here so they can later be loaded from
-//! common/buildings and common/defines instead of being scattered through UI code.
+//! Construction costs are loaded from common/buildings and the base factory speed
+//! from common/defines when the local HOI4 data directory is available.
 use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -462,6 +462,29 @@ mod tests {
         // Two civilian factories × 5 IC/day × (1 + 5 × 0.1) infrastructure bonus.
         assert_eq!(queues[&1][0].progress, 15.0);
         assert_eq!(world.states[&1].economy.civilian_factories, 2);
+    }
+
+    #[test]
+    fn national_factory_pool_is_shared_between_active_state_projects() {
+        let mut world = test_world();
+        world.countries.get_mut("TST").unwrap().state_ids.insert(2);
+        world.states.insert(2, State {
+            id: 2, name: None, owner: Some("TST".to_owned()), province_ids: vec![],
+            shared_building_slots: 5,
+            economy: StateEconomy { infrastructure: 0, ..StateEconomy::default() },
+        });
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, VecDeque::from([ConstructionProject {
+            building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1_000.0,
+        }]));
+        queues.insert(2, VecDeque::from([ConstructionProject {
+            building: BuildingType::Dockyard, progress: 0.0, cost: 1_000.0,
+        }]));
+
+        advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
+
+        assert_eq!(queues[&1][0].progress, 7.5);
+        assert_eq!(queues[&2][0].progress, 5.0);
     }
 
     #[test]
