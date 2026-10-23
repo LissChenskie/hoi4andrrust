@@ -1656,7 +1656,7 @@ fn draw_map_viewer(
     }
 
     // HOI4-inspired bottom state inspector. Closing it also clears the map selection.
-    if let (Some(map), Some((province_id, rgb, px, py))) = (map.as_deref_mut(), *selected) {
+    if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
         let panel_h = if compact { 190.0 } else { 178.0 };
@@ -1766,7 +1766,7 @@ async fn main() {
     loop {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(),
-            Screen::CountrySelect => draw_country_select(map.as_deref(), &mut selected_country, &mut country_page),
+            Screen::CountrySelect => draw_country_select(map.as_ref(), &mut selected_country, &mut country_page),
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::Space) {
