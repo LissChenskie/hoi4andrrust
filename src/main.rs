@@ -268,41 +268,68 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
         if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
         let Ok(source) = fs::read_to_string(path) else { continue };
         let mut state_id = None;
+        let mut in_history = false;
+        let mut history_depth = 0i32;
         let mut in_resources = false;
         let mut resource_depth = 0i32;
         for line in source.lines() {
             let clean = line.split('#').next().unwrap_or("").trim();
-            if clean.starts_with("id") && clean.split('=').count() >= 2 {
+            if clean.is_empty() { continue; }
+            if state_id.is_none() && clean.starts_with("id") {
                 if let Some(value) = clean.split('=').nth(1).and_then(|v| v.trim().parse::<u32>().ok()) {
                     state_id = Some(value);
                 }
             }
-            if let Some(id) = state_id {
+            let Some(id) = state_id else { continue };
+            if clean.starts_with("history") && clean.contains('{') {
+                in_history = true;
+                history_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if let Some((_, tail)) = clean.split_once('{') {
+                    if let Some((_, owner)) = tail.split_once("owner") {
+                        if let Some((_, tag)) = owner.split_once('=') {
+                            let tag = tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
+                            if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
+                        }
+                    }
+                }
+            } else if in_history {
                 if clean.starts_with("owner") {
                     if let Some(tag) = clean.split('=').nth(1) {
-                        let tag = tag.trim().trim_matches('"');
+                        let tag = tag.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
                         if !tag.is_empty() { owners.insert(id, tag.to_owned()); }
                     }
                 }
-                if clean.starts_with("resources") && clean.contains('{') {
-                    in_resources = true;
-                    resource_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
-                } else if in_resources {
-                    resource_depth += clean.matches('{').count() as i32;
-                    resource_depth -= clean.matches('}').count() as i32;
-                    if let Some((key, value)) = clean.split_once('=') {
-                        if matches!(key.trim(), "steel" | "aluminium" | "aluminum" | "rubber" | "tungsten" | "chromium" | "oil") {
-                            if let Ok(amount) = value.trim().trim_matches('"').parse::<f32>() {
-                                *resources.entry(id).or_insert(0.0) += amount;
-                            }
-                        }
-                    }
-                    if resource_depth <= 0 { in_resources = false; }
+                history_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if history_depth <= 0 { in_history = false; }
+            }
+            if clean.starts_with("resources") && clean.contains('{') {
+                in_resources = true;
+                resource_depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if let Some((_, tail)) = clean.split_once('{') {
+                    parse_resource_values(tail, id, &mut resources);
                 }
+                if resource_depth <= 0 { in_resources = false; }
+            } else if in_resources {
+                parse_resource_values(clean, id, &mut resources);
+                resource_depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if resource_depth <= 0 { in_resources = false; }
             }
         }
     }
     (owners, resources)
+}
+
+fn parse_resource_values(line: &str, state_id: u32, resources: &mut HashMap<u32, f32>) {
+    for key in ["steel", "aluminium", "aluminum", "rubber", "tungsten", "chromium", "oil"] {
+        if let Some((_, tail)) = line.split_once(key) {
+            if let Some((_, value)) = tail.split_once('=') {
+                let value = value.trim().trim_matches(|c: char| c == '}' || c.is_whitespace() || c == '"');
+                if let Ok(amount) = value.split_whitespace().next().unwrap_or("").parse::<f32>() {
+                    *resources.entry(state_id).or_insert(0.0) += amount;
+                }
+            }
+        }
+    }
 }
 
 fn tag_color(tag: &str) -> [u8; 3] {
