@@ -343,13 +343,12 @@ fn build_map_border_texture(
         });
         owner_ids_by_state.insert(*state_id, hash.max(1));
     }
-    let mut owners = vec![0u64; pixel_count];
+    // Avoid a second 8-byte-per-pixel owner buffer. Owner identity is derived
+    // from the already-built state ID layer only while examining border pixels.
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let rgb = [pixel[0], pixel[1], pixel[2]];
         if let Some(province_id) = id_by_rgb.get(&rgb) {
             province_ids[index] = *province_id;
-            let state_id = state_ids.get(index).copied().unwrap_or(0);
-            owners[index] = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
         }
     }
 
@@ -360,7 +359,7 @@ fn build_map_border_texture(
             let province_id = province_ids[index];
             if province_id == 0 { continue; }
             let state_id = state_ids.get(index).copied().unwrap_or(0);
-            let owner = owners[index];
+            let owner = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
 
             let mut country_edge = false;
             let mut state_edge = false;
@@ -372,9 +371,11 @@ fn build_map_border_texture(
                 if y + 1 < h { Some(index + w) } else { None },
             ];
             for neighbour in neighbours.into_iter().flatten() {
-                if owner != 0 && owners[neighbour] != 0 && owners[neighbour] != owner {
+                let neighbour_state = state_ids.get(neighbour).copied().unwrap_or(0);
+                let neighbour_owner = owner_ids_by_state.get(&neighbour_state).copied().unwrap_or(0);
+                if owner != 0 && neighbour_owner != 0 && neighbour_owner != owner {
                     country_edge = true;
-                } else if state_id != 0 && state_ids.get(neighbour).copied().unwrap_or(0) != state_id {
+                } else if state_id != 0 && neighbour_state != state_id {
                     state_edge = true;
                 } else if province_ids[neighbour] != province_id {
                     province_edge = true;
