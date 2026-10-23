@@ -115,7 +115,7 @@ struct ProvinceMap {
     texture: Texture2D,
     width: u32,
     height: u32,
-    rgba: Vec<u8>,
+    rgb_pixels: Vec<u8>,
     id_by_rgb: HashMap<[u8; 3], u32>,
     province_count: usize,
     state_by_province: HashMap<u32, u32>,
@@ -203,6 +203,14 @@ impl ProvinceMap {
         );
         let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
         let world = World::from_map_data(&state_by_province, &owner_by_state, &state_name_by_id);
+
+        // CPU-side hit testing only needs RGB. Drop the fourth alpha byte per pixel
+        // after every map texture and marker has been built.
+        let mut rgb_pixels = Vec::with_capacity((width as usize) * (height as usize) * 3);
+        for pixel in rgba.chunks_exact(4) {
+            rgb_pixels.extend_from_slice(&pixel[..3]);
+        }
+        drop(rgba);
         let city_named_count = city_markers.iter().filter(|city| !city.name.is_empty()).count();
         let localisation_file_count = localisation_roots()
             .iter()
@@ -213,7 +221,7 @@ impl ProvinceMap {
             texture,
             width,
             height,
-            rgba,
+            rgb_pixels,
             province_count: id_by_rgb.len(),
             id_by_rgb,
             state_by_province,
@@ -291,8 +299,8 @@ impl ProvinceMap {
             return None;
         }
 
-        let offset = ((y as usize * self.width as usize) + x as usize) * 4;
-        let rgb = [self.rgba[offset], self.rgba[offset + 1], self.rgba[offset + 2]];
+        let offset = ((y as usize * self.width as usize) + x as usize) * 3;
+        let rgb = [self.rgb_pixels[offset], self.rgb_pixels[offset + 1], self.rgb_pixels[offset + 2]];
         self.id_by_rgb.get(&rgb).copied().map(|id| (id, rgb))
     }
 }
