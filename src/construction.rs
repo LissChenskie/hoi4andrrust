@@ -204,7 +204,7 @@ impl BuildingRules {
                     }
                     if let Some(value) = find_lua_number(&text, "MAX_SHARED_SLOTS") {
                         if value.is_finite() && value >= 1.0 {
-                            rules.max_shared_slots = (value as u16).min(MAX_SHARED_BUILDING_SLOTS.max(value as u16));
+                            rules.max_shared_slots = (value as u16).max(1);
                         }
                     }
                 }
