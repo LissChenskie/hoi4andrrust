@@ -80,19 +80,32 @@ impl GameState {
         self.speed = speed.clamp(1, 5);
     }
 
-    /// Advance using elapsed real time. A frame hitch is capped to avoid huge catch-up loops.
-    pub fn update(&mut self, delta_seconds: f32) {
+    /// Advance using elapsed real time and return the number of daily simulation ticks.
+    ///
+    /// The real-time delta is capped to bound catch-up work after a stalled frame.
+    /// Returning ticks lets the engine update economy, construction and AI only when
+    /// an in-game day actually passes, rather than recalculating them every rendered frame.
+    pub fn update(&mut self, delta_seconds: f32) -> u32 {
         if self.paused || !delta_seconds.is_finite() || delta_seconds <= 0.0 {
-            return;
+            return 0;
         }
 
         self.accumulator += delta_seconds.min(0.25);
-        let speed_multiplier = match self.speed { 1 => 1.0, 2 => 2.0, 3 => 4.0, 4 => 8.0, _ => 16.0 };
+        let speed_multiplier = match self.speed {
+            1 => 1.0,
+            2 => 2.0,
+            3 => 4.0,
+            4 => 8.0,
+            _ => 16.0,
+        };
         let day_duration = Self::SECONDS_PER_DAY / speed_multiplier;
+        let mut ticks = 0;
         while self.accumulator >= day_duration {
             self.accumulator -= day_duration;
             self.date.advance_one_day();
+            ticks += 1;
         }
+        ticks
     }
 }
 
@@ -133,15 +146,34 @@ mod tests {
     #[test]
     fn clock_advances_only_when_unpaused_and_respects_speed() {
         let mut game = GameState::default();
-        game.update(1.0);
+        assert_eq!(game.update(1.0), 0);
         assert_eq!(game.date, GameDate::START);
 
         game.paused = false;
-        game.update(0.25);
+        assert_eq!(game.update(0.25), 0);
         assert_eq!(game.date, GameDate::START);
 
         game.set_speed(3);
-        game.update(0.25);
+        assert_eq!(game.update(0.25), 1);
         assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 2 });
+
+    #[test]
+    fn reports_all_ticks_without_exceeding_catch_up_cap() {
+        let mut game = GameState::default();
+        game.paused = false;
+        game.set_speed(5);
+        assert_eq!(game.update(100.0), 4);
+        assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 5 });
+    }
+
+    #[test]
+    fn rejects_invalid_deltas_without_changing_time() {
+        let mut game = GameState::default();
+        game.paused = false;
+        assert_eq!(game.update(f32::NAN), 0);
+        assert_eq!(game.update(f32::INFINITY), 0);
+        assert_eq!(game.update(-1.0), 0);
+        assert_eq!(game.date, GameDate::START);
+    }
     }
 }
