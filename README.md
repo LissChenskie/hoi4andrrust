@@ -6,9 +6,10 @@ An independent, early-stage grand-strategy prototype. The current milestone is d
 
 - Rust application shell using Macroquad for a simple 2D UI.
 - Main menu and navigation to the map viewer / map import guide.
-- Loads a local BMP province raster and definition table.
-- Displays the raster with nearest-neighbour filtering so province colours are not blurred.
-- Clicking a pixel resolves its RGB colour to a province ID.
+- Loads a local BMP province raster and HOI4 definition table (semicolon-delimited vanilla format, comma-delimited also accepted).
+- Displays the source raster with nearest-neighbour filtering so province colours are not blurred.
+- Clicking/tapping a pixel resolves its RGB colour to a province ID.
+- Parses local Clausewitz state files and shows the state ID for a selected province when membership data is available.
 - Does not bundle Paradox map assets or decompiled game code.
 
 ## Local map input
@@ -17,10 +18,11 @@ The prototype expects files at:
 
     data/hoi4/map/provinces.bmp
     data/hoi4/map/definition.csv
+    data/hoi4/history/states/*.txt (optional, for province-to-state membership)
 
 Put only data you are legally entitled to use in this local folder. It is ignored by Git and should not be committed. Without those files, the app shows an explicit empty-state message rather than inventing fake province data.
 
-The Android file-picker / Storage Access Framework import flow is not implemented yet; the initial data loader currently uses a relative filesystem path.
+The Android file-picker / Storage Access Framework import flow is not implemented yet; the initial data loader currently uses relative filesystem paths. State borders are not yet drawn as a separate overlay.
 
 ## Run the desktop prototype
 
@@ -40,10 +42,10 @@ This command is documented but has **not been executed in the current environmen
 ## Roadmap
 
 1. Main menu and local raster viewer.
-2. Zoom, pan, and touch-friendly map controls.
-3. Province selection and ID lookup.
-4. Clausewitz state-file parser and state-border overlay.
-5. Additional map layers and data validation.
+2. Province ID lookup and optional state membership parsing (implemented in the prototype).
+3. Draw state-border overlays and add zoom/pan controls.
+4. Validate map completeness and cross-file references.
+5. Add country ownership colours and further map layers.
 6. Android import flow and on-device profiling.
 7. Simulation and gameplay systems only after map foundations are stable.
 
