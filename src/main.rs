@@ -1020,7 +1020,22 @@ fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_definition_text;
+    use super::{parse_definition_text, parse_owner_assignment};
+    use std::collections::HashMap;
+
+    #[test]
+    fn parses_owner_from_inline_history_block() {
+        let mut owners = HashMap::new();
+        parse_owner_assignment(" owner = GER }", 42, None, (1936, 1, 1), &mut owners);
+        assert_eq!(owners.get(&42).map(String::as_str), Some("GER"));
+    }
+
+    #[test]
+    fn ignores_owner_assignments_after_start_date() {
+        let mut owners = HashMap::new();
+        parse_owner_assignment(" owner = SOV", 42, Some((1939, 9, 1)), (1936, 1, 1), &mut owners);
+        assert!(owners.get(&42).is_none());
+    }
 
     #[test]
     fn parses_hoi4_semicolon_delimited_definitions() {
