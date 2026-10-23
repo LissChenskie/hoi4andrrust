@@ -1131,8 +1131,9 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            if map.zoom >= 1.15 {
-                let label_scale = (map.zoom.sqrt() * 0.78).clamp(0.65, 1.35);
+            // Keep city markers hidden at the world-map scale; reveal them only after zooming in.
+            if map.zoom >= 1.8 {
+                let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
                 for city in &map.city_markers {
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
                         || city.y < source_rect.y || city.y > source_rect.y + source_rect.h { continue; }
@@ -1140,12 +1141,15 @@ fn draw_map_viewer(
                     let y = rect.y + (city.y - source_rect.y) / source_rect.h * rect.h;
                     draw_circle(x, y, 3.0 * label_scale, Color::from_rgba(245, 224, 168, 255));
                     draw_circle_lines(x, y, 4.3 * label_scale, 1.0, Color::from_rgba(25, 31, 38, 255));
-                    if map.zoom >= 1.8 {
-                        let size = (11.0 * label_scale).clamp(9.0, 15.0);
-                        let label = if city.name.is_empty() { format!("VP {}", city.victory_points) } else { city.name.clone() };
-                        let tw = measure_ui_text(&label, size as u16).width;
+                    // Don't display placeholder localisation keys (for example, vp_5) as city names.
+                    let name = city.name.trim();
+                    let lower = name.to_ascii_lowercase();
+                    let looks_like_key = lower.starts_with("vp_") || lower.starts_with("victory_points_") || lower.starts_with("victory_points.");
+                    if !name.is_empty() && !looks_like_key {
+                        let size = (10.0 * label_scale).clamp(9.0, 13.0);
+                        let tw = measure_ui_text(name, size as u16).width;
                         draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 220));
-                        draw_ui_text(&label, x + 9.0, y - 2.0, size, WHITE);
+                        draw_ui_text(name, x + 9.0, y - 2.0, size, WHITE);
                     }
                 }
             }
