@@ -81,7 +81,7 @@ impl ProvinceMap {
 
         let rgba = decoded.to_rgba8().into_raw();
         let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
-        texture.set_filter(FilterMode::Linear);
+        texture.set_filter(FilterMode::Nearest);
 
         let definition_text = fs::read_to_string(definition_path)
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
@@ -293,13 +293,35 @@ fn parse_state_visual_data(directory: &Path) -> (HashMap<u32, String>, HashMap<u
 }
 
 fn tag_color(tag: &str) -> [u8; 3] {
-    // Stable fallback palette keyed by country tag until vanilla country RGB definitions are imported.
-    let hash = tag.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
-    [
-        70 + ((hash & 0x7f) as u8),
-        70 + (((hash >> 8) & 0x7f) as u8),
-        70 + (((hash >> 16) & 0x7f) as u8),
-    ]
+    // HOI4-inspired fallback palette. Real country colors can replace these once
+    // common/countries/*.txt is imported; avoid hash colors that make neighbors indistinguishable.
+    match tag {
+        "GER" => [105, 112, 119], "ENG" | "GBR" => [190, 52, 57],
+        "FRA" => [62, 105, 190], "SOV" | "RUS" => [190, 62, 55],
+        "USA" => [65, 119, 190], "ITA" => [73, 150, 91],
+        "JAP" => [205, 120, 135], "CHI" => [205, 174, 95],
+        "POL" => [205, 145, 160], "AUS" => [195, 185, 150],
+        "CAN" => [185, 60, 66], "BRA" => [80, 155, 91],
+        "SPR" | "SPB" => [210, 170, 75], "TUR" => [180, 80, 70],
+        "HOL" => [230, 135, 65], "BEL" => [215, 195, 85],
+        "CZE" => [90, 145, 180], "ROM" => [110, 155, 80],
+        "YUG" => [150, 160, 180], "GRE" => [80, 155, 185],
+        "NOR" => [100, 155, 195], "SWE" => [75, 135, 190],
+        "FIN" => [175, 190, 200], "POR" => [65, 145, 105],
+        "MEX" => [75, 145, 95], "ARG" => [100, 170, 195],
+        _ => {
+            let hash = tag.bytes().fold(2166136261u32, |h, b| (h ^ b as u32).wrapping_mul(16777619));
+            // Keep all channels bright enough and separate hues more strongly.
+            let hue = (hash % 360) as f32;
+            let c = 0.62_f32;
+            let x = c * (1.0 - (((hue / 60.0) % 2.0) - 1.0).abs());
+            let (r, g, b) = match hue as u32 / 60 {
+                0 => (c, x, 0.0), 1 => (x, c, 0.0), 2 => (0.0, c, x),
+                3 => (0.0, x, c), 4 => (x, 0.0, c), _ => (c, 0.0, x),
+            };
+            [((r + 0.18) * 255.0) as u8, ((g + 0.18) * 255.0) as u8, ((b + 0.18) * 255.0) as u8]
+        }
+    }
 }
 
 fn terrain_color(name: &str) -> [u8; 3] {
@@ -359,27 +381,29 @@ fn build_map_mode_textures(
         let owner_color = owner_by_state.get(&state_id).map(|tag| tag_color(tag)).unwrap_or([105, 110, 115]);
         let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
         let offset = pixel_index * 4;
-        let political_color = blend_country([pixel[0], pixel[1], pixel[2]], owner_color, 0.58);
-        political[offset..offset + 3].copy_from_slice(&political_color);
+        // Political mode must show countries, not the original province-ID RGB raster.
+        // Strong, solid national colors make borders and country shapes readable.
+        political[offset..offset + 3].copy_from_slice(&owner_color);
         political[offset + 3] = 255;
 
-        let terrain_final = blend_country(base_terrain, owner_color, 0.30);
-        terrain[offset..offset + 3].copy_from_slice(&terrain_final);
+        // Terrain mode is terrain-first; do not tint it with country colors.
+        terrain[offset..offset + 3].copy_from_slice(&base_terrain);
         terrain[offset + 3] = 255;
 
         let amount = resources_by_state.get(&state_id).copied().unwrap_or(0.0);
         let strength = (amount / max_resources).clamp(0.0, 1.0);
+        // Dark neutral map with a clear low-to-high resource heat ramp (not all-green).
         let resource_color = [
-            (55.0 + strength * 190.0) as u8,
-            (70.0 + (1.0 - strength) * 105.0) as u8,
-            (80.0 + (1.0 - strength) * 35.0) as u8,
+            (44.0 + strength * 190.0) as u8,
+            (49.0 + (1.0 - strength) * 65.0) as u8,
+            (58.0 + (1.0 - strength) * 40.0) as u8,
         ];
         resources[offset..offset + 3].copy_from_slice(&resource_color);
         resources[offset + 3] = 255;
     }
     let make_texture = |bytes: &[u8]| {
         let texture = Texture2D::from_rgba8(width as u16, height as u16, bytes);
-        texture.set_filter(FilterMode::Linear);
+        texture.set_filter(FilterMode::Nearest);
         texture
     };
     (make_texture(&political), make_texture(&resources), make_texture(&terrain))
