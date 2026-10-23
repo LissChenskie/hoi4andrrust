@@ -71,6 +71,7 @@ fn measure_ui_text(text: &str, size: u16) -> TextDimensions {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     MainMenu,
+    CountrySelect,
     MapViewer,
     Settings,
 }
@@ -1226,14 +1227,17 @@ fn draw_main_menu() -> Screen {
 
     let button_x = 74.0;
     let button_w = (width * 0.34).clamp(250.0, 360.0);
-    if button("Open map viewer", button_x, 220.0, button_w, 54.0) {
+    if button("New game / Select country", button_x, 205.0, button_w, 54.0) {
+        return Screen::CountrySelect;
+    }
+    if button("Open map viewer", button_x, 275.0, button_w, 54.0) {
         return Screen::MapViewer;
     }
-    if button("Map data / import guide", button_x, 290.0, button_w, 54.0) {
+    if button("Map data / import guide", button_x, 345.0, button_w, 54.0) {
         return Screen::Settings;
     }
 
-    draw_ui_text("Prototype milestone 01: menu + local map raster viewer", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
+    draw_ui_text("Prototype milestone 02: country selection + state economy", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
     Screen::MainMenu
 }
 
@@ -1246,14 +1250,130 @@ fn draw_main_menu_compact() -> Screen {
     let button_x = 20.0;
     let button_w = (screen_width() - 40.0).max(180.0);
     let first_y = (screen_height() * 0.40).max(190.0);
-    if button("Open map viewer", button_x, first_y, button_w, 54.0) {
+    if button("New game / Select country", button_x, first_y, button_w, 54.0) {
+        return Screen::CountrySelect;
+    }
+    if button("Open map viewer", button_x, first_y + 68.0, button_w, 54.0) {
         return Screen::MapViewer;
     }
-    if button("Map data / import guide", button_x, first_y + 68.0, button_w, 54.0) {
+    if button("Map data / import guide", button_x, first_y + 136.0, button_w, 54.0) {
         return Screen::Settings;
     }
-    draw_ui_text("Prototype milestone 01", 22.0, screen_height() - 28.0, 14.0, LIGHTGRAY);
+    draw_ui_text("Prototype milestone 02", 22.0, screen_height() - 28.0, 14.0, LIGHTGRAY);
     Screen::MainMenu
+}
+
+
+fn country_display_name(tag: &str) -> &str {
+    match tag {
+        "GER" => "German Reich", "ENG" | "GBR" => "United Kingdom",
+        "FRA" => "France", "SOV" | "RUS" => "Soviet Union", "USA" => "United States",
+        "ITA" => "Italy", "JAP" => "Japan", "CHI" => "China", "POL" => "Poland",
+        "AUS" => "Austria", "CAN" => "Canada", "BRA" => "Brazil", "SPR" => "Spain",
+        "SPB" => "Nationalist Spain", "TUR" => "Turkey", "HOL" => "Netherlands",
+        "BEL" => "Belgium", "CZE" => "Czechoslovakia", "ROM" => "Romania",
+        "YUG" => "Yugoslavia", "GRE" => "Greece", "NOR" => "Norway", "SWE" => "Sweden",
+        "FIN" => "Finland", "POR" => "Portugal", "MEX" => "Mexico", "ARG" => "Argentina",
+        _ => tag,
+    }
+}
+
+fn ordered_country_tags(map: &ProvinceMap) -> Vec<String> {
+    let priority = [
+        "GER", "ENG", "GBR", "FRA", "SOV", "RUS", "USA", "ITA", "JAP", "CHI",
+        "POL", "CAN", "AUS", "BRA", "SPR", "SPB", "TUR", "HOL", "BEL", "CZE",
+    ];
+    let mut tags: Vec<String> = map.world.countries.keys().cloned().collect();
+    tags.sort_by(|a, b| {
+        let rank = |tag: &str| priority.iter().position(|candidate| *candidate == tag).unwrap_or(usize::MAX);
+        rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
+    });
+    tags
+}
+
+fn draw_country_select(
+    map: Option<&ProvinceMap>,
+    selected_country: &mut Option<String>,
+    page: &mut usize,
+) -> Screen {
+    draw_background();
+    draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
+    draw_ui_text("SELECT COUNTRY", 22.0, 42.0, 25.0, WHITE);
+    if screen_width() < 760.0 {
+        if button("Back", screen_width() - 92.0, 15.0, 76.0, 38.0) { return Screen::MainMenu; }
+    } else if button("Back to menu", screen_width() - 160.0, 15.0, 138.0, 38.0) {
+        return Screen::MainMenu;
+    }
+
+    let Some(map) = map else {
+        draw_ui_text("Map data is unavailable. Add the local HOI4 map files first.", 24.0, 108.0, 16.0, LIGHTGRAY);
+        return Screen::CountrySelect;
+    };
+    let tags = ordered_country_tags(map);
+    if tags.is_empty() {
+        draw_ui_text("No countries found. Check data/hoi4/history/states and state owners.", 24.0, 108.0, 16.0, LIGHTGRAY);
+        return Screen::CountrySelect;
+    }
+    if selected_country.as_ref().is_none_or(|tag| !map.world.countries.contains_key(tag)) {
+        *selected_country = tags.first().cloned();
+    }
+
+    let compact = screen_width() < 760.0;
+    let columns = if compact { 2usize } else { 3usize };
+    let rows = 5usize;
+    let per_page = columns * rows;
+    let page_count = tags.len().div_ceil(per_page).max(1);
+    *page = (*page).min(page_count - 1);
+    let start = *page * per_page;
+    let end = (start + per_page).min(tags.len());
+    draw_ui_text("Choose a country to begin. The list is built from loaded state ownership data.",
+        24.0, 91.0, if compact { 13.0 } else { 16.0 }, LIGHTGRAY);
+
+    let margin = if compact { 14.0 } else { 34.0 };
+    let gap = if compact { 8.0 } else { 12.0 };
+    let grid_y = if compact { 130.0 } else { 138.0 };
+    let cell_w = ((screen_width() - margin * 2.0 - gap * (columns as f32 - 1.0)) / columns as f32).max(90.0);
+    let cell_h = if compact { 48.0 } else { 54.0 };
+    for (slot, index) in (start..end).enumerate() {
+        let tag = &tags[index];
+        let col = slot % columns;
+        let row = slot / columns;
+        let x = margin + col as f32 * (cell_w + gap);
+        let y = grid_y + row as f32 * (cell_h + 9.0);
+        let label = format!("{}  ({})", country_display_name(tag), tag);
+        let chosen = selected_country.as_deref() == Some(tag.as_str());
+        let (mx, my) = mouse_position();
+        let hovered = mx >= x && mx <= x + cell_w && my >= y && my <= y + cell_h;
+        let bg = if chosen { Color::from_rgba(111, 52, 46, 255) }
+            else if hovered { Color::from_rgba(57, 92, 125, 255) }
+            else { Color::from_rgba(25, 41, 56, 255) };
+        draw_rectangle(x, y, cell_w, cell_h, bg);
+        draw_rectangle_lines(x, y, cell_w, cell_h, if chosen { 2.0 } else { 1.0 },
+            if chosen { Color::from_rgba(220, 184, 119, 255) } else { Color::from_rgba(76, 100, 121, 255) });
+        draw_ui_text(&label, x + 9.0, y + cell_h * 0.62, if compact { 12.0 } else { 15.0 }, WHITE);
+        if hovered && is_mouse_button_pressed(MouseButton::Left) { *selected_country = Some(tag.clone()); }
+    }
+
+    let controls_y = grid_y + rows as f32 * (cell_h + 9.0) + 2.0;
+    if button("Previous", margin, controls_y, 105.0, 36.0) && *page > 0 { *page -= 1; }
+    draw_ui_text(&format!("Page {} / {}", *page + 1, page_count), margin + 116.0, controls_y + 24.0, 13.0, LIGHTGRAY);
+    if button("Next", screen_width() - margin - 105.0, controls_y, 105.0, 36.0) && *page + 1 < page_count { *page += 1; }
+
+    let chosen_tag = selected_country.as_deref().unwrap_or("");
+    if let Some(totals) = map.world.country_economy(chosen_tag) {
+        draw_ui_text(&format!("{} ({})  ·  States {}  ·  CIV {}  ·  MIL {}  ·  Dockyards {}",
+            country_display_name(chosen_tag), chosen_tag, totals.states, totals.civilian_factories,
+            totals.military_factories, totals.dockyards),
+            margin, controls_y + 49.0, if compact { 12.0 } else { 15.0 },
+            Color::from_rgba(195, 210, 190, 255));
+    }
+
+    let start_y = screen_height() - if compact { 65.0 } else { 78.0 };
+    let start_w = if compact { screen_width() - 28.0 } else { 250.0 };
+    if button("Start game", (screen_width() - start_w) * 0.5, start_y, start_w, 48.0) {
+        return Screen::MapViewer;
+    }
+    Screen::CountrySelect
 }
 
 fn map_view_rect(map: &ProvinceMap) -> Rect {
@@ -1262,7 +1382,7 @@ fn map_view_rect(map: &ProvinceMap) -> Rect {
     let top = if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
     // Keep a dedicated lower strip for the HOI4-style state/province inspector.
-    let bottom_reserve = if compact { 190.0 } else { 178.0 };
+    let bottom_reserve = if compact { 218.0 } else { 205.0 };
     let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
@@ -1279,10 +1399,13 @@ fn draw_map_viewer(
     mut map: Option<&mut ProvinceMap>,
     load_error: &str,
     selected: &mut Option<(u32, [u8; 3], u32, u32)>,
+    player_country: Option<&str>,
 ) -> Screen {
     draw_background();
     draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
-    draw_ui_text("WORLD MAP", 22.0, 42.0, 25.0, WHITE);
+    let title = player_country.map(|tag| format!("WORLD MAP  ·  {} ({tag})", country_display_name(tag)))
+        .unwrap_or_else(|| "WORLD MAP".to_owned());
+    draw_ui_text(&title, 22.0, 42.0, if screen_width() < 760.0 { 17.0 } else { 25.0 }, WHITE);
 
     let compact = screen_width() < 760.0;
     if compact {
@@ -1536,7 +1659,7 @@ fn draw_map_viewer(
     if let (Some(map), Some((province_id, rgb, px, py))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
-        let panel_h = if compact { 148.0 } else { 142.0 };
+        let panel_h = if compact { 190.0 } else { 178.0 };
         let panel_y = screen_height() - panel_h - 14.0;
         draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(19, 31, 43, 248));
         draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.5, Color::from_rgba(105, 126, 142, 255));
@@ -1561,31 +1684,33 @@ fn draw_map_viewer(
             map.highlighted_state_texture = None;
         }
 
-        let info_y = panel_y + 57.0;
-        draw_ui_text(&format!("State ID: {}", state_id.map(|id| id.to_string()).unwrap_or_else(|| "—".to_owned())),
-            panel_x + 14.0, info_y, 13.0, LIGHTGRAY);
-        draw_ui_text(&format!("Province ID: {province_id}"), panel_x + 14.0, info_y + 24.0, 13.0, LIGHTGRAY);
-        draw_ui_text(&format!("Owner: {owner}"), panel_x + 210.0, info_y, 13.0, WHITE);
-        draw_ui_text(&format!("Map pixel: {px}, {py}  ·  RGB {}, {}, {}", rgb[0], rgb[1], rgb[2]),
-            panel_x + 210.0, info_y + 24.0, 12.0, LIGHTGRAY);
-        if let Some(state) = state_id.and_then(|id| map.world.states.get(&id)) {
-            draw_ui_text(
-                &format!(
-                    "Industry: CIV {}  ·  MIL {}  ·  Dockyards {}  ·  Infrastructure {}",
-                    state.economy.civilian_factories,
-                    state.economy.military_factories,
-                    state.economy.dockyards,
-                    state.economy.infrastructure,
-                ),
-                panel_x + 14.0,
-                panel_y + 105.0,
-                if compact { 10.0 } else { 12.0 },
-                Color::from_rgba(177, 205, 180, 255),
-            );
-        }
-        if state_id.is_some() {
-            draw_ui_text("Selected state boundary highlighted", panel_x + 14.0, panel_y + panel_h - 12.0, 11.0,
-                Color::from_rgba(235, 198, 120, 255));
+        let info_y = panel_y + 52.0;
+        draw_ui_text(&format!("State ID: {}  ·  Province: {province_id}  ·  Owner: {owner}",
+            state_id.map(|id| id.to_string()).unwrap_or_else(|| "—".to_owned())),
+            panel_x + 14.0, info_y, if compact { 11.0 } else { 13.0 }, LIGHTGRAY);
+
+        let table_x = panel_x + 14.0;
+        let table_y = panel_y + 72.0;
+        let table_w = (panel_w - 28.0).max(120.0);
+        let label_w = table_w * 0.72;
+        let row_h = if compact { 19.0 } else { 20.0 };
+        draw_rectangle(table_x, table_y, table_w, row_h, Color::from_rgba(39, 52, 65, 255));
+        draw_ui_text("BUILDING", table_x + 8.0, table_y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, WHITE);
+        draw_ui_text("LEVEL", table_x + label_w + 8.0, table_y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, WHITE);
+        let economy = state_id.and_then(|id| map.world.states.get(&id)).map(|state| state.economy).unwrap_or_default();
+        let rows = [
+            ("Civilian factories", economy.civilian_factories),
+            ("Military factories", economy.military_factories),
+            ("Naval dockyards", economy.dockyards),
+            ("Infrastructure", economy.infrastructure),
+        ];
+        for (index, (label, value)) in rows.iter().enumerate() {
+            let y = table_y + row_h * (index as f32 + 1.0);
+            if index % 2 == 0 { draw_rectangle(table_x, y, table_w, row_h, Color::from_rgba(25, 39, 52, 255)); }
+            draw_rectangle_lines(table_x, y, table_w, row_h, 0.5, Color::from_rgba(61, 79, 96, 255));
+            draw_ui_text(label, table_x + 8.0, y + row_h * 0.72, if compact { 10.0 } else { 12.0 }, LIGHTGRAY);
+            draw_ui_text(&value.to_string(), table_x + label_w + 8.0, y + row_h * 0.72,
+                if compact { 10.0 } else { 12.0 }, WHITE);
         }
     }
 
@@ -1631,6 +1756,8 @@ async fn main() {
         Err(error) => (None, error),
     };
     let mut selected: Option<(u32, [u8; 3], u32, u32)> = None;
+    let mut selected_country: Option<String> = None;
+    let mut country_page = 0usize;
     let mut game = GameState::default();
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
@@ -1639,6 +1766,7 @@ async fn main() {
     loop {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(),
+            Screen::CountrySelect => draw_country_select(map.as_deref(), &mut selected_country, &mut country_page),
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::Space) {
@@ -1661,7 +1789,9 @@ async fn main() {
                     cached_date_label = game.date.display();
                 }
 
-                let rendered_screen = draw_map_viewer(map.as_mut(), &load_error, &mut selected);
+                let rendered_screen = draw_map_viewer(
+                    map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
+                );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
                     game.toggle_pause();
