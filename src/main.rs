@@ -169,7 +169,7 @@ impl ProvinceMap {
     }
 
     fn set_zoom(&mut self, factor: f32) {
-        self.zoom = (self.zoom * factor).clamp(1.0, 12.0);
+        self.zoom = (self.zoom * factor).clamp(1.0, 48.0);
         self.clamp_pan();
     }
 
@@ -184,7 +184,7 @@ impl ProvinceMap {
         let map_x = old.x + u * old.w;
         let map_y = old.y + v * old.h;
 
-        self.zoom = (self.zoom * factor).clamp(1.0, 12.0);
+        self.zoom = (self.zoom * factor).clamp(1.0, 48.0);
         let new_w = self.width as f32 / self.zoom;
         let new_h = self.height as f32 / self.zoom;
         self.pan.x = map_x - u * new_w - (self.width as f32 - new_w) * 0.5;
@@ -420,12 +420,16 @@ fn build_map_mode_textures(
         let rgb = [pixel[0], pixel[1], pixel[2]];
         let province_id = id_by_rgb.get(&rgb).copied().unwrap_or(0);
         let state_id = state_by_province.get(&province_id).copied().unwrap_or(0);
-        let owner_color = owner_by_state.get(&state_id).map(|tag| tag_color(tag)).unwrap_or([105, 110, 115]);
+        let owner = owner_by_state.get(&state_id);
+        let owner_color = owner.map(|tag| tag_color(tag));
         let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
         let offset = pixel_index * 4;
-        // Political mode must show countries, not the original province-ID RGB raster.
-        // Strong, solid national colors make borders and country shapes readable.
-        political[offset..offset + 3].copy_from_slice(&owner_color);
+        // Political mode keeps terrain details visible under a translucent national tint.
+        // States with no parsed owner remain terrain-coloured instead of becoming grey blocks.
+        let political_color = owner_color
+            .map(|country| blend_country(base_terrain, country, 0.48))
+            .unwrap_or(base_terrain);
+        political[offset..offset + 3].copy_from_slice(&political_color);
         political[offset + 3] = 255;
 
         // Terrain mode is terrain-first; do not tint it with country colors.
@@ -764,10 +768,10 @@ fn draw_map_viewer(
     if compact {
         if let Some(map) = map.as_deref_mut() {
             if button("+", screen_width() - 176.0, 15.0, 34.0, 38.0) {
-                map.set_zoom(1.25);
+                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
             if button("−", screen_width() - 134.0, 15.0, 34.0, 38.0) {
-                map.set_zoom(1.0 / 1.25);
+                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
         }
         if button("Back", screen_width() - 86.0, 15.0, 72.0, 38.0) {
@@ -779,10 +783,10 @@ fn draw_map_viewer(
         }
         if let Some(map) = map.as_deref_mut() {
             if button("Zoom +", 22.0, screen_height() - 174.0, 96.0, 38.0) {
-                map.zoom = (map.zoom * 1.25).clamp(1.0, 12.0);
+                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
             if button("Zoom -", 132.0, screen_height() - 174.0, 100.0, 38.0) {
-                map.zoom = (map.zoom / 1.25).clamp(1.0, 12.0);
+                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
             if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
                 map.zoom = 1.0;
@@ -796,7 +800,7 @@ fn draw_map_viewer(
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let view = map_view_rect(map);
         if wheel_y != 0.0 && view.contains(mouse) {
-            map.set_zoom_at(1.12_f32.powf(wheel_y), mouse, view);
+            map.set_zoom_at(1.22_f32.powf(wheel_y), mouse, view);
         }
     }
     if compact {
