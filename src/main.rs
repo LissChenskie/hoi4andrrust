@@ -189,6 +189,9 @@ fn draw_background() {
 }
 
 fn draw_main_menu() -> Screen {
+    if screen_width() < 760.0 {
+        return draw_main_menu_compact();
+    }
     draw_background();
 
     let width = screen_width();
@@ -221,12 +224,32 @@ fn draw_main_menu() -> Screen {
     Screen::MainMenu
 }
 
+
+fn draw_main_menu_compact() -> Screen {
+    draw_background();
+    draw_text("HOI4 MOBILE", 22.0, 82.0, 36.0, WHITE);
+    draw_text("Independent Rust strategy prototype", 24.0, 111.0, 15.0, LIGHTGRAY);
+
+    let button_x = 20.0;
+    let button_w = (screen_width() - 40.0).max(180.0);
+    let first_y = (screen_height() * 0.40).max(190.0);
+    if button("Open map viewer", button_x, first_y, button_w, 54.0) {
+        return Screen::MapViewer;
+    }
+    if button("Map data / import guide", button_x, first_y + 68.0, button_w, 54.0) {
+        return Screen::Settings;
+    }
+    draw_text("Prototype milestone 01", 22.0, screen_height() - 28.0, 14.0, LIGHTGRAY);
+    Screen::MainMenu
+}
+
 fn map_view_rect(map: &ProvinceMap) -> Rect {
     let compact = screen_width() < 760.0;
     let left = if compact { 12.0 } else { 270.0 };
     let top = if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
-    let available_h = (screen_height() - top - 24.0).max(1.0);
+    let bottom_reserve = if compact { 90.0 } else { 24.0 };
+    let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
     let height = map.height as f32 * scale;
@@ -331,6 +354,19 @@ fn draw_map_viewer(
 }
 
 fn draw_settings() -> Screen {
+    if screen_width() < 760.0 {
+        draw_background();
+        draw_text("MAP DATA / IMPORT", 20.0, 70.0, 23.0, WHITE);
+        draw_text("Create this folder beside Cargo.toml:", 20.0, 119.0, 15.0, LIGHTGRAY);
+        draw_text("data/hoi4/map/", 20.0, 147.0, 17.0, WHITE);
+        draw_text("Add provinces.bmp and definition.csv.", 20.0, 181.0, 14.0, WHITE);
+        draw_text("Only use data you are allowed to use.", 20.0, 211.0, 14.0, LIGHTGRAY);
+        draw_text("Android file import is not ready yet.", 20.0, 247.0, 14.0, Color::from_rgba(236, 187, 126, 255));
+        if button("Back to menu", 20.0, screen_height() - 82.0, 220.0, 50.0) {
+            return Screen::MainMenu;
+        }
+        return Screen::Settings;
+    }
     draw_background();
     draw_text("MAP DATA / IMPORT GUIDE", 48.0, 86.0, 30.0, WHITE);
     draw_text("The viewer reads files from a local folder; the repository does not include game assets.", 50.0, 132.0, 17.0, LIGHTGRAY);
