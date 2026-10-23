@@ -34,6 +34,15 @@ struct ResourceMarker {
     color: Color,
 }
 
+#[derive(Clone)]
+struct CityMarker {
+    province_id: u32,
+    victory_points: u32,
+    x: f32,
+    y: f32,
+    name: String,
+}
+
 impl MapMode {
     fn label(self) -> &'static str {
         match self {
@@ -59,7 +68,9 @@ struct ProvinceMap {
     resources_texture: Texture2D,
     terrain_texture: Texture2D,
     resource_markers: Vec<ResourceMarker>,
+    city_markers: Vec<CityMarker>,
     zoom: f32,
+    target_zoom: f32,
     pan: Vec2,
     last_mouse: Vec2,
     dragging: bool,
@@ -130,6 +141,7 @@ impl ProvinceMap {
         let resource_markers = build_resource_markers(
             width, height, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
+        let city_markers = build_city_markers(width, height, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
 
         Ok(Self {
             texture,
@@ -146,7 +158,9 @@ impl ProvinceMap {
             resources_texture,
             terrain_texture,
             resource_markers,
+            city_markers,
             zoom: 1.0,
+            target_zoom: 1.0,
             pan: Vec2::ZERO,
             last_mouse: Vec2::ZERO,
             dragging: false,
@@ -169,7 +183,8 @@ impl ProvinceMap {
     }
 
     fn set_zoom(&mut self, factor: f32) {
-        self.zoom = (self.zoom * factor).clamp(1.0, 48.0);
+        self.zoom = (self.zoom * factor).clamp(1.0, 24.0);
+        self.target_zoom = self.zoom;
         self.clamp_pan();
     }
 
@@ -184,7 +199,8 @@ impl ProvinceMap {
         let map_x = old.x + u * old.w;
         let map_y = old.y + v * old.h;
 
-        self.zoom = (self.zoom * factor).clamp(1.0, 48.0);
+        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 24.0);
+        self.zoom = self.target_zoom;
         let new_w = self.width as f32 / self.zoom;
         let new_h = self.height as f32 / self.zoom;
         self.pan.x = map_x - u * new_w - (self.width as f32 - new_w) * 0.5;
@@ -553,6 +569,116 @@ fn build_resource_markers(
     markers
 }
 
+fn build_city_markers(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+    state_directory: &Path,
+) -> Vec<CityMarker> {
+    let mut points = HashMap::<u32, u32>::new();
+    let Ok(entries) = fs::read_dir(state_directory) else { return Vec::new() };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") { continue; }
+        let Ok(source) = fs::read_to_string(path) else { continue };
+        let lines: Vec<&str> = source.lines().collect();
+        let mut in_vp = false;
+        let mut depth = 0i32;
+        for line in lines {
+            let clean = line.split('#').next().unwrap_or("").trim();
+            if clean.starts_with("victory_points") && clean.contains('{') {
+                in_vp = true;
+                depth = clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if let Some((_, tail)) = clean.split_once('{') {
+                    parse_victory_point_pairs(tail, &mut points);
+                }
+                if depth <= 0 { in_vp = false; }
+                continue;
+            }
+            if in_vp {
+                parse_victory_point_pairs(clean, &mut points);
+                depth += clean.matches('{').count() as i32 - clean.matches('}').count() as i32;
+                if depth <= 0 { in_vp = false; }
+            }
+        }
+    }
+
+    let mut sums = HashMap::<u32, (f64, f64, u32)>::new();
+    for (pixel_index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        let Some(province_id) = id_by_rgb.get(&rgb) else { continue };
+        if !points.contains_key(province_id) { continue; }
+        let x = (pixel_index % width as usize) as f64;
+        let y = (pixel_index / width as usize) as f64;
+        let item = sums.entry(*province_id).or_insert((0.0, 0.0, 0));
+        item.0 += x; item.1 += y; item.2 += 1;
+    }
+
+    let names = load_victory_point_names();
+    let mut markers = Vec::new();
+    let mut ids: Vec<u32> = points.keys().copied().collect();
+    ids.sort_unstable();
+    for province_id in ids {
+        let Some((sx, sy, count)) = sums.get(&province_id).copied() else { continue };
+        if count == 0 { continue; }
+        markers.push(CityMarker {
+            province_id,
+            victory_points: points[&province_id],
+            x: (sx / count as f64) as f32,
+            y: (sy / count as f64) as f32,
+            name: names.get(&province_id).cloned().unwrap_or_default(),
+        });
+    }
+    markers
+}
+
+fn parse_victory_point_pairs(line: &str, points: &mut HashMap<u32, u32>) {
+    let tokens: Vec<&str> = line.split(|c: char| c.is_whitespace() || c == '{' || c == '}').filter(|s| !s.is_empty()).collect();
+    for pair in tokens.chunks_exact(2) {
+        if let (Ok(province), Ok(value)) = (pair[0].parse::<u32>(), pair[1].parse::<u32>()) {
+            points.insert(province, value);
+        }
+    }
+}
+
+fn load_victory_point_names() -> HashMap<u32, String> {
+    let mut names = HashMap::new();
+    let roots = [
+        Path::new("data/hoi4/localisation"),
+        Path::new("data/hoi4/localisation/english"),
+    ];
+    for root in roots {
+        let Ok(entries) = fs::read_dir(root) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let Ok(files) = fs::read_dir(path) else { continue };
+                for file in files.flatten() {
+                    let p = file.path();
+                    if p.extension().and_then(|e| e.to_str()) == Some("yml") {
+                        if let Ok(source) = fs::read_to_string(p) { parse_vp_localisation(&source, &mut names); }
+                    }
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some("yml") {
+                if let Ok(source) = fs::read_to_string(path) { parse_vp_localisation(&source, &mut names); }
+            }
+        }
+    }
+    names
+}
+
+fn parse_vp_localisation(source: &str, names: &mut HashMap<u32, String>) {
+    for line in source.lines() {
+        let Some((key, value)) = line.trim().split_once(':') else { continue };
+        let key = key.trim().trim_start_matches('\u{feff}');
+        let Some(raw_id) = key.strip_prefix("VICTORY_POINTS_") else { continue };
+        let Ok(id) = raw_id.parse::<u32>() else { continue };
+        let value = value.trim().trim_matches('"');
+        if !value.is_empty() { names.entry(id).or_insert_with(|| value.to_owned()); }
+    }
+}
+
 fn resource_pairs(line: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for part in line.split(|c: char| c == '{' || c == '}' || c.is_whitespace()) {
@@ -794,6 +920,7 @@ fn draw_map_viewer(
             }
             if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
                 map.zoom = 1.0;
+                map.target_zoom = 1.0;
                 map.pan = Vec2::ZERO;
             }
         }
@@ -804,7 +931,8 @@ fn draw_map_viewer(
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let view = map_view_rect(map);
         if wheel_y != 0.0 && view.contains(mouse) {
-            map.set_zoom_at(1.22_f32.powf(wheel_y), mouse, view);
+            let wheel_step = wheel_y.clamp(-1.0, 1.0);
+            map.set_zoom_at((wheel_step * 0.10).exp(), mouse, view);
         }
     }
     if compact {
@@ -924,6 +1052,22 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
+            if map.zoom >= 2.2 {
+                let label_scale = (map.zoom.sqrt() * 0.9).clamp(0.8, 1.25);
+                for city in &map.city_markers {
+                    if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
+                        || city.y < source_rect.y || city.y > source_rect.y + source_rect.h { continue; }
+                    let x = rect.x + (city.x - source_rect.x) / source_rect.w * rect.w;
+                    let y = rect.y + (city.y - source_rect.y) / source_rect.h * rect.h;
+                    draw_circle(x, y, 3.2 * label_scale, Color::from_rgba(245, 224, 168, 255));
+                    draw_circle_lines(x, y, 4.2 * label_scale, 1.0, Color::from_rgba(25, 31, 38, 255));
+                    let size = (11.0 * label_scale).clamp(9.0, 15.0);
+                    let label = if city.name.is_empty() { format!("VP {}", city.victory_points) } else { city.name.clone() };
+                    let tw = measure_text(&label, None, size as u16, 1.0).width;
+                    draw_rectangle(x + 6.0, y - size - 3.0, tw + 7.0, size + 5.0, Color::from_rgba(15, 22, 29, 205));
+                    draw_text(&label, x + 9.0, y - 2.0, size, WHITE);
+                }
+            }
             if map.map_mode == MapMode::Resources {
                 // HOI4-like resource badges are drawn in map space, so they follow pan and zoom.
                 let scale = (map.zoom.sqrt() * 0.85).clamp(0.75, 1.35);
