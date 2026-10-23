@@ -5,7 +5,7 @@ mod construction;
 
 use game::GameState;
 use world::World;
-use construction::{BuildingType, ConstructionProject, ConstructionQueues};
+use construction::{BuildingRules, BuildingType, ConstructionQueues};
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -1812,7 +1812,7 @@ fn draw_map_viewer(
                                 .map(|state| building.built_count(state.economy))
                                 .unwrap_or(0)
                                 .saturating_add(queue.iter().filter(|p| p.building == *building).count() as u16);
-                            queue.push_back(ConstructionProject::new(*building, level));
+                            queue.push_back(building_rules.project(*building, level));
                         }
                         *construction_menu = None;
                     }
@@ -1877,6 +1877,7 @@ async fn main() {
     let mut country_page = 0usize;
     let mut game = GameState::default();
     let mut construction_queue: ConstructionQueues = ConstructionQueues::new();
+    let building_rules = BuildingRules::load(construction::BUILDING_DEFINITIONS_DIRECTORY);
     let mut construction_menu: Option<u32> = None;
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
@@ -1906,7 +1907,7 @@ async fn main() {
                 if daily_ticks > 0 {
                     if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
                         for _ in 0..daily_ticks {
-                            construction::advance_day(&mut current_map.world, tag, &mut construction_queue);
+                            construction::advance_day(&mut current_map.world, tag, &mut construction_queue, &building_rules);
                         }
                     }
                 }
