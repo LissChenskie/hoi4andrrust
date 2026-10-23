@@ -993,7 +993,7 @@ mod tests {
 
     #[test]
     fn parses_namespaced_lua_defines_and_trailing_comments() {
-        let lua = "NDefines.NBuildings.BASE_FACTORY_SPEED = 4.0, -- old\\nNDefines.NBuildings.BASE_FACTORY_SPEED = 5.0, -- final";
+        let lua = "NDefines.NBuildings.BASE_FACTORY_SPEED = 4.0, -- old\nNDefines.NBuildings.BASE_FACTORY_SPEED = 5.0, -- final";
         assert_eq!(find_lua_number(lua, "BASE_FACTORY_SPEED"), Some(5.0));
     }
 
