@@ -25,6 +25,10 @@ pub struct CountryEconomy {
     pub civilian_factories: u32,
     pub military_factories: u32,
     pub dockyards: u32,
+    pub synthetic_refineries: u32,
+    pub fuel_silos: u32,
+    pub rocket_sites: u32,
+    pub nuclear_reactors: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +116,10 @@ impl World {
             totals.civilian_factories += u32::from(state.economy.civilian_factories);
             totals.military_factories += u32::from(state.economy.military_factories);
             totals.dockyards += u32::from(state.economy.dockyards);
+            totals.synthetic_refineries += u32::from(state.economy.synthetic_refineries);
+            totals.fuel_silos += u32::from(state.economy.fuel_silos);
+            totals.rocket_sites += u32::from(state.economy.rocket_sites);
+            totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
         }
         Some(totals)
     }
@@ -184,8 +192,8 @@ mod tests {
         let owners = HashMap::from([(1, "GER".to_owned()), (2, "GER".to_owned())]);
         let names = HashMap::new();
         let economies = HashMap::from([
-            (1, StateEconomy { infrastructure: 5, civilian_factories: 3, military_factories: 2, dockyards: 1 }),
-            (2, StateEconomy { infrastructure: 7, civilian_factories: 4, military_factories: 1, dockyards: 2 }),
+            (1, StateEconomy { infrastructure: 5, civilian_factories: 3, military_factories: 2, dockyards: 1, ..StateEconomy::default() }),
+            (2, StateEconomy { infrastructure: 7, civilian_factories: 4, military_factories: 1, dockyards: 2, ..StateEconomy::default() }),
         ]);
         let world = World::from_map_data(&membership, &owners, &names, &economies, &HashMap::new());
         let totals = world.country_economy("GER").unwrap();
