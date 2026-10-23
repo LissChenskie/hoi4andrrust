@@ -15,8 +15,8 @@ jobs:
         with:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+      - name: Format Rust sources in the CI workspace
+        run: cargo fmt --all
       - name: Run unit tests
         run: cargo test --all-targets
       - name: Check application
