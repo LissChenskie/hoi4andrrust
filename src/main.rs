@@ -1703,9 +1703,7 @@ fn draw_map_viewer(
 
         // Shared factory slots come from the state's actual state_category definition.
         // Infrastructure remains separate: it changes construction speed, not slot capacity.
-        let built = usize::from(economy.civilian_factories)
-            + usize::from(economy.military_factories)
-            + usize::from(economy.dockyards);
+        let built = usize::from(economy.occupied_shared_slots());
         let base_slots = selected_state.map(|state| usize::from(state.shared_building_slots)).unwrap_or(0);
         // Until technology/focus slot bonuses are simulated, never hide starting factories
         // if they exceed the base category value in a modded or modified save.
@@ -1727,6 +1725,10 @@ fn draw_map_viewer(
         slot_types.extend(std::iter::repeat_n(("C", Color::from_rgba(224, 139, 45, 255)), usize::from(economy.civilian_factories)));
         slot_types.extend(std::iter::repeat_n(("M", Color::from_rgba(67, 157, 88, 255)), usize::from(economy.military_factories)));
         slot_types.extend(std::iter::repeat_n(("N", Color::from_rgba(80, 158, 133, 255)), usize::from(economy.dockyards)));
+        slot_types.extend(std::iter::repeat_n(("S", Color::from_rgba(146, 111, 190, 255)), usize::from(economy.synthetic_refineries)));
+        slot_types.extend(std::iter::repeat_n(("F", Color::from_rgba(185, 147, 65, 255)), usize::from(economy.fuel_silos)));
+        slot_types.extend(std::iter::repeat_n(("R", Color::from_rgba(182, 93, 154, 255)), usize::from(economy.rocket_sites)));
+        slot_types.extend(std::iter::repeat_n(("A", Color::from_rgba(105, 143, 185, 255)), usize::from(economy.nuclear_reactors)));
         for index in 0..slot_count {
             let col = index % 15;
             let row = index / 15;
@@ -1763,9 +1765,13 @@ fn draw_map_viewer(
 
         let legend_y = grid_y + cell_h + gap + (if slot_count > 15 { cell_h + gap } else { 0.0 }) + 13.0;
         let legend_size = if compact { 9.0 } else { 11.0 };
-        draw_ui_text(&format!("C Civilian: {}   M Military: {}   N Dockyards: {}   INF: {}",
-            economy.civilian_factories, economy.military_factories, economy.dockyards, economy.infrastructure),
+        draw_ui_text(&format!("C Civ: {}  M Mil: {}  N Dock: {}  S Synth: {}  F Fuel: {}",
+            economy.civilian_factories, economy.military_factories, economy.dockyards,
+            economy.synthetic_refineries, economy.fuel_silos),
             table_x, legend_y, legend_size, LIGHTGRAY);
+        draw_ui_text(&format!("R Rocket: {}  A Reactor: {}  INF: {}",
+            economy.rocket_sites, economy.nuclear_reactors, economy.infrastructure),
+            table_x, legend_y + if compact { 12.0 } else { 15.0 }, legend_size, LIGHTGRAY);
     }
 
     Screen::MapViewer
