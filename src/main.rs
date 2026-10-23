@@ -716,44 +716,46 @@ fn parse_victory_point_pairs(line: &str, points: &mut HashMap<u32, u32>) {
 }
 
 fn load_victory_point_names() -> HashMap<u32, String> {
-    let mut names = HashMap::new();
-    let roots = [
-        Path::new("data/hoi4/localisation"),
-        Path::new("data/hoi4/localisation/english"),
-    ];
-    for root in roots {
-        let Ok(entries) = fs::read_dir(root) else { continue };
+    fn visit(directory: &Path, names: &mut HashMap<u32, String>) {
+        let Ok(entries) = fs::read_dir(directory) else { return };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let Ok(files) = fs::read_dir(path) else { continue };
-                for file in files.flatten() {
-                    let p = file.path();
-                    if p.extension().and_then(|e| e.to_str()) == Some("yml") {
-                        if let Ok(source) = fs::read_to_string(p) { parse_vp_localisation(&source, &mut names); }
-                    }
+                visit(&path, names);
+            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("yml")) {
+                if let Ok(source) = fs::read_to_string(&path) {
+                    parse_vp_localisation(&source, names);
                 }
-            } else if path.extension().and_then(|e| e.to_str()) == Some("yml") {
-                if let Ok(source) = fs::read_to_string(path) { parse_vp_localisation(&source, &mut names); }
             }
         }
     }
+
+    let mut names = HashMap::new();
+    // Search all nested localisation folders, including language/replace folders.
+    visit(Path::new("data/hoi4/localisation"), &mut names);
     names
 }
 
 fn parse_vp_localisation(source: &str, names: &mut HashMap<u32, String>) {
     for line in source.lines() {
-        let Some((key, value)) = line.trim().split_once(':') else { continue };
-        let key = key.trim().trim_start_matches('\u{feff}');
+        let line = line.trim().trim_start_matches('\u{feff}');
+        let Some((key, value)) = line.split_once(':') else { continue };
+        let key = key.trim().trim_matches('"');
         let Some(raw_id) = key.strip_prefix("VICTORY_POINTS_") else { continue };
         let Ok(id) = raw_id.parse::<u32>() else { continue };
-        let mut value = value.trim();
-        // HOI4 localisation rows commonly use KEY:0 \"Name\".
-        if value.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-            if let Some((_, rest)) = value.split_once(' ') { value = rest.trim(); }
+
+        // Accept the usual HOI4 format: VICTORY_POINTS_123:0 "City".
+        let value = value.trim();
+        let value = value.strip_prefix("0").map(str::trim_start).unwrap_or(value);
+        let value = value.trim_matches('"').trim();
+        if value.is_empty() { continue; }
+
+        // Do not treat untranslated/internal keys as readable city names.
+        let lower = value.to_ascii_lowercase();
+        if lower.starts_with("vp_") || lower.starts_with("victory_points_") {
+            continue;
         }
-        let value = value.trim_matches('"');
-        if !value.is_empty() { names.entry(id).or_insert_with(|| value.to_owned()); }
+        names.entry(id).or_insert_with(|| value.to_owned());
     }
 }
 
