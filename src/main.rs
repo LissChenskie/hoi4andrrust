@@ -119,6 +119,7 @@ struct ProvinceMap {
     state_name_by_id: HashMap<u32, String>,
     state_count: usize,
     state_load_status: String,
+    province_border_texture: Texture2D,
     state_border_texture: Option<Texture2D>,
     political_texture: Texture2D,
     resources_texture: Texture2D,
@@ -175,6 +176,8 @@ impl ProvinceMap {
                 Err(error) => (HashMap::new(), 0, error),
             };
 
+        let province_border_texture = build_province_border_texture(width, height, &rgba, &id_by_rgb);
+
         let state_border_texture = if state_count > 0 {
             Some(build_state_border_texture(
                 width,
@@ -219,6 +222,7 @@ impl ProvinceMap {
             state_name_by_id,
             state_count,
             state_load_status,
+            province_border_texture,
             state_border_texture,
             political_texture,
             resources_texture,
@@ -329,6 +333,51 @@ fn build_state_border_texture(
                 overlay[offset + 1] = 198;
                 overlay[offset + 2] = 120;
                 overlay[offset + 3] = 230;
+            }
+        }
+    }
+
+    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+    texture.set_filter(FilterMode::Linear);
+    texture
+}
+
+/// Build a subtle overlay for province boundaries, separate from the stronger state borders.
+fn build_province_border_texture(
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    id_by_rgb: &HashMap<[u8; 3], u32>,
+) -> Texture2D {
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let pixel_count = width_usize * height_usize;
+    let mut province_ids = vec![0u32; pixel_count];
+
+    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+        let rgb = [pixel[0], pixel[1], pixel[2]];
+        province_ids[index] = id_by_rgb.get(&rgb).copied().unwrap_or(0);
+    }
+
+    let mut overlay = vec![0u8; pixel_count * 4];
+    for y in 0..height_usize {
+        for x in 0..width_usize {
+            let index = y * width_usize + x;
+            let province_id = province_ids[index];
+            if province_id == 0 {
+                continue;
+            }
+
+            let differs = (x > 0 && province_ids[index - 1] != province_id)
+                || (x + 1 < width_usize && province_ids[index + 1] != province_id)
+                || (y > 0 && province_ids[index - width_usize] != province_id)
+                || (y + 1 < height_usize && province_ids[index + width_usize] != province_id);
+            if differs {
+                let offset = index * 4;
+                overlay[offset] = 20;
+                overlay[offset + 1] = 25;
+                overlay[offset + 2] = 31;
+                overlay[offset + 3] = 105;
             }
         }
     }
@@ -1355,6 +1404,18 @@ fn draw_map_viewer(
             };
             draw_texture_ex(
                 mode_texture,
+                rect.x,
+                rect.y,
+                WHITE,
+                DrawTextureParams {
+                    source: Some(source_rect),
+                    dest_size: Some(vec2(rect.w, rect.h)),
+                    ..Default::default()
+                },
+            );
+            // Province borders remain subtle; the state overlay drawn later is brighter.
+            draw_texture_ex(
+                &map.province_border_texture,
                 rect.x,
                 rect.y,
                 WHITE,
