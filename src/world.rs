@@ -1,5 +1,6 @@
 //! Authoritative world model, independent from Macroquad rendering.
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use crate::state::StateEconomy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Country {
@@ -13,6 +14,16 @@ pub struct State {
     pub name: Option<String>,
     pub owner: Option<String>,
     pub province_ids: Vec<u32>,
+    pub economy: StateEconomy,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CountryEconomy {
+    pub states: u32,
+    pub infrastructure_total: u32,
+    pub civilian_factories: u32,
+    pub military_factories: u32,
+    pub dockyards: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +45,7 @@ impl World {
         state_by_province: &HashMap<u32, u32>,
         owner_by_state: &HashMap<u32, String>,
         state_names: &HashMap<u32, String>,
+        economy_by_state: &HashMap<u32, StateEconomy>,
     ) -> Self {
         let mut world = Self::default();
 
@@ -47,6 +59,7 @@ impl World {
                 name: state_names.get(&state_id).cloned(),
                 owner: owner_by_state.get(&state_id).cloned(),
                 province_ids: Vec::new(),
+                economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             }).province_ids.push(province_id);
         }
 
@@ -57,6 +70,7 @@ impl World {
                 name: state_names.get(&state_id).cloned(),
                 owner: None,
                 province_ids: Vec::new(),
+                economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             });
             state.owner = Some(owner.clone());
         }
@@ -66,6 +80,7 @@ impl World {
                 name: Some(name.clone()),
                 owner: owner_by_state.get(&state_id).cloned(),
                 province_ids: Vec::new(),
+                economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
             }).name = Some(name.clone());
         }
 
@@ -79,6 +94,21 @@ impl World {
             }
         }
         world
+    }
+
+    /// Aggregate state-level factory counts for a country. Production rules are separate.
+    pub fn country_economy(&self, country_tag: &str) -> Option<CountryEconomy> {
+        let country = self.countries.get(country_tag)?;
+        let mut totals = CountryEconomy::default();
+        for state_id in &country.state_ids {
+            let Some(state) = self.states.get(state_id) else { continue };
+            totals.states += 1;
+            totals.infrastructure_total += u32::from(state.economy.infrastructure);
+            totals.civilian_factories += u32::from(state.economy.civilian_factories);
+            totals.military_factories += u32::from(state.economy.military_factories);
+            totals.dockyards += u32::from(state.economy.dockyards);
+        }
+        Some(totals)
     }
 
     pub fn state_for_province(&self, province_id: u32) -> Option<&State> {
@@ -126,7 +156,7 @@ mod tests {
         let membership = HashMap::from([(101, 1), (102, 1), (201, 2)]);
         let owners = HashMap::from([(1, "GER".to_owned()), (2, "POL".to_owned())]);
         let names = HashMap::from([(1, "State One".to_owned()), (2, "State Two".to_owned())]);
-        World::from_map_data(&membership, &owners, &names)
+        World::from_map_data(&membership, &owners, &names, &HashMap::new())
     }
 
     #[test]
@@ -137,7 +167,28 @@ mod tests {
         assert_eq!(world.states[&1].name.as_deref(), Some("State One"));
         assert_eq!(world.countries["GER"].state_ids.iter().copied().collect::<Vec<_>>(), vec![1]);
         assert_eq!(world.owner_of_province(102), Some("GER"));
+        assert_eq!(world.country_economy("GER").unwrap().states, 1);
         assert_eq!(world.owner_of_province(999), None);
+    }
+
+
+    #[test]
+    fn aggregates_factories_for_the_current_state_owner() {
+        use crate::state::StateEconomy;
+        let membership = HashMap::from([(101, 1), (201, 2)]);
+        let owners = HashMap::from([(1, "GER".to_owned()), (2, "GER".to_owned())]);
+        let names = HashMap::new();
+        let economies = HashMap::from([
+            (1, StateEconomy { infrastructure: 5, civilian_factories: 3, military_factories: 2, dockyards: 1 }),
+            (2, StateEconomy { infrastructure: 7, civilian_factories: 4, military_factories: 1, dockyards: 2 }),
+        ]);
+        let world = World::from_map_data(&membership, &owners, &names, &economies);
+        let totals = world.country_economy("GER").unwrap();
+        assert_eq!(totals.states, 2);
+        assert_eq!(totals.civilian_factories, 7);
+        assert_eq!(totals.military_factories, 3);
+        assert_eq!(totals.dockyards, 3);
+        assert_eq!(totals.infrastructure_total, 12);
     }
 
     #[test]
