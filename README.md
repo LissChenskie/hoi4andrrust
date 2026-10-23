@@ -8,7 +8,7 @@ An independent, early-stage grand-strategy prototype. The current milestone is d
 - Main menu and navigation to the map viewer / map import guide.
 - Loads a local BMP province raster and HOI4 definition table (semicolon-delimited vanilla format, comma-delimited also accepted).
 - Displays the source raster with nearest-neighbour filtering so province colours are not blurred.
-- Clicking/tapping a pixel resolves its RGB colour to a province ID.
+- Supports zoom buttons, mouse-wheel zoom, drag-to-pan, and tapping/clicking to resolve a pixel to a province ID.
 - Parses local Clausewitz state files, shows a selected province's state ID, and draws state boundaries as a translucent overlay when membership data is available.
 - Does not bundle Paradox map assets or decompiled game code.
 
@@ -42,8 +42,8 @@ This command is documented but has **not been executed in the current environmen
 ## Roadmap
 
 1. Main menu and local raster viewer.
-2. Province ID lookup, state membership parsing, and state-border overlay (implemented in the prototype).
-3. Add zoom/pan and more touch-friendly map controls.
+2. Province ID lookup, state membership parsing, state-border overlay, and basic zoom/pan (implemented in the prototype).
+3. Improve touch gestures and add a true Android file-import flow.
 4. Validate map completeness and cross-file references.
 5. Add country ownership colours and further map layers.
 6. Android import flow and on-device profiling.
