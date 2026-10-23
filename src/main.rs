@@ -1410,6 +1410,7 @@ fn draw_map_viewer(
     player_country: Option<&str>,
     construction_queue: &mut ConstructionQueues,
     construction_menu: &mut Option<u32>,
+    building_rules: &BuildingRules,
 ) -> Screen {
     draw_background();
     draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
@@ -1812,13 +1813,12 @@ fn draw_map_viewer(
                                 .map(|state| building.built_count(state.economy))
                                 .unwrap_or(0)
                                 .saturating_add(queue.iter().filter(|p| p.building == *building).count() as u16);
-                            let controlled_count = map.as_deref()
-                                .and_then(|current_map| player_country
-                                    .and_then(|tag| current_map.world.countries.get(tag))
-                                    .map(|country| country.state_ids.iter()
-                                        .filter_map(|state_id| map.as_deref().and_then(|m| m.world.states.get(state_id)))
-                                        .map(|state| u32::from(building.built_count(state.economy)))
-                                        .sum::<u32>()))
+                            let controlled_count = player_country
+                                .and_then(|tag| map.world.countries.get(tag))
+                                .map(|country| country.state_ids.iter()
+                                    .filter_map(|state_id| map.world.states.get(state_id))
+                                    .map(|state| u32::from(building.built_count(state.economy)))
+                                    .sum::<u32>())
                                 .unwrap_or(0);
                             queue.push_back(building_rules.project(*building, level, controlled_count));
                         }
@@ -1933,7 +1933,7 @@ async fn main() {
 
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
-                    &mut construction_queue, &mut construction_menu,
+                    &mut construction_queue, &mut construction_menu, &building_rules,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
