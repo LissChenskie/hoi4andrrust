@@ -899,7 +899,8 @@ fn draw_map_viewer(
             let source_rect = map.source_rect();
             let mode_texture = match map.map_mode {
                 MapMode::Political => &map.political_texture,
-                MapMode::Resources => &map.resources_texture,
+                // Resource mode keeps country colors and adds resource badges above them.
+                MapMode::Resources => &map.political_texture,
                 MapMode::Terrain => &map.terrain_texture,
             };
             draw_texture_ex(
