@@ -1715,8 +1715,8 @@ fn draw_map_viewer(
         let total_grid_w = cell_w * 15.0 + gap * 14.0;
         let grid_x = table_x + (table_w - total_grid_w).max(0.0) * 0.5;
         let mut slot_types = Vec::with_capacity(slot_count);
-        slot_types.extend(std::iter::repeat_n(("C", Color::from_rgba(72, 139, 188, 255)), usize::from(economy.civilian_factories)));
-        slot_types.extend(std::iter::repeat_n(("M", Color::from_rgba(190, 91, 70, 255)), usize::from(economy.military_factories)));
+        slot_types.extend(std::iter::repeat_n(("C", Color::from_rgba(224, 139, 45, 255)), usize::from(economy.civilian_factories)));
+        slot_types.extend(std::iter::repeat_n(("M", Color::from_rgba(67, 157, 88, 255)), usize::from(economy.military_factories)));
         slot_types.extend(std::iter::repeat_n(("N", Color::from_rgba(80, 158, 133, 255)), usize::from(economy.dockyards)));
         for index in 0..slot_count {
             let col = index % 15;
