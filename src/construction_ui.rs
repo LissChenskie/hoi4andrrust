@@ -190,11 +190,14 @@ fn draw_queue_icon(building: BuildingType, x: f32, y: f32, size: f32) {
 fn build_in_state(
     world: &World, country: &str, state_id: u32,
     queues: &mut ConstructionQueues, priority: &mut Vec<u32>,
-    rules: &BuildingRules, view: &ConstructionView, notice: &mut String,
+    rules: &BuildingRules, view: &mut ConstructionView, notice: &mut String,
 ) {
     match construction::enqueue_project(world, country, state_id, queues, rules, view.selected_building) {
         Ok(()) => {
             if !priority.contains(&state_id) { priority.push(state_id); }
+            // Preserve the order in which the player clicks states, rather
+            // than sorting all untracked projects by numeric state ID later.
+            view.order.sync(world, country, queues);
             *notice = format!("{}: {} added to queue", state_id, view.selected_building.label());
         }
         Err(reason) => *notice = reason.to_owned(),
