@@ -12,6 +12,8 @@ pub struct ConstructionView {
     pub selected_building: BuildingType,
     pub focused_state: Option<u32>,
     pub first_visible_row: usize,
+    /// Clicking a building switches from the full queue to map placement.
+    pub map_placement: bool,
 }
 
 impl Default for ConstructionView {
@@ -21,12 +23,27 @@ impl Default for ConstructionView {
             selected_building: BuildingType::CivilianFactory,
             focused_state: None,
             first_visible_row: 0,
+            map_placement: false,
         }
     }
 }
 
-pub fn bounds() -> Rect {
+impl ConstructionView {
+    pub fn close(&mut self) {
+        self.open = false;
+        self.map_placement = false;
+    }
+}
+
+pub fn bounds(view: &ConstructionView) -> Rect {
     let compact = screen_width() < 760.0;
+    if view.map_placement {
+        return if compact {
+            Rect::new(7.0, 107.0, (screen_width() - 14.0).max(1.0), 164.0)
+        } else {
+            Rect::new(12.0, 110.0, 241.0, 263.0)
+        };
+    }
     let x = if compact { 7.0 } else { 12.0 };
     let y = if compact { 107.0 } else { 110.0 };
     let width = if compact {
@@ -38,8 +55,8 @@ pub fn bounds() -> Rect {
     Rect::new(x, y, width, (screen_height() - y - bottom).max(200.0))
 }
 
-pub fn is_over_panel(point: Vec2) -> bool {
-    bounds().contains(point)
+pub fn is_over_panel(point: Vec2, view: &ConstructionView) -> bool {
+    view.open && bounds(view).contains(point)
 }
 
 fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
@@ -154,12 +171,12 @@ pub fn draw(
     view: &mut ConstructionView,
 ) {
     if !view.open { return; }
-    let area = bounds();
+    let area = bounds(view);
     let narrow = screen_width() < 760.0;
     ui::panel(area.x, area.y, area.w, area.h);
     ui::header(area.x + 4.0, area.y + 4.0, area.w - 8.0, "CONSTRUCTION");
     if ui::small_button("X", rect(area.x + area.w - 41.0, area.y + 7.0, 28.0, 25.0), false) {
-        view.open = false;
+        view.close();
         return;
     }
 
@@ -167,6 +184,54 @@ pub fn draw(
         draw_ui_text("Load map and select a country first.", area.x + 16.0, area.y + 84.0, 15.0, ui::MUTED);
         return;
     };
+    if view.map_placement {
+        // Placement is a compact toolbar: leave the map visible and clickable.
+        let horizontal = if narrow { area.w - 22.0 } else { area.w - 22.0 };
+        draw_ui_text(&format!("BUILD: {}", view.selected_building.label()),
+            area.x + 10.0, area.y + 57.0, if narrow { 13.0 } else { 14.0 }, ui::GOLD);
+        let column_count = 4usize;
+        let tile_gap = 3.0f32;
+        let tile_w = (horizontal - 3.0 * tile_gap) / 4.0;
+        let tile_h = if narrow { 28.0 } else { 37.0 };
+        let start_y = area.y + 70.0;
+        for (index, building) in BuildingType::ALL.into_iter().enumerate() {
+            let x = area.x + 11.0 + (index % column_count) as f32 * (tile_w + tile_gap);
+            let y = start_y + (index / column_count) as f32 * (tile_h + tile_gap);
+            // Keep changing the selected type in placement mode without
+            // reopening the full construction queue.
+            if ui::small_button(building.short_label(), rect(x, y, tile_w, tile_h),
+                view.selected_building == building) {
+                view.selected_building = building;
+            }
+        }
+        let legend_y = start_y + 2.0 * (tile_h + tile_gap) + 5.0;
+        for idx in 0..38 {
+            let fraction = idx as f32 / 37.0;
+            let color = crate::construction_map::BuildAvailability {
+                used: idx, capacity: 37, free: 37 - idx, eligible: true,
+            }.color();
+            draw_rectangle(area.x + 11.0 + idx as f32 * horizontal / 38.0,
+                legend_y, horizontal / 38.0 + 0.5, 7.0, Color::from_rgba(color[0], color[1], color[2], 255));
+            let _ = fraction;
+        }
+        draw_ui_text("FREE", area.x + 11.0, legend_y + 19.0, 10.0, ui::MUTED);
+        draw_ui_text("FULL", area.x + area.w - 39.0, legend_y + 19.0, 10.0, ui::MUTED);
+        if !narrow {
+            draw_ui_text("Tap a state: queue selected building", area.x + 11.0,
+                legend_y + 40.0, 11.0, ui::TEXT);
+            if ui::small_button("VIEW QUEUE", rect(area.x + 11.0, area.y + area.h - 31.0,
+                area.w - 22.0, 24.0), false) {
+                view.map_placement = false;
+            }
+        } else {
+            // Mobile queue return stays at the right side of the selected title.
+            if ui::small_button("QUEUE", rect(area.x + area.w - 101.0, area.y + 38.0, 85.0, 26.0), false) {
+                view.map_placement = false;
+            }
+        }
+        let _ = (world, tag);
+        return;
+    }
     let capacity = construction::country_capacity(world, tag, *policy);
     let free = capacity.map_or(0, |stats| stats.available);
     let total = capacity.map_or(0, |stats| stats.total_civilian);
@@ -206,6 +271,7 @@ pub fn draw(
         if building_tile(building, rect(x, y, cell_w, cell_h),
             building == view.selected_building, narrow) {
             view.selected_building = building;
+            view.map_placement = true;
         }
     }
 
