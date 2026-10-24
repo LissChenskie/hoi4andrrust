@@ -330,44 +330,20 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
 }
 
 
-fn parse_state_owner_history(entries: &[Entry], map_date: (u32, u32, u32)) -> Option<String> {
-    let mut owner = None;
-    let mut latest_date = None;
-
-    // The undated owner is the default. A dated history block overrides it only
-    // when its date is at or before the selected bookmark.
-    for entry in entries {
-        let Entry::Pair(key, value) = entry else { continue };
-        if key == "owner" {
-            if let Value::Atom(tag) = value {
-                if !tag.is_empty() && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                    owner = Some(tag.clone());
-                }
-            }
-            continue;
-        }
-
-        let Some(date) = parse_history_date(key) else { continue };
-        if date > map_date || latest_date.is_some_and(|previous| date < previous) {
-            continue;
-        }
-        let Value::Block(date_entries) = value else { continue };
-        if let Some(tag) = date_entries.iter().find_map(|entry| match entry {
-            Entry::Pair(field, Value::Atom(tag))
-                if field == "owner"
-                    && !tag.is_empty()
-                    && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
-            {
-                Some(tag.clone())
-            }
-            _ => None,
-        }) {
-            owner = Some(tag);
-            latest_date = Some(date);
-        }
-    }
-
-    owner
+fn parse_state_owner_history(entries: &[Entry], map_date: (u32, u32, u32), target: &str) -> Option<String> {
+    let read_tag = |fields: &[Entry]| fields.iter().rev().find_map(|entry| match entry {
+        Entry::Pair(key, Value::Atom(tag)) if key == target && !tag.is_empty()
+            && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => Some(tag.clone()),
+        _ => None,
+    });
+    // Defaults do not override a dated history entry just because they occur
+    // later in the file. Equal-date entries retain source order.
+    entries.iter().enumerate().filter_map(|(index, entry)| {
+        let Entry::Pair(key, Value::Block(fields)) = entry else { return None; };
+        let date = parse_history_date(key)?;
+        if date > map_date { return None; }
+        Some(((date, index), read_tag(fields)?))
+    }).max_by_key(|(key, _)| *key).map(|(_, tag)| tag).or_else(|| read_tag(entries))
 }
 
 fn parse_history_date(value: &str) -> Option<(u32, u32, u32)> {
@@ -386,6 +362,16 @@ pub fn parse_state_owners(
     source: &str,
     map_date: (u32, u32, u32),
 ) -> Result<HashMap<u32, String>, String> {
+    parse_state_history_field(source, map_date, "owner")
+}
+
+pub fn parse_state_controllers(source: &str, map_date: (u32, u32, u32))
+    -> Result<HashMap<u32, String>, String> {
+    parse_state_history_field(source, map_date, "controller")
+}
+
+fn parse_state_history_field(source: &str, map_date: (u32, u32, u32), target: &str)
+    -> Result<HashMap<u32, String>, String> {
     let tokens = tokenize(source)?;
     let mut cursor = 0;
     let root = parse_entries(&tokens, &mut cursor, false)?;
@@ -413,7 +399,7 @@ pub fn parse_state_owners(
 
         let Some(id) = state_id else { continue };
         if let Some(entries) = history {
-            if let Some(owner) = parse_state_owner_history(entries, map_date) {
+            if let Some(owner) = parse_state_owner_history(entries, map_date, target) {
                 owners.insert(id, owner);
             }
         }

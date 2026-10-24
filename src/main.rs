@@ -13,6 +13,9 @@ mod production_ui;
 mod research;
 mod research_data;
 mod research_ui;
+mod session;
+mod map_graph;
+mod scenario;
 
 use game::GameState;
 use world::World;
@@ -25,12 +28,11 @@ use std::path::Path;
 
 use image::GenericImageView;
 use macroquad::prelude::*;
-use state::load_state_membership;
+use session::{GameSession, CountryConstruction};
 
 const MAP_BITMAP_PATH: &str = "data/hoi4/map/provinces.bmp";
 const MAP_DEFINITION_PATH: &str = "data/hoi4/map/definition.csv";
 const STATE_DIRECTORY_PATH: &str = "data/hoi4/history/states";
-const STATE_CATEGORY_DIRECTORY_PATH: &str = "data/hoi4/common/state_category";
 
 thread_local! {
     static UI_FONT: RefCell<Option<Font>> = const { RefCell::new(None) };
@@ -134,7 +136,6 @@ struct ProvinceMap {
     province_count: usize,
     state_by_province: HashMap<u32, u32>,
     owner_by_state: HashMap<u32, String>,
-    world: World,
     state_count: usize,
     state_load_status: String,
     map_border_texture: Texture2D,
@@ -167,7 +168,7 @@ struct ProvinceMap {
 }
 
 impl ProvinceMap {
-    fn load() -> Result<Self, String> {
+    fn load(world: &World) -> Result<Self, String> {
         let bitmap_path = Path::new(MAP_BITMAP_PATH);
         let definition_path = Path::new(MAP_DEFINITION_PATH);
 
@@ -195,29 +196,23 @@ impl ProvinceMap {
             .map_err(|error| format!("Could not read definition.csv: {error}"))?;
         let id_by_rgb = parse_definition_text(&definition_text)?;
 
-        let (state_by_province, economy_by_state, shared_slots_by_state, state_count, state_load_status) =
-            match load_state_membership(
-                Path::new(STATE_DIRECTORY_PATH),
-                Path::new(STATE_CATEGORY_DIRECTORY_PATH),
-            ) {
-                Ok(membership) => (
-                    membership.state_by_province,
-                    membership.economy_by_state,
-                    membership.shared_slots_by_state,
-                    membership.state_count,
-                    "State membership and category slots loaded".to_owned(),
-                ),
-                Err(error) => (HashMap::new(), HashMap::new(), HashMap::new(), 0, error),
-            };
+        if !world.geography.matches_source(width, height, &rgba, &definition_text) {
+            return Err("Map geometry changed. Start a new campaign to import it; the current campaign is preserved.".into());
+        }
+        let state_by_province: HashMap<_, _> = world.provinces.iter()
+            .filter_map(|(&id, province)| province.state_id.map(|state| (id, state))).collect();
+        let state_count = world.states.len();
+        let state_load_status = "Province geography and campaign state loaded".to_owned();
+        let owner_by_state: HashMap<_, _> = world.states.iter()
+            .filter_map(|(&id, state)| state.owner.clone().map(|tag| (id, tag))).collect();
 
         let (state_ids_by_pixel, state_bounds) = build_state_ids_by_pixel(
             width, height, &rgba, &id_by_rgb, &state_by_province,
         );
 
-        let state_name_by_id = load_state_names(Path::new(STATE_DIRECTORY_PATH));
         let (color_palette, owner_by_state) = build_map_palette(
             &id_by_rgb, &state_by_province, &definition_text,
-            Path::new(STATE_DIRECTORY_PATH),
+            Path::new(STATE_DIRECTORY_PATH), Some(&owner_by_state),
         );
         let political_texture = color_palette.texture_from_rgb(
             width, height, &rgba, 4, MapMode::Political,
@@ -238,11 +233,6 @@ impl ProvinceMap {
         let resource_grid = spatial_grid::SpatialGrid::build(
             width, height, 256.0, resource_markers.iter().map(|marker| (marker.x, marker.y)),
         );
-        let world = World::from_map_data(
-            &state_by_province, &owner_by_state, &state_name_by_id, &economy_by_state,
-            &shared_slots_by_state,
-        );
-
         // CPU-side hit testing only needs RGB. Drop the fourth alpha byte per pixel
         // after every map texture and marker has been built.
         let mut rgb_pixels = Vec::with_capacity((width as usize) * (height as usize) * 3);
@@ -264,7 +254,6 @@ impl ProvinceMap {
             id_by_rgb,
             state_by_province,
             owner_by_state,
-            world,
             state_count,
             state_load_status,
             map_border_texture,
@@ -643,8 +632,10 @@ fn build_map_palette(
     state_by_province: &HashMap<u32, u32>,
     definition_text: &str,
     state_directory: &Path,
+    owner_override: Option<&HashMap<u32, String>>,
 ) -> (MapColorPalette, HashMap<u32, String>) {
-    let (owner_by_state, resources_by_state) = parse_state_visual_data(state_directory);
+    let (loaded_owners, resources_by_state) = parse_state_visual_data(state_directory);
+    let owner_by_state = owner_override.cloned().unwrap_or(loaded_owners);
     let mut terrain_by_province = HashMap::<u32, String>::new();
     let mut water_provinces = HashSet::<u32>::new();
     let delimiter = definition_text.lines().find(|l| !l.trim().is_empty())
@@ -1070,48 +1061,7 @@ fn resource_pairs(line: &str) -> Vec<(String, String)> {
 }
 
 fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
-    let delimiter = text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| if line.contains(';') { ';' } else { ',' })
-        .unwrap_or(';');
-
-    let mut id_by_rgb = HashMap::new();
-    let mut ids_seen = HashSet::new();
-
-    for (line_index, line) in text.lines().enumerate() {
-        let mut fields = line.split(delimiter);
-        let Some(id_text) = fields.next() else { continue };
-        let Some(r_text) = fields.next() else { continue };
-        let Some(g_text) = fields.next() else { continue };
-        let Some(b_text) = fields.next() else { continue };
-
-        let parsed = (
-            id_text.trim().trim_start_matches('\u{feff}').parse::<u32>(),
-            r_text.trim().parse::<u8>(),
-            g_text.trim().parse::<u8>(),
-            b_text.trim().parse::<u8>(),
-        );
-        let (Ok(id), Ok(r), Ok(g), Ok(b)) = parsed else {
-            // Skip the header and malformed rows in this initial parser.
-            continue;
-        };
-        if id == 0 {
-            continue;
-        }
-        if !ids_seen.insert(id) {
-            return Err(format!("Duplicate province ID {id} at definition.csv line {}", line_index + 1));
-        }
-        let rgb = [r, g, b];
-        if id_by_rgb.insert(rgb, id).is_some() {
-            return Err(format!("Duplicate province RGB colour at definition.csv line {}", line_index + 1));
-        }
-    }
-
-    if id_by_rgb.is_empty() {
-        return Err("definition.csv contained no valid province definitions".to_owned());
-    }
-    Ok(id_by_rgb)
+    Ok(map_graph::parse_definitions(text)?.into_values().map(|d| (d.rgb, d.id)).collect())
 }
 
 #[cfg(test)]
@@ -1142,7 +1092,7 @@ mod tests {
         let id_by_rgb = parse_definition_text(&definition).unwrap();
         let (palette, owners) = build_map_palette(
             &id_by_rgb, &HashMap::new(), &definition,
-            Path::new("this-test-directory-intentionally-does-not-exist"),
+            Path::new("this-test-directory-intentionally-does-not-exist"), None,
         );
         assert!(owners.is_empty());
         let water = palette.colors_by_rgb.get(&[10, 20, 30]).unwrap();
@@ -1199,7 +1149,8 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
 
     let pause_clicked = if compact {
         let date_width = (panel_w * 0.255).clamp(70.0, 91.0);
-        draw_ui_text(date_label, date_x, date_y, 12.0, WHITE);
+        draw_ui_text(date_label, date_x, date_y - 6.0, 11.0, WHITE);
+        draw_ui_text(&format!("{:02}:00", game.hour), date_x, date_y + 11.0, 11.0, hoi_ui::GOLD);
         let pause_x = panel_x + date_width;
         let clicked = time_control_button(
             if game.paused { ">" } else { "||" },
@@ -1221,7 +1172,8 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
         }
         clicked
     } else {
-        draw_ui_text(date_label, date_x, date_y, 14.0, WHITE);
+        draw_ui_text(date_label, date_x, date_y - 7.0, 14.0, WHITE);
+        draw_ui_text(&format!("{:02}:00", game.hour), date_x, date_y + 11.0, 12.0, hoi_ui::GOLD);
         let pause_x = panel_x + 112.0;
         let clicked = time_control_button(
             if game.paused { "PLAY" } else { "PAUSE" },
@@ -1361,12 +1313,12 @@ fn country_display_name(tag: &str) -> &str {
     }
 }
 
-fn ordered_country_tags(map: &ProvinceMap) -> Vec<String> {
+fn ordered_country_tags(world: &World) -> Vec<String> {
     let priority = [
         "GER", "ENG", "GBR", "FRA", "SOV", "RUS", "USA", "ITA", "JAP", "CHI",
         "POL", "CAN", "AUS", "BRA", "SPR", "SPB", "TUR", "HOL", "BEL", "CZE",
     ];
-    let mut tags: Vec<String> = map.world.countries.keys().cloned().collect();
+    let mut tags: Vec<String> = world.countries.keys().cloned().collect();
     tags.sort_by(|a, b| {
         let rank = |tag: &str| priority.iter().position(|candidate| *candidate == tag).unwrap_or(usize::MAX);
         rank(a).cmp(&rank(b)).then_with(|| a.cmp(b))
@@ -1375,7 +1327,7 @@ fn ordered_country_tags(map: &ProvinceMap) -> Vec<String> {
 }
 
 fn draw_country_select(
-    map: Option<&ProvinceMap>,
+    world: &World,
     selected_country: &mut Option<String>,
     page: &mut usize,
 ) -> Screen {
@@ -1388,16 +1340,16 @@ fn draw_country_select(
         return Screen::MainMenu;
     }
 
-    let Some(map) = map else {
+    if world.geography.provinces.is_empty() {
         draw_ui_text("Map data is unavailable. Add the local HOI4 map files first.", 24.0, 108.0, 16.0, LIGHTGRAY);
         return Screen::CountrySelect;
-    };
-    let tags = ordered_country_tags(map);
+    }
+    let tags = ordered_country_tags(world);
     if tags.is_empty() {
         draw_ui_text("No countries found. Check data/hoi4/history/states and state owners.", 24.0, 108.0, 16.0, LIGHTGRAY);
         return Screen::CountrySelect;
     }
-    if selected_country.as_ref().is_none_or(|tag| !map.world.countries.contains_key(tag)) {
+    if selected_country.as_ref().is_none_or(|tag| !world.countries.contains_key(tag)) {
         *selected_country = tags.first().cloned();
     }
 
@@ -1443,7 +1395,7 @@ fn draw_country_select(
     if button("Next", screen_width() - margin - 105.0, controls_y, 105.0, 36.0) && *page + 1 < page_count { *page += 1; }
 
     let chosen_tag = selected_country.as_deref().unwrap_or("");
-    if let Some(totals) = map.world.country_economy(chosen_tag) {
+    if let Some(totals) = world.country_economy(chosen_tag) {
         draw_ui_text(&format!("{} ({})  ·  States {}  ·  CIV {}  ·  MIL {}  ·  Dockyards {}",
             country_display_name(chosen_tag), chosen_tag, totals.states, totals.civilian_factories,
             totals.military_factories, totals.dockyards),
@@ -1483,11 +1435,13 @@ fn map_view_rect(map: &ProvinceMap, placing: bool) -> Rect {
 
 fn draw_map_viewer(
     mut map: Option<&mut ProvinceMap>,
+    world: &World,
     load_error: &str,
     selected: &mut Option<(u32, [u8; 3], u32, u32)>,
     player_country: Option<&str>,
     construction_queue: &mut ConstructionQueues,
     construction_priority: &mut Vec<u32>,
+    construction_order: &mut construction::ConstructionOrder,
     construction_menu: &mut Option<u32>,
     construction_notice: &mut String,
     construction_policy: &mut construction::CountryConstructionPolicy,
@@ -1515,8 +1469,8 @@ fn draw_map_viewer(
         format!("{name}  [{}]", player_country.unwrap_or("---"))
     };
     draw_ui_text(&country_label, 14.0, 31.0, if compact { 17.0 } else { 20.0 }, hoi_ui::GOLD);
-    if let (Some(world), Some(tag)) = (map.as_deref(), player_country) {
-        if let Some(total) = world.world.country_economy(tag) {
+    if let Some(tag) = player_country {
+        if let Some(total) = world.country_economy(tag) {
             if compact {
                 draw_ui_text(&format!("C:{}  M:{}  D:{}", total.civilian_factories,
                     total.military_factories, total.dockyards), 102.0, 30.0, 12.0, hoi_ui::TEXT);
@@ -1653,7 +1607,7 @@ fn draw_map_viewer(
                     LIGHTGRAY,
                 );
                 if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
-                    &map.world, tag, *construction_policy,
+                    world, tag, *construction_policy,
                 )) {
                     draw_ui_text(&format!("Build CIV: {} / {}",
                         capacity.available, capacity.total_civilian), 191.0, 152.0, 11.0, hoi_ui::GOLD);
@@ -1688,7 +1642,7 @@ fn draw_map_viewer(
                 draw_ui_text(&status, 28.0, 263.0, 12.0, LIGHTGRAY);
                 draw_ui_text("Select a state on the map", 28.0, 290.0, 14.0, LIGHTGRAY);
                 if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
-                    &map.world, tag, *construction_policy,
+                    world, tag, *construction_policy,
                 )) {
                     draw_ui_text(&format!("Civilian: {}  |  free: {}", capacity.total_civilian,
                         capacity.available), 28.0, 318.0, 14.0, Color::from_rgba(220, 190, 125, 255));
@@ -1737,12 +1691,12 @@ fn draw_map_viewer(
             if placing {
                 if let Some(tag) = player_country {
                     let signature = construction_map::signature(
-                        &map.world, tag, construction_view.selected_building,
+                        world, tag, construction_view.selected_building,
                         construction_queue, building_rules,
                     );
                     if map.construction_overlay_signature != Some(signature) {
                         let colors = construction_map::state_colors(
-                            &map.world, tag, construction_view.selected_building,
+                            world, tag, construction_view.selected_building,
                             construction_queue, building_rules,
                         );
                         let rgba = construction_map::rgba_pixels(&map.state_ids_by_pixel, &colors);
@@ -1878,9 +1832,9 @@ fn draw_map_viewer(
                         if let Some((province, _)) = map.province_at(px, py) {
                             if let Some(&state_id) = map.state_by_province.get(&province) {
                                 if let (Some(state), Some(capacity)) = (
-                                    map.world.states.get(&state_id),
+                                    world.states.get(&state_id),
                                     construction_map::availability(
-                                        &map.world, tag, state_id, construction_view.selected_building,
+                                        world, tag, state_id, construction_view.selected_building,
                                         construction_queue, building_rules,
                                     ),
                                 ) {
@@ -1968,10 +1922,11 @@ fn draw_map_viewer(
 
         let state_id = map.state_by_province.get(&province_id).copied();
         let state_name = state_id
-            .and_then(|id| map.world.states.get(&id))
+            .and_then(|id| world.states.get(&id))
             .and_then(|state| state.name.as_deref())
             .unwrap_or("Unknown state");
-        let owner = map.world.owner_of_province(province_id).unwrap_or("—");
+        let owner = world.owner_of_province(province_id).unwrap_or("—");
+        let controller = world.controller_of_province(province_id).unwrap_or("—");
         let heading = if state_id.is_some() {
             format!("{state_name}  ·  {owner}")
         } else {
@@ -1990,10 +1945,16 @@ fn draw_map_viewer(
             state_id.map(|id| id.to_string()).unwrap_or_else(|| "—".to_owned())),
             panel_x + 14.0, info_y, if compact { 11.0 } else { 13.0 }, LIGHTGRAY);
 
+        let terrain = world.geography.provinces.get(&province_id)
+            .map_or("unknown", |p| p.definition.terrain.as_str());
+        let neighbors = world.geography.land_neighbors(province_id).count();
+        draw_ui_text(&format!("Control: {controller}  |  Terrain: {terrain}  |  Land links: {neighbors}"),
+            panel_x + 14.0, info_y + 14.0, if compact { 10.0 } else { 11.0 }, hoi_ui::GOLD);
+
         let table_x = panel_x + 14.0;
         let table_y = panel_y + 72.0;
         let table_w = (panel_w - 28.0).max(120.0);
-        let selected_state = state_id.and_then(|id| map.world.states.get(&id));
+        let selected_state = state_id.and_then(|id| world.states.get(&id));
         let economy = selected_state.map(|state| state.economy).unwrap_or_default();
 
         // Shared factory slots come from the state's actual state_category definition.
@@ -2005,7 +1966,7 @@ fn draw_map_viewer(
             construction::queued_shared_slots_with_rules(queue, building_rules)
         });
         // State categories own the shared-slot limit; infrastructure uses its own level cap.
-        let slot_count = state_id.and_then(|id| construction::shared_slot_limit(&map.world, id, building_rules)).unwrap_or(0);
+        let slot_count = state_id.and_then(|id| construction::shared_slot_limit(world, id, building_rules)).unwrap_or(0);
         let free_slots = slot_count.saturating_sub(built + queued_shared);
         draw_ui_text(
             &format!("SHARED SLOTS  ·  {built} built  ·  {queued_shared} queued  ·  {free_slots} empty  ·  INFRA {}/{}", economy.infrastructure, building_rules.max_state_level(BuildingType::Infrastructure)),
@@ -2090,13 +2051,13 @@ fn draw_map_viewer(
             // shared slot occupied. The build validator checks ownership and cap.
             if button("Infra +", panel_x + panel_w - 132.0, panel_y + 33.0, 78.0, 23.0) {
                 match construction::enqueue_project(
-                    &map.world, player_country.unwrap_or(""), id,
+                    world, player_country.unwrap_or(""), id,
                     construction_queue, building_rules, BuildingType::Infrastructure,
                 ) {
                     Ok(()) => {
                         if !construction_priority.contains(&id) { construction_priority.push(id); }
-                        construction_view.order.sync(
-                            &map.world, player_country.unwrap_or(""), construction_queue,
+                        construction_order.sync(
+                            world, player_country.unwrap_or(""), construction_queue,
                         );
                         *construction_notice = "Infrastructure queued".to_owned();
                     }
@@ -2119,13 +2080,13 @@ fn draw_map_viewer(
                     let by = menu_y + row as f32 * 25.0;
                     if button(building.short_label(), bx, by, option_w, 22.0) {
                         match construction::enqueue_project(
-                            &map.world, player_country.unwrap_or(""), id,
+                            world, player_country.unwrap_or(""), id,
                             construction_queue, building_rules, *building,
                         ) {
                             Ok(()) => {
                                 if !construction_priority.contains(&id) { construction_priority.push(id); }
-                                construction_view.order.sync(
-                                    &map.world, player_country.unwrap_or(""), construction_queue,
+                                construction_order.sync(
+                                    world, player_country.unwrap_or(""), construction_queue,
                                 );
                                 *construction_notice = format!("{} queued", building.label());
                             }
@@ -2139,16 +2100,16 @@ fn draw_map_viewer(
                 }
             } else if queued_count > 0 {
                 if let Some(project) = state_queue.as_ref().and_then(|queue| queue.front()) {
-                    construction_view.order.sync(
-                        &map.world, player_country.unwrap_or(""), construction_queue,
+                    construction_order.sync(
+                        world, player_country.unwrap_or(""), construction_queue,
                     );
                     let project_key = construction::ProjectRef { state_id: id, project_index: 0 };
-                    let priority = construction_view.order.lines.iter()
+                    let priority = construction_order.lines.iter()
                         .position(|candidate| *candidate == project_key)
                         .map_or(0, |index| index + 1);
                     let allocations = construction::allocate_factories_by_order(
-                        &map.world, player_country.unwrap_or(""),
-                        construction_queue, &construction_view.order, building_rules, *construction_policy,
+                        world, player_country.unwrap_or(""),
+                        construction_queue, construction_order, building_rules, *construction_policy,
                     );
                     let assigned = allocations.iter()
                         .find(|line| line.state_id == id && line.project_index == 0)
@@ -2172,17 +2133,17 @@ fn draw_map_viewer(
                 let controls_y = panel_y + panel_h - 39.0;
                 let controls_x = panel_x + panel_w - 151.0;
                 if button("Up", controls_x, controls_y, 40.0, 23.0) {
-                    construction_view.order.move_up(
+                    construction_order.move_up(
                         construction::ProjectRef { state_id: id, project_index: 0 },
                     );
                 }
                 if button("Down", controls_x + 43.0, controls_y, 46.0, 23.0) {
-                    construction_view.order.move_down(
+                    construction_order.move_down(
                         construction::ProjectRef { state_id: id, project_index: 0 },
                     );
                 }
                 if button("X", controls_x + 92.0, controls_y, 32.0, 23.0) {
-                    if construction_view.order.cancel(
+                    if construction_order.cancel(
                         construction_queue, construction::ProjectRef { state_id: id, project_index: 0 },
                     ) {
                         if !construction_queue.contains_key(&id) {
@@ -2201,12 +2162,12 @@ fn draw_map_viewer(
 
     }
     if construction_view.open {
-        construction_ui::draw(map.as_deref().map(|m| &m.world), player_country,
-            construction_queue, construction_priority, building_rules,
+        construction_ui::draw((world.geography.width > 0).then_some(world), player_country,
+            construction_queue, construction_priority, construction_order, building_rules,
             construction_policy, law_preset, construction_notice, construction_view, game_date);
     }
     if production_view.open {
-        production_ui::draw(map.as_deref().map(|m| &m.world), player_country,
+        production_ui::draw((world.geography.width > 0).then_some(world), player_country,
             production_state, production_view, production_rules);
     }
     if research_view.open {
@@ -2236,7 +2197,7 @@ fn draw_settings() -> Screen {
     draw_ui_text("1. Create data/hoi4/map/ beside Cargo.toml.", 50.0, 185.0, 18.0, WHITE);
     draw_ui_text("2. Put your legally obtained provinces.bmp and definition.csv there.", 50.0, 218.0, 18.0, WHITE);
     draw_ui_text("3. Return to the map viewer; it loads the bitmap and resolves pixel colours to province IDs.", 50.0, 251.0, 18.0, WHITE);
-    draw_ui_text("State files and state-boundary overlays are a later milestone.", 50.0, 284.0, 17.0, LIGHTGRAY);
+    draw_ui_text("Optional: rivers.bmp and adjacencies.csv add river and special crossing data.", 50.0, 284.0, 17.0, LIGHTGRAY);
     draw_ui_text("Android file picker / SAF import is not implemented yet.", 50.0, 322.0, 17.0, Color::from_rgba(236, 187, 126, 255));
 
     if button("Back to menu", 50.0, 380.0, 220.0, 52.0) {
@@ -2250,23 +2211,13 @@ fn draw_settings() -> Screen {
 async fn main() {
     init_ui_font();
     let mut screen = Screen::MainMenu;
-    let (mut map, mut load_error) = match ProvinceMap::load() {
-        Ok(loaded) => (Some(loaded), String::new()),
-        Err(error) => (None, error),
-    };
     let mut selected: Option<(u32, [u8; 3], u32, u32)> = None;
-    let mut selected_country: Option<String> = None;
+    let mut country_choice: Option<String> = None;
     let mut country_page = 0usize;
-    let mut game = GameState::default();
-    let mut construction_queue: ConstructionQueues = ConstructionQueues::new();
-    let mut construction_priority: Vec<u32> = Vec::new();
     let mut construction_notice = String::new();
-    let mut construction_policy = construction::CountryConstructionPolicy::default();
-    let mut construction_law_preset = construction::EconomicLawPreset::default();
     let building_rules = BuildingRules::load(construction::BUILDING_DEFINITIONS_DIRECTORY);
     let mut construction_menu: Option<u32> = None;
     let mut construction_view = construction_ui::ConstructionView::default();
-    let mut production_state = production::ProductionState::default();
     let mut production_view = production_ui::ProductionView::default();
     let production_rules = production::ProductionRules::default();
     // Use the player's own versioned game files if present. Never redistribute
@@ -2298,18 +2249,66 @@ async fn main() {
             }
         }
     }
-    let mut research_world = research::ResearchWorld::default();
-    let mut research_history_applied = std::collections::BTreeSet::<String>::new();
     let mut research_view = research_ui::ResearchView::default();
     research_view.notice = research_origin;
-    // Rebuild the date label only when the simulation date changes, not every rendered frame.
-    let mut cached_date = game.date;
-    let mut cached_date_label = game.date.display();
+    let start_session = || -> Result<GameSession, String> {
+        let names = load_state_names(Path::new(STATE_DIRECTORY_PATH));
+        let loaded = scenario::load(Path::new("data/hoi4"), &names)?;
+        for diagnostic in &loaded.diagnostics { eprintln!("[scenario] {diagnostic}"); }
+        let mut session = GameSession::new(loaded.world);
+        for diagnostic in session.initialize_research(Path::new("data/hoi4/history/countries"),
+            &research_catalogue, &research_rules) { eprintln!("[research] {diagnostic}"); }
+        Ok(session)
+    };
+    let (mut session, mut load_error) = match start_session() {
+        Ok(session) => (session, String::new()),
+        Err(error) => (GameSession::new(World::default()), error),
+    };
+    let mut map = if session.world.geography.width > 0 {
+        match ProvinceMap::load(&session.world) {
+            Ok(map) => Some(map),
+            Err(error) => { load_error = error; None }
+        }
+    } else { None };
+    let mut cached_date = session.clock.date;
+    let mut cached_date_label = cached_date.display();
 
     loop {
         let next_screen = match screen {
             Screen::MainMenu => draw_main_menu(map.as_ref()),
-            Screen::CountrySelect => draw_country_select(map.as_ref(), &mut selected_country, &mut country_page),
+            Screen::CountrySelect => {
+                let next = draw_country_select(&session.world, &mut country_choice, &mut country_page);
+                if !load_error.is_empty() {
+                    draw_ui_text(&load_error.chars().take(90).collect::<String>(), 24.0, 113.0, 12.0, hoi_ui::GOLD);
+                }
+                if next == Screen::MapViewer {
+                    match start_session() {
+                        Ok(mut fresh) => {
+                            fresh.player_country = country_choice.clone();
+                            session = fresh;
+                            drop(map.take());
+                            match ProvinceMap::load(&session.world) {
+                                Ok(loaded) => { map = Some(loaded); load_error.clear(); }
+                                Err(error) => load_error = error,
+                            }
+                            selected = None;
+                            construction_menu = None;
+                            construction_notice.clear();
+                            construction_view = construction_ui::ConstructionView::default();
+                            production_view = production_ui::ProductionView::default();
+                            research_view.selected = None;
+                            research_view.open = false;
+                            Screen::MapViewer
+                        }
+                        Err(error) => {
+                            load_error = error;
+                            draw_ui_text(&load_error.chars().take(90).collect::<String>(), 24.0,
+                                113.0, 12.0, hoi_ui::GOLD);
+                            Screen::CountrySelect
+                        }
+                    }
+                } else { next }
+            }
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::T) {
@@ -2342,7 +2341,7 @@ async fn main() {
                     research_view.open = false;
                 }
                 if is_key_pressed(KeyCode::Space) {
-                    game.toggle_pause();
+                    session.clock.toggle_pause();
                 }
                 for (key, speed) in [
                     (KeyCode::Key1, 1),
@@ -2352,55 +2351,17 @@ async fn main() {
                     (KeyCode::Key5, 5),
                 ] {
                     if is_key_pressed(key) {
-                        game.set_speed(speed);
+                        session.clock.set_speed(speed);
                     }
                 }
-                if let Some(tag) = selected_country.as_deref() {
-                    if research_history_applied.insert(tag.to_owned()) {
-                        let (slots, known) = research_data::read_country_start(
-                            Path::new("data/hoi4/history/countries"), tag,
-                        ).unwrap_or((Some(3), std::collections::BTreeSet::new()));
-                        let count = slots.unwrap_or(3);
-                        let country = research_world.country_mut(tag, count, &research_rules);
-                        // Preserve ongoing foreign AI research if this country
-                        // was simulated before the player switched to it.
-                        let _ = country.resize_slots(count, &research_rules);
-                        for tech in known { country.grant(&tech, &research_catalogue); }
-                    }
-                }
-                let previous_date = game.date;
-                let daily_ticks = game.update(get_frame_time());
-                if daily_ticks > 0 {
-                    let mut simulation_date = previous_date;
-                    for _ in 0..daily_ticks {
-                        // Tech timing runs on each simulated calendar day,
-                        // never repeatedly using the final date of a multi-tick frame.
-                        if let Some(current_map) = map.as_ref() {
-                            for tag in current_map.world.countries.keys() {
-                                research_world.country_mut(tag, 3, &research_rules);
-                                research_world.tick_country(tag, &research_catalogue,
-                                    &research_rules, simulation_date);
-                                if research_world.day_index % 7 == 0
-                                    && selected_country.as_deref() != Some(tag.as_str()) {
-                                    research_world.ai_choose(tag, &research_catalogue,
-                                        &research_rules, simulation_date);
-                                }
-                            }
-                        }
-                        research_world.day_index += 1;
-                        if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
-                            // Production uses factories available at the START
-                            // of each day; newly completed MIL joins next day.
-                            production_state.tick_country(&current_map.world, tag, &production_rules);
-                            construction::advance_day_by_order(
-                                &mut current_map.world, tag, &mut construction_queue,
-                                &mut construction_view.order, &building_rules,
-                                construction_policy, &construction::ConstructionModifiers::default(),
-                            );
-                        }
-                        simulation_date.advance_one_day();
-                    }
-                }
+                session.advance_frame(get_frame_time(), &building_rules, &production_rules,
+                    &research_catalogue, &research_rules);
+                let GameSession { world, clock: game, player_country: selected_country,
+                    construction_queues: construction_queue, construction: country_construction,
+                    production: production_state, research: research_world } = &mut session;
+                let country = country_construction.entry(selected_country.clone().unwrap_or_default()).or_default();
+                let CountryConstruction { order: construction_order, state_priority: construction_priority,
+                    policy: construction_policy, law: construction_law_preset } = country;
                 if game.date != cached_date {
                     cached_date = game.date;
                     cached_date_label = game.date.display();
@@ -2412,15 +2373,15 @@ async fn main() {
                 let placement_before_ui = construction_view.open && construction_view.map_placement;
                 let research_before_ui = research_view.open;
                 let rendered_screen = draw_map_viewer(
-                    map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
-                    &mut construction_queue, &mut construction_priority, &mut construction_menu,
-                    &mut construction_notice, &mut construction_policy,
-                    &mut construction_law_preset, &building_rules, &mut construction_view,
-                    &mut production_view, &mut production_state, &production_rules,
-                    &mut research_world, &research_catalogue, &research_rules,
+                    map.as_mut(), world, &load_error, &mut selected, selected_country.as_deref(),
+                    construction_queue, construction_priority, construction_order, &mut construction_menu,
+                    &mut construction_notice, construction_policy,
+                    construction_law_preset, &building_rules, &mut construction_view,
+                    &mut production_view, production_state, &production_rules,
+                    research_world, &research_catalogue, &research_rules,
                     &mut research_view, game.date,
                 );
-                let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
+                let (pause_clicked, speed_clicked) = draw_time_controls(game, &cached_date_label);
                 if pause_clicked {
                     game.toggle_pause();
                 }
@@ -2514,17 +2475,17 @@ async fn main() {
                                 if construction_view.map_placement {
                                     if let Some((tag, state_id)) = selected_country.as_deref().zip(selected_state_id) {
                                         match construction::enqueue_project(
-                                            &current_map.world, tag, state_id, &mut construction_queue,
+                                            world, tag, state_id, construction_queue,
                                             &building_rules, construction_view.selected_building,
                                         ) {
                                             Ok(()) => {
                                                 if !construction_priority.contains(&state_id) {
                                                     construction_priority.push(state_id);
                                                 }
-                                                construction_view.order.sync(
-                                                    &current_map.world, tag, &construction_queue,
+                                                construction_order.sync(
+                                                    world, tag, &construction_queue,
                                                 );
-                                                let state_name = current_map.world.states.get(&state_id)
+                                                let state_name = world.states.get(&state_id)
                                                     .and_then(|s| s.name.as_deref()).unwrap_or("State");
                                                 construction_notice = format!(
                                                     "{}: {} queued", state_name, construction_view.selected_building.label(),
@@ -2567,9 +2528,9 @@ async fn main() {
                 };
                 if reload_clicked {
                     // Drop the old world's GPU textures before allocating the new
-                    // map. Otherwise reload can briefly double peak VRAM/RAM.
-                    map = None;
-                    match ProvinceMap::load() {
+                    // view. The campaign world, clock, orders and stockpiles live in session.
+                    drop(map.take());
+                    match ProvinceMap::load(world) {
                         Ok(loaded) => {
                             map = Some(loaded);
                             load_error.clear();
@@ -2586,7 +2547,21 @@ async fn main() {
             }
             Screen::Settings => draw_settings(),
         };
-
+        // Files can be added after launch. Retry the headless import when the
+        // user returns to a campaign screen from the menu, preserving a live party.
+        if screen == Screen::MainMenu && matches!(next_screen, Screen::CountrySelect | Screen::MapViewer)
+            && session.world.geography.width == 0 {
+            match start_session() {
+                Ok(fresh) => {
+                    session = fresh;
+                    match ProvinceMap::load(&session.world) {
+                        Ok(loaded) => { map = Some(loaded); load_error.clear(); }
+                        Err(error) => load_error = error,
+                    }
+                }
+                Err(error) => load_error = error,
+            }
+        }
         screen = next_screen;
         next_frame().await;
     }

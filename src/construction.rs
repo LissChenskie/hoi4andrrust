@@ -886,7 +886,7 @@ mod tests {
         let mut states = BTreeMap::new();
         states.insert(1, State { id: 1, name: None, owner: Some("TST".to_owned()), province_ids: vec![],
             shared_building_slots: 5, economy: StateEconomy { civilian_factories: 2, infrastructure: 5, ..StateEconomy::default() } });
-        World { countries, states, provinces: BTreeMap::<u32, Province>::new() }
+        World { countries, states, provinces: BTreeMap::<u32, Province>::new(), ..World::default() }
     }
 
     #[test]

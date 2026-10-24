@@ -13,8 +13,6 @@ pub struct ConstructionView {
     pub selected_building: BuildingType,
     pub focused_state: Option<u32>,
     pub first_visible_row: usize,
-    /// Single global order of construction projects, including different states.
-    pub order: ConstructionOrder,
     /// Clicking a building switches from the full queue to map placement.
     pub map_placement: bool,
 }
@@ -26,7 +24,6 @@ impl Default for ConstructionView {
             selected_building: BuildingType::CivilianFactory,
             focused_state: None,
             first_visible_row: 0,
-            order: ConstructionOrder::default(),
             map_placement: false,
         }
     }
@@ -189,7 +186,7 @@ fn draw_queue_icon(building: BuildingType, x: f32, y: f32, size: f32) {
 }
 fn build_in_state(
     world: &World, country: &str, state_id: u32,
-    queues: &mut ConstructionQueues, priority: &mut Vec<u32>,
+    queues: &mut ConstructionQueues, priority: &mut Vec<u32>, order: &mut ConstructionOrder,
     rules: &BuildingRules, view: &mut ConstructionView, notice: &mut String,
 ) {
     match construction::enqueue_project(world, country, state_id, queues, rules, view.selected_building) {
@@ -197,7 +194,7 @@ fn build_in_state(
             if !priority.contains(&state_id) { priority.push(state_id); }
             // Preserve the order in which the player clicks states, rather
             // than sorting all untracked projects by numeric state ID later.
-            view.order.sync(world, country, queues);
+            order.sync(world, country, queues);
             *notice = format!("{}: {} added to queue", state_id, view.selected_building.label());
         }
         Err(reason) => *notice = reason.to_owned(),
@@ -211,6 +208,7 @@ pub fn draw(
     tag: Option<&str>,
     queues: &mut ConstructionQueues,
     priority: &mut Vec<u32>,
+    order: &mut ConstructionOrder,
     rules: &BuildingRules,
     policy: &mut CountryConstructionPolicy,
     law: &mut EconomicLawPreset,
@@ -335,11 +333,11 @@ pub fn draw(
 
     // A single national construction queue, not one entry per state.
     // Each row is a separate project with independently assigned factories.
-    view.order.sync(world, tag, queues);
+    order.sync(world, tag, queues);
     let content_y = list_y + 26.0;
     let row_height = if narrow { 83.0 } else { 79.0 };
     let visible_count = ((list_h - 29.0) / row_height).floor().max(0.0) as usize;
-    let project_count = view.order.lines.len();
+    let project_count = order.lines.len();
     let max_first = project_count.saturating_sub(visible_count);
     view.first_visible_row = view.first_visible_row.min(max_first);
     let list_region = rect(list_x, content_y, list_w, list_h - 26.0);
@@ -349,11 +347,11 @@ pub fn draw(
         if wheel < 0.0 { view.first_visible_row = (view.first_visible_row + 2).min(max_first); }
     }
     let allocations = construction::allocate_factories_by_order(
-        world, tag, queues, &view.order, rules, *policy,
+        world, tag, queues, order, rules, *policy,
     );
     // Snapshot read-only row data. Apply UI commands after drawing so a
     // cancellation cannot invalidate indices halfway through a render pass.
-    let entries: Vec<_> = view.order.lines.iter().copied()
+    let entries: Vec<_> = order.lines.iter().copied()
         .skip(view.first_visible_row).take(visible_count)
         .filter_map(|key| {
             let state = world.states.get(&key.state_id)?;
@@ -430,9 +428,9 @@ pub fn draw(
 
     if let Some((command, key)) = request {
         match command {
-            'u' if view.order.move_up(key) => *notice = "Moved project up in national queue".to_owned(),
-            'd' if view.order.move_down(key) => *notice = "Moved project down in national queue".to_owned(),
-            'x' if view.order.cancel(queues, key) => {
+            'u' if order.move_up(key) => *notice = "Moved project up in national queue".to_owned(),
+            'd' if order.move_down(key) => *notice = "Moved project down in national queue".to_owned(),
+            'x' if order.cancel(queues, key) => {
                 if !queues.contains_key(&key.state_id) {
                     priority.retain(|id| *id != key.state_id);
                 }
@@ -462,7 +460,7 @@ pub fn draw(
             list_x + 5.0, footer_y + 15.0, 12.0, ui::GOLD);
         if ui::small_button("QUEUE BUILDING", rect(palette_x, footer_y, palette_w, 28.0), false) {
             if let Some(state_id) = view.focused_state {
-                build_in_state(world, tag, state_id, queues, priority, rules, view, notice);
+                build_in_state(world, tag, state_id, queues, priority, order, rules, view, notice);
             } else { *notice = "Select a state in the list first".to_owned(); }
         }
         if ui::small_button(law.label(), rect(palette_x, palette_y + 244.0, palette_w, 26.0), false) {
