@@ -2012,11 +2012,16 @@ fn draw_map_viewer(
                 }
             } else if queued_count > 0 {
                 if let Some(project) = state_queue.as_ref().and_then(|queue| queue.front()) {
-                    let priority = construction_priority.iter().position(|candidate| *candidate == id)
+                    construction_view.order.sync(
+                        &map.world, player_country.unwrap_or(""), construction_queue,
+                    );
+                    let project_key = construction::ProjectRef { state_id: id, project_index: 0 };
+                    let priority = construction_view.order.lines.iter()
+                        .position(|candidate| *candidate == project_key)
                         .map_or(0, |index| index + 1);
-                    let allocations = construction::allocate_factories(
+                    let allocations = construction::allocate_factories_by_order(
                         &map.world, player_country.unwrap_or(""),
-                        construction_queue, construction_priority, building_rules, *construction_policy,
+                        construction_queue, &construction_view.order, building_rules, *construction_policy,
                     );
                     let assigned = allocations.iter()
                         .find(|line| line.state_id == id && line.project_index == 0)
@@ -2036,19 +2041,18 @@ fn draw_map_viewer(
                         Color::from_rgba(220, 190, 125, 255),
                     );
                 }
-                // One state represents a serial construction line in this version.
-                // The player can reorder state lines and cancel the first project.
+                // Use the same global ordering as the construction screen and simulation.
                 let controls_y = panel_y + panel_h - 39.0;
                 let controls_x = panel_x + panel_w - 151.0;
                 if button("Up", controls_x, controls_y, 40.0, 23.0) {
-                    if let Some(index) = construction_priority.iter().position(|candidate| *candidate == id) {
-                        if index > 0 { construction_priority.swap(index - 1, index); }
-                    }
+                    construction_view.order.move_up(
+                        construction::ProjectRef { state_id: id, project_index: 0 },
+                    );
                 }
                 if button("Down", controls_x + 43.0, controls_y, 46.0, 23.0) {
-                    if let Some(index) = construction_priority.iter().position(|candidate| *candidate == id) {
-                        if index + 1 < construction_priority.len() { construction_priority.swap(index, index + 1); }
-                    }
+                    construction_view.order.move_down(
+                        construction::ProjectRef { state_id: id, project_index: 0 },
+                    );
                 }
                 if button("X", controls_x + 92.0, controls_y, 32.0, 23.0) {
                     if construction_view.order.cancel(
