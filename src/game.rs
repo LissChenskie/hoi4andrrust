@@ -82,6 +82,12 @@ impl Default for GameState {
 
 impl GameState {
     pub const SECONDS_PER_DAY: f32 = 1.0;
+    /// Limit catch-up after backgrounding the game. Work beyond one real
+    /// second of lag is deliberately discarded instead of freezing the UI.
+    pub const MAX_FRAME_DELTA: f32 = 1.0;
+    /// Bound simulation work while retaining unfinished days for later frames.
+    pub const MAX_DAILY_TICKS_PER_FRAME: u32 = 8;
+    pub const MAX_BACKLOG_DAYS: f32 = 32.0;
 
     pub fn toggle_pause(&mut self) {
         self.paused = !self.paused;
@@ -108,15 +114,15 @@ impl GameState {
             4 => 8.0,
             _ => 16.0,
         };
-        // Accumulate game-time progress, not raw real seconds. This keeps partial-day
-        // progress correct when the player changes simulation speed mid-day.
-        self.accumulator += delta_seconds.min(0.25) * speed_multiplier / Self::SECONDS_PER_DAY;
-        let mut ticks = 0;
-        while self.accumulator >= 1.0 {
-            self.accumulator -= 1.0;
-            self.date.advance_one_day();
-            ticks += 1;
-        }
+        // A bounded fixed-day step: large frame spikes are limited, and
+        // unprocessed days are amortized over subsequent frames rather than
+        // doing expensive simulation and rendering in one long stall.
+        self.accumulator = (self.accumulator
+            + delta_seconds.min(Self::MAX_FRAME_DELTA) * speed_multiplier / Self::SECONDS_PER_DAY)
+            .min(Self::MAX_BACKLOG_DAYS);
+        let ticks = (self.accumulator.floor() as u32).min(Self::MAX_DAILY_TICKS_PER_FRAME);
+        self.accumulator -= ticks as f32;
+        for _ in 0..ticks { self.date.advance_one_day(); }
         ticks
     }
 }
@@ -179,12 +185,35 @@ mod tests {
     }
 
     #[test]
-    fn reports_all_ticks_without_exceeding_catch_up_cap() {
+    fn large_frame_spikes_are_sliced_without_losing_bounded_backlog() {
         let mut game = GameState::default();
         game.paused = false;
         game.set_speed(5);
-        assert_eq!(game.update(100.0), 4);
-        assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 5 });
+        assert_eq!(game.update(100.0), 8);
+        assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 9 });
+        // The other eight days of the capped one-second hitch are processed
+        // later; even a zero-delta frame cannot advance time while paused.
+        game.paused = true;
+        assert_eq!(game.update(0.01), 0);
+        game.paused = false;
+        assert_eq!(game.update(0.01), 8);
+        assert_eq!(game.date, GameDate { year: 1936, month: 1, day: 17 });
+    }
+
+    #[test]
+    fn render_frame_slicing_produces_deterministic_simulation_ticks() {
+        let mut a = GameState::default();
+        let mut b = GameState::default();
+        a.paused = false;
+        b.paused = false;
+        a.set_speed(3);
+        b.set_speed(3);
+        assert_eq!(a.update(0.5), 2);
+        for _ in 0..5 { b.update(0.1); }
+        assert_eq!(a.date, b.date);
+        assert_eq!(a.update(0.5), 2);
+        for _ in 0..5 { b.update(0.1); }
+        assert_eq!(a.date, b.date);
     }
 
     #[test]
