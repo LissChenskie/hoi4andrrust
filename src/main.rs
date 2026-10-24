@@ -1974,6 +1974,9 @@ fn draw_map_viewer(
                 ) {
                     Ok(()) => {
                         if !construction_priority.contains(&id) { construction_priority.push(id); }
+                        construction_view.order.sync(
+                            &map.world, player_country.unwrap_or(""), construction_queue,
+                        );
                         *construction_notice = "Infrastructure queued".to_owned();
                     }
                     Err(reason) => *construction_notice = reason.to_owned(),
@@ -2000,6 +2003,9 @@ fn draw_map_viewer(
                         ) {
                             Ok(()) => {
                                 if !construction_priority.contains(&id) { construction_priority.push(id); }
+                                construction_view.order.sync(
+                                    &map.world, player_country.unwrap_or(""), construction_queue,
+                                );
                                 *construction_notice = format!("{} queued", building.label());
                             }
                             Err(reason) => *construction_notice = reason.to_owned(),
@@ -2257,6 +2263,9 @@ async fn main() {
                                                 if !construction_priority.contains(&state_id) {
                                                     construction_priority.push(state_id);
                                                 }
+                                                construction_view.order.sync(
+                                                    &current_map.world, tag, &construction_queue,
+                                                );
                                                 let state_name = current_map.world.states.get(&state_id)
                                                     .and_then(|s| s.name.as_deref()).unwrap_or("State");
                                                 construction_notice = format!(
