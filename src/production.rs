@@ -320,6 +320,60 @@ mod tests {
     }
 
     #[test]
+    fn completed_military_factory_increases_real_production_next_day() {
+        use crate::construction::{
+            self, BuildingRules, BuildingType, ConstructionOrder,
+            ConstructionQueues, ConstructionModifiers, CountryConstructionPolicy,
+        };
+        let rules = ProductionRules::default();
+        let mut world = world(1);
+        let state = world.states.get_mut(&1).unwrap();
+        state.economy.civilian_factories = 15;
+        state.shared_building_slots = 25;
+        let mut game = ProductionState::default();
+        game.country_mut("ABC").create(Equipment::InfantryKit, 2, &rules);
+        let mut queue = ConstructionQueues::new();
+        let building_rules = BuildingRules::default();
+        construction::enqueue_project(
+            &world, "ABC", 1, &mut queue, &building_rules, BuildingType::MilitaryFactory,
+        ).unwrap();
+        // Fast-forward one building for integration testing without simulating
+        // thousands of days; completion is still performed by the real engine.
+        queue.get_mut(&1).unwrap()[0].cost = 1.0;
+        let mut order = ConstructionOrder::default();
+
+        // Day 1: equipment production only sees the old one MIL factory.
+        game.tick_country(&world, "ABC", &rules);
+        let day_one = game.country("ABC").unwrap().lines[0].last_day_ic;
+        construction::advance_day_by_order(
+            &mut world, "ABC", &mut queue, &mut order, &building_rules,
+            CountryConstructionPolicy::default(), &ConstructionModifiers::default(),
+        );
+        assert_eq!(world.country_economy("ABC").unwrap().military_factories, 2);
+        assert!(queue.is_empty());
+
+        // Day 2: the second factory contributes output.
+        game.tick_country(&world, "ABC", &rules);
+        let day_two = game.country("ABC").unwrap().lines[0].last_day_ic;
+        assert!(day_two > day_one * 2.0 - 0.0001);
+    }
+
+    #[test]
+    fn equipment_switch_retains_some_efficiency_but_not_old_fractional_work() {
+        let mut c = CountryProduction::default();
+        let rules = ProductionRules::default();
+        let id = c.create(Equipment::SupportKit, 4, &rules);
+        for _ in 0..40 { c.tick(4, &rules); }
+        let previous = c.lines[0].efficiency;
+        let old_stock = c.stockpile.get(&Equipment::SupportKit).copied().unwrap_or(0);
+        assert!(c.switch_equipment(id, Equipment::Aircraft, &rules));
+        assert!(c.lines[0].efficiency < previous);
+        assert_eq!(c.lines[0].partial_ic, 0.0);
+        c.tick(4, &rules);
+        assert_eq!(c.stockpile.get(&Equipment::SupportKit).copied().unwrap_or(0), old_stock);
+    }
+
+    #[test]
     fn unavailable_resources_pause_production_but_do_not_forge_stockpile() {
         let mut rules = ProductionRules::default();
         rules.resource_factor = 0.0;
