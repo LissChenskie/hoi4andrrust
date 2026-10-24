@@ -1445,19 +1445,24 @@ fn draw_map_viewer(
         }
     }
     if hoi_ui::small_button("CONSTRUCTION", Rect::new(12.0, 60.0,
-        if compact { 132.0 } else { 150.0 }, 33.0), construction_view.open) {
+        if compact { 120.0 } else { 150.0 }, 33.0), construction_view.open) {
         construction_view.open = !construction_view.open;
+        if construction_view.open {
+            if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref(), *selected) {
+                construction_view.focused_state = map.state_by_province.get(&province_id).copied();
+            }
+        }
     }
-    if hoi_ui::small_button("POLITICAL MAP", Rect::new(if compact { 150.0 } else { 170.0 },
-        60.0, if compact { 125.0 } else { 149.0 }, 33.0), !construction_view.open) {
+    if hoi_ui::small_button("POLITICAL MAP", Rect::new(if compact { 137.0 } else { 170.0 },
+        60.0, if compact { 103.0 } else { 149.0 }, 33.0), !construction_view.open) {
         construction_view.open = false;
     }
     if compact {
         if let Some(map) = map.as_deref_mut() {
-            if button("+", screen_width() - 176.0, 15.0, 34.0, 38.0) {
+            if hoi_ui::small_button("+", Rect::new(246.0, 60.0, 30.0, 33.0), false) {
                 map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
-            if button("−", screen_width() - 134.0, 15.0, 34.0, 38.0) {
+            if hoi_ui::small_button("-", Rect::new(281.0, 60.0, 30.0, 33.0), false) {
                 map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
         }
@@ -1530,10 +1535,8 @@ fn draw_map_viewer(
                 if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
                     &map.world, tag, *construction_policy,
                 )) {
-                    draw_ui_text(&format!("Construction CIV: {} / {}",
-                        capacity.available, capacity.total_civilian), 196.0, 151.0, 12.0, LIGHTGRAY);
-                } else {
-                    draw_ui_text("Tap a state", 196.0, 151.0, 11.0, LIGHTGRAY);
+                    draw_ui_text(&format!("Build CIV: {} / {}",
+                        capacity.available, capacity.total_civilian), 191.0, 152.0, 11.0, hoi_ui::GOLD);
                 }
             } else {
                 draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
@@ -2120,6 +2123,9 @@ async fn main() {
                                 )
                                 .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
                             let selected_state_id = selected.and_then(|(province_id, _, _, _)| current_map.state_by_province.get(&province_id).copied());
+                            if construction_view.open {
+                                construction_view.focused_state = selected_state_id;
+                            }
                             current_map.highlighted_state_texture = selected_state_id.map(|state_id| {
                                 (state_id, build_highlighted_state_texture(current_map.width, current_map.height, &current_map.state_ids_by_pixel, state_id))
                             });
