@@ -4,6 +4,7 @@ mod world;
 mod construction;
 mod hoi_ui;
 mod construction_ui;
+mod construction_map;
 
 use game::GameState;
 use world::World;
@@ -131,6 +132,8 @@ struct ProvinceMap {
     map_border_texture: Texture2D,
     state_ids_by_pixel: Vec<u32>,
     highlighted_state_texture: Option<(u32, Texture2D)>,
+    construction_overlay_texture: Option<Texture2D>,
+    construction_overlay_signature: Option<u64>,
     political_texture: Texture2D,
     resources_texture: Texture2D,
     terrain_texture: Texture2D,
@@ -243,6 +246,8 @@ impl ProvinceMap {
             map_border_texture,
             state_ids_by_pixel,
             highlighted_state_texture: None,
+            construction_overlay_texture: None,
+            construction_overlay_signature: None,
             political_texture,
             resources_texture,
             terrain_texture,
@@ -1386,13 +1391,16 @@ fn draw_country_select(
     Screen::CountrySelect
 }
 
-fn map_view_rect(map: &ProvinceMap) -> Rect {
+fn map_view_rect(map: &ProvinceMap, placing: bool) -> Rect {
     let compact = screen_width() < 760.0;
     let left = if compact { 12.0 } else { 270.0 };
-    let top = if compact { 210.0 } else { 82.0 };
+    // Placement on small screens docks a short selector above the map;
+    // hiding the state inspector lets the player actually tap the map.
+    let top = if placing { if compact { 282.0 } else { 134.0 } }
+        else if compact { 210.0 } else { 82.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
-    // Keep a dedicated lower strip for the HOI4-style state/province inspector.
-    let bottom_reserve = if compact { 270.0 } else { 260.0 };
+    let bottom_reserve = if placing { if compact { 72.0 } else { 74.0 } }
+        else if compact { 270.0 } else { 260.0 };
     let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
@@ -1446,7 +1454,11 @@ fn draw_map_viewer(
     }
     if hoi_ui::small_button("CONSTRUCTION", Rect::new(12.0, 60.0,
         if compact { 120.0 } else { 150.0 }, 33.0), construction_view.open) {
-        construction_view.open = !construction_view.open;
+        if construction_view.open {
+            construction_view.close();
+        } else {
+            construction_view.open = true;
+        }
         if construction_view.open {
             if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref(), *selected) {
                 construction_view.focused_state = map.state_by_province.get(&province_id).copied();
@@ -1455,12 +1467,12 @@ fn draw_map_viewer(
     }
     if hoi_ui::small_button("POLITICAL MAP", Rect::new(if compact { 137.0 } else { 170.0 },
         60.0, if compact { 103.0 } else { 149.0 }, 33.0), !construction_view.open) {
-        construction_view.open = false;
+        construction_view.close();
     }
     if compact {
         if let Some(map) = map.as_deref_mut() {
             if hoi_ui::small_button("+", Rect::new(246.0, 60.0, 30.0, 33.0), false) {
-                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
+                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
             if hoi_ui::small_button("-", Rect::new(281.0, 60.0, 30.0, 33.0), false) {
                 map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
@@ -1491,8 +1503,9 @@ fn draw_map_viewer(
     if let Some(map) = map.as_deref_mut() {
         let (_, wheel_y) = mouse_wheel();
         let mouse = vec2(mouse_position().0, mouse_position().1);
-        let view = map_view_rect(map);
-        if wheel_y != 0.0 && !construction_view.open && view.contains(mouse) {
+        let view = map_view_rect(map, construction_view.open && construction_view.map_placement);
+        if wheel_y != 0.0 && (!construction_view.open || construction_view.map_placement)
+            && view.contains(mouse) && !construction_ui::is_over_panel(mouse, construction_view) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
@@ -1577,7 +1590,8 @@ fn draw_map_viewer(
                 }
             }
 
-            // HOI4-style map-mode selector. The data-driven overlays are added in the next layer.
+            // Map mode selection is hidden while the dedicated construction heatmap is active.
+            if !construction_view.open {
             let mode_y = if compact { 174.0 } else { 18.0 };
             let mode_x = if compact { 12.0 } else { 280.0 };
             let mode_w = if compact { ((screen_width() - 36.0) / 3.0).max(72.0) } else { 126.0 };
@@ -1607,15 +1621,42 @@ fn draw_map_viewer(
                 }
             }
 
-            let rect = map_view_rect(map);
+            }
+
+            let rect = map_view_rect(map, construction_view.open && construction_view.map_placement);
             draw_rectangle(rect.x - 1.0, rect.y - 1.0, rect.w + 2.0, rect.h + 2.0, Color::from_rgba(62, 78, 90, 255));
             let source_rect = map.source_rect();
-            let mode_texture = match map.map_mode {
+            let placing = construction_view.open && construction_view.map_placement;
+            if placing {
+                if let Some(tag) = player_country {
+                    let signature = construction_map::signature(
+                        &map.world, tag, construction_view.selected_building,
+                        construction_queue, building_rules,
+                    );
+                    if map.construction_overlay_signature != Some(signature) {
+                        let colors = construction_map::state_colors(
+                            &map.world, tag, construction_view.selected_building,
+                            construction_queue, building_rules,
+                        );
+                        let rgba = construction_map::rgba_pixels(&map.state_ids_by_pixel, &colors);
+                        let texture = Texture2D::from_rgba8(map.width as u16, map.height as u16, &rgba);
+                        texture.set_filter(FilterMode::Nearest);
+                        map.construction_overlay_texture = Some(texture);
+                        map.construction_overlay_signature = Some(signature);
+                    }
+                }
+            } else {
+                // The original map texture is never altered: leaving placement
+                // restores political/resource/terrain colors on this very frame.
+                map.construction_overlay_texture = None;
+                map.construction_overlay_signature = None;
+            }
+            let mode_texture = if placing { &map.political_texture } else { match map.map_mode {
                 MapMode::Political => &map.political_texture,
                 // Resource mode keeps country colors and adds resource badges above them.
                 MapMode::Resources => &map.resources_texture,
                 MapMode::Terrain => &map.terrain_texture,
-            };
+            }};
             draw_texture_ex(
                 mode_texture,
                 rect.x,
@@ -1627,7 +1668,19 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
-            // Province, state and country borders share one texture to reduce GPU memory.
+            if placing {
+                if let Some(overlay) = &map.construction_overlay_texture {
+                    draw_texture_ex(
+                        overlay, rect.x, rect.y, WHITE,
+                        DrawTextureParams {
+                            source: Some(source_rect),
+                            dest_size: Some(vec2(rect.w, rect.h)),
+                            ..Default::default()
+                        },
+                    );
+                }
+            }
+            // Keep state/country boundaries crisp above the color heatmap.
             draw_texture_ex(
                 &map.map_border_texture,
                 rect.x,
@@ -1692,7 +1745,12 @@ fn draw_map_viewer(
                 );
             }
             draw_ui_text(
-                &format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom),
+                &if placing {
+                    format!("BUILD {}  |  green: free  ->  blue: full  |  {:.1}x",
+                        construction_view.selected_building.short_label(), map.zoom)
+                } else {
+                    format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom)
+                },
                 rect.x,
                 rect.y + rect.h - 8.0,
                 14.0,
@@ -2029,10 +2087,11 @@ async fn main() {
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::T) {
-                    construction_view.open = !construction_view.open;
+                    if construction_view.open { construction_view.close(); }
+                    else { construction_view.open = true; }
                 }
                 if is_key_pressed(KeyCode::Escape) {
-                    construction_view.open = false;
+                    construction_view.close();
                 }
                 if is_key_pressed(KeyCode::Space) {
                     game.toggle_pause();
@@ -2082,13 +2141,13 @@ async fn main() {
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
-                    let rect = map_view_rect(current_map);
+                    let rect = map_view_rect(current_map, construction_view.open && construction_view.map_placement);
                     let time_controls_overlay = screen_width() >= 760.0
                         && mouse.x >= screen_width() - 405.0
                         && mouse.y >= 70.0
                         && mouse.y <= 124.0;
                     let inside_map = rect.contains(mouse) && !time_controls_overlay
-                        && !(construction_view.open && construction_ui::is_over_panel(mouse));
+                        && !construction_ui::is_over_panel(mouse, &construction_view);
 
                     if is_mouse_button_pressed(MouseButton::Left) && inside_map {
                         current_map.dragging = true;
@@ -2125,6 +2184,26 @@ async fn main() {
                             let selected_state_id = selected.and_then(|(province_id, _, _, _)| current_map.state_by_province.get(&province_id).copied());
                             if construction_view.open {
                                 construction_view.focused_state = selected_state_id;
+                                if construction_view.map_placement {
+                                    if let Some((tag, state_id)) = selected_country.as_deref().zip(selected_state_id) {
+                                        match construction::enqueue_project(
+                                            &current_map.world, tag, state_id, &mut construction_queue,
+                                            &building_rules, construction_view.selected_building,
+                                        ) {
+                                            Ok(()) => {
+                                                if !construction_priority.contains(&state_id) {
+                                                    construction_priority.push(state_id);
+                                                }
+                                                let state_name = current_map.world.states.get(&state_id)
+                                                    .and_then(|s| s.name.as_deref()).unwrap_or("State");
+                                                construction_notice = format!(
+                                                    "{}: {} queued", state_name, construction_view.selected_building.label(),
+                                                );
+                                            }
+                                            Err(reason) => construction_notice = reason.to_owned(),
+                                        }
+                                    }
+                                }
                             }
                             current_map.highlighted_state_texture = selected_state_id.map(|state_id| {
                                 (state_id, build_highlighted_state_texture(current_map.width, current_map.height, &current_map.state_ids_by_pixel, state_id))
