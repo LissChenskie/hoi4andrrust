@@ -1475,7 +1475,7 @@ fn draw_map_viewer(
                 map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
             if hoi_ui::small_button("-", Rect::new(281.0, 60.0, 30.0, 33.0), false) {
-                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
+                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
         }
         if hoi_ui::small_button("MENU", Rect::new(screen_width() - 73.0, 11.0, 65.0, 31.0), false) {
@@ -1487,10 +1487,10 @@ fn draw_map_viewer(
         }
         if let Some(map) = map.as_deref_mut() {
             if button("Zoom +", 22.0, screen_height() - 174.0, 96.0, 38.0) {
-                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
+                map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
             if button("Zoom -", 132.0, screen_height() - 174.0, 100.0, 38.0) {
-                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
+                map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
             if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
                 map.zoom = 1.0;
