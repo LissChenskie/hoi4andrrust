@@ -138,8 +138,10 @@ struct ProvinceMap {
     construction_overlay_texture: Option<Texture2D>,
     construction_overlay_signature: Option<u64>,
     political_texture: Texture2D,
-    resources_texture: Texture2D,
-    terrain_texture: Texture2D,
+    /// One lazily constructed texture for whichever non-political mode is open.
+    /// Selecting another mode releases the previous texture.
+    active_mode_texture: Option<(MapMode, Texture2D)>,
+    color_palette: MapColorPalette,
     resource_markers: Vec<ResourceMarker>,
     city_markers: Vec<CityMarker>,
     resource_grid: spatial_grid::SpatialGrid,
@@ -205,14 +207,12 @@ impl ProvinceMap {
         let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
 
         let state_name_by_id = load_state_names(Path::new(STATE_DIRECTORY_PATH));
-        let (political_texture, resources_texture, terrain_texture, owner_by_state) = build_map_mode_textures(
-            width,
-            height,
-            &rgba,
-            &id_by_rgb,
-            &state_by_province,
-            &definition_text,
+        let (color_palette, owner_by_state) = build_map_palette(
+            &id_by_rgb, &state_by_province, &definition_text,
             Path::new(STATE_DIRECTORY_PATH),
+        );
+        let political_texture = color_palette.texture_from_rgb(
+            width, height, &rgba, 4, MapMode::Political,
         );
         // One combined static border layer reduces GPU texture memory and draw calls.
         let map_border_texture = build_map_border_texture(
@@ -265,8 +265,8 @@ impl ProvinceMap {
             construction_overlay_texture: None,
             construction_overlay_signature: None,
             political_texture,
-            resources_texture,
-            terrain_texture,
+            active_mode_texture: None,
+            color_palette,
             resource_markers,
             city_markers,
             resource_grid,
@@ -593,15 +593,52 @@ fn blend_country(base: [u8; 3], country: [u8; 3], alpha: f32) -> [u8; 3] {
     ]
 }
 
-fn build_map_mode_textures(
-    width: u32,
-    height: u32,
-    source_rgba: &[u8],
+/// Source colors for each unique province RGB. We only store a few bytes
+/// per province, not three additional full-screen images on the GPU.
+#[derive(Clone, Copy)]
+struct ProvinceColors {
+    political: [u8; 3],
+    resources: [u8; 3],
+    terrain: [u8; 3],
+}
+
+struct MapColorPalette {
+    colors_by_rgb: HashMap<[u8; 3], ProvinceColors>,
+}
+
+impl MapColorPalette {
+    fn texture_from_rgb(&self, width: u32, height: u32, pixels: &[u8], stride: usize, mode: MapMode) -> Texture2D {
+        assert!(stride >= 3 && pixels.len() == width as usize * height as usize * stride);
+        // Only ONE RGBA scratch buffer is allocated for the active mode; all
+        // inactive modes exist as tiny province palettes in CPU memory.
+        let mut rgba = vec![0u8; width as usize * height as usize * 4];
+        let neutral = ProvinceColors {
+            political: [92, 96, 101], resources: [54, 59, 65], terrain: [95, 101, 107],
+        };
+        for (index, rgb_pixel) in pixels.chunks_exact(stride).enumerate() {
+            let rgb = [rgb_pixel[0], rgb_pixel[1], rgb_pixel[2]];
+            let colors = self.colors_by_rgb.get(&rgb).copied().unwrap_or(neutral);
+            let selected = match mode {
+                MapMode::Political => colors.political,
+                MapMode::Resources => colors.resources,
+                MapMode::Terrain => colors.terrain,
+            };
+            let offset = index * 4;
+            rgba[offset..offset + 3].copy_from_slice(&selected);
+            rgba[offset + 3] = 255;
+        }
+        let texture = Texture2D::from_rgba8(width as u16, height as u16, &rgba);
+        texture.set_filter(FilterMode::Linear);
+        texture
+    }
+}
+
+fn build_map_palette(
     id_by_rgb: &HashMap<[u8; 3], u32>,
     state_by_province: &HashMap<u32, u32>,
     definition_text: &str,
     state_directory: &Path,
-) -> (Texture2D, Texture2D, Texture2D, HashMap<u32, String>) {
+) -> (MapColorPalette, HashMap<u32, String>) {
     let (owner_by_state, resources_by_state) = parse_state_visual_data(state_directory);
     let mut terrain_by_province = HashMap::<u32, String>::new();
     let mut water_provinces = HashSet::<u32>::new();
@@ -615,51 +652,35 @@ fn build_map_mode_textures(
             let terrain_name = fields[6].trim().to_owned();
             let terrain_lower = terrain_name.to_ascii_lowercase();
             if matches!(province_type.as_str(), "sea" | "lake")
-                || matches!(terrain_lower.as_str(), "ocean" | "sea" | "lake" | "lakes")
-            {
+                || matches!(terrain_lower.as_str(), "ocean" | "sea" | "lake" | "lakes") {
                 water_provinces.insert(id);
             }
             terrain_by_province.insert(id, terrain_name);
         }
     }
     let max_resources = resources_by_state.values().copied().fold(0.0f32, f32::max).max(1.0);
-    let mut political = source_rgba.to_vec();
-    let mut resources = vec![0u8; source_rgba.len()];
-    let mut terrain = vec![0u8; source_rgba.len()];
-    for (pixel_index, pixel) in source_rgba.chunks_exact(4).enumerate() {
-        let rgb = [pixel[0], pixel[1], pixel[2]];
-        let province_id = id_by_rgb.get(&rgb).copied().unwrap_or(0);
+    let mut colors_by_rgb = HashMap::with_capacity(id_by_rgb.len());
+
+    for (&rgb, &province_id) in id_by_rgb {
         let state_id = state_by_province.get(&province_id).copied().unwrap_or(0);
-        let owner = owner_by_state.get(&state_id);
-        let owner_color = owner.map(|tag| tag_color(tag));
-        let base_terrain = terrain_by_province.get(&province_id).map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
-        let offset = pixel_index * 4;
-        // Political mode blends the terrain palette with the owning country's color.
-        // Unowned/unparsed provinces stay neutral gray, and water remains blue.
-        let political_color = if water_provinces.contains(&province_id) {
+        let base_terrain = terrain_by_province.get(&province_id)
+            .map(|n| terrain_color(n)).unwrap_or([95, 101, 107]);
+        let water = water_provinces.contains(&province_id);
+        let political = if water {
             [55, 105, 155]
         } else {
-            owner_color
-                .map(|country| blend_country(base_terrain, country, 0.48))
+            owner_by_state.get(&state_id)
+                .map(|owner| blend_country(base_terrain, tag_color(owner), 0.48))
                 .unwrap_or([92, 96, 101])
         };
-        political[offset..offset + 3].copy_from_slice(&political_color);
-        political[offset + 3] = 255;
-
-        // Terrain mode is terrain-first; do not tint it with country colors.
-        terrain[offset..offset + 3].copy_from_slice(&base_terrain);
-        terrain[offset + 3] = 255;
-
         let amount = resources_by_state.get(&state_id).copied().unwrap_or(0.0);
-        // Keep sea and lake pixels in their normal water colours in resource mode.
-        let resource_color = if water_provinces.contains(&province_id) {
+        let resources = if water {
             base_terrain
         } else if amount <= 0.0 {
             [54, 59, 65]
         } else {
             let strength = (amount / max_resources).clamp(0.0, 1.0);
             if strength < 0.5 {
-                // Blue -> yellow for low to medium resource states.
                 let t = strength * 2.0;
                 [
                     (45.0 + t * 190.0) as u8,
@@ -667,26 +688,16 @@ fn build_map_mode_textures(
                     (155.0 - t * 115.0) as u8,
                 ]
             } else {
-                // Yellow -> red for the richest states.
                 let t = (strength - 0.5) * 2.0;
-                [
-                    235,
-                    (185.0 - t * 135.0) as u8,
-                    (40.0 - t * 5.0) as u8,
-                ]
+                [235, (185.0 - t * 135.0) as u8, (40.0 - t * 5.0) as u8]
             }
         };
-        resources[offset..offset + 3].copy_from_slice(&resource_color);
-        resources[offset + 3] = 255;
+        colors_by_rgb.insert(rgb, ProvinceColors {
+            political, resources, terrain: base_terrain,
+        });
     }
-    let make_texture = |bytes: &[u8]| {
-        let texture = Texture2D::from_rgba8(width as u16, height as u16, bytes);
-        texture.set_filter(FilterMode::Linear);
-        texture
-    };
-    (make_texture(&political), make_texture(&resources), make_texture(&terrain), owner_by_state)
+    (MapColorPalette { colors_by_rgb }, owner_by_state)
 }
-
 
 fn build_resource_markers(
     width: u32,
@@ -1684,12 +1695,21 @@ fn draw_map_viewer(
                 map.construction_overlay_texture = None;
                 map.construction_overlay_signature = None;
             }
-            let mode_texture = if placing { &map.political_texture } else { match map.map_mode {
-                MapMode::Political => &map.political_texture,
-                // Resource mode keeps country colors and adds resource badges above them.
-                MapMode::Resources => &map.resources_texture,
-                MapMode::Terrain => &map.terrain_texture,
-            }};
+            // GPU memory budget: the political map and borders are persistent,
+            // but terrain/resources share a single optional texture. Construction
+            // placement releases it while displaying the political base layer.
+            if placing || map.map_mode == MapMode::Political {
+                map.active_mode_texture = None;
+            } else if map.active_mode_texture.as_ref().map(|(mode, _)| *mode) != Some(map.map_mode) {
+                map.active_mode_texture = Some((
+                    map.map_mode,
+                    map.color_palette.texture_from_rgb(
+                        map.width, map.height, &map.rgb_pixels, 3, map.map_mode,
+                    ),
+                ));
+            }
+            let mode_texture = map.active_mode_texture.as_ref()
+                .map(|(_, texture)| texture).unwrap_or(&map.political_texture);
             draw_texture_ex(
                 mode_texture,
                 rect.x,
