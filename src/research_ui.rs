@@ -13,6 +13,7 @@ pub struct ResearchView {
     pub selected:Option<String>,
     pub scroll_rows:usize,
     pub scroll_columns:usize,
+    pub preferred_slot:Option<usize>,
     pub notice:String,
 }
 
@@ -95,8 +96,17 @@ pub fn draw(
             if ui::inside(rect) && is_mouse_button_pressed(MouseButton::Left){
                 selected=Some(active.tech_id.clone());
             }
-        }else if ui::small_button("FREE",Rect::new(rect.x+rect.w-55.0,rect.y+4.0,49.0,27.0),false){
+        }else if ui::small_button("FREE",Rect::new(rect.x+rect.w-55.0,rect.y+4.0,49.0,27.0),
+            view.preferred_slot==Some(i)){
+            view.preferred_slot=Some(i);
             available_slot=Some(i);
+        }
+    }
+    if let Some(preferred)=view.preferred_slot {
+        if preferred<shown_slots && country.slots[preferred].active.is_none(){
+            available_slot=Some(preferred);
+        }else{
+            view.preferred_slot=None;
         }
     }
     if country.slots.len()>shown_slots {
@@ -209,8 +219,17 @@ pub fn draw(
             let prereq=if tech.prerequisites.is_empty(){"none".into()}else{
                 tech.prerequisites.iter().cloned().collect::<Vec<_>>().join(", ")
             };
-            draw_ui_text(&fit(&format!("{}  |  YEAR {}  |  COST {:.0} days",
-                tech.name,tech.start_year,tech.research_cost*rules.base_tech_cost),
+            let preview_eta=available_slot.and_then(|slot|{
+                let mut simulation=country.clone();
+                simulation.start(slot,&tech.id,catalogue,rules,date).ok()?;
+                simulation.estimated_days(slot,catalogue,rules,date)
+            });
+            let preview=preview_eta.map_or("LOCKED".to_owned(),|days|{
+                let date_label=date.after_days(days).map_or("?".to_owned(),GameDate::display);
+                format!("{}d / {}",days,date_label)
+            });
+            draw_ui_text(&fit(&format!("{}  |  YEAR {}  |  BASE {:.0}d  |  ETA {}",
+                tech.name,tech.start_year,tech.research_cost*rules.base_tech_cost,preview),
                 r.w-32.0,if compact{10}else{13}),r.x+14.0,details_y+15.0,
                 if compact{10.0}else{13.0},ui::GOLD);
             draw_ui_text(&fit(&format!("Required: {prereq}  |  {}", 
@@ -224,8 +243,12 @@ pub fn draw(
                     command=Some((slot,tech.id.clone()));
                 }
             }
-            draw_ui_text(&fit(&format!("Unlocked: {}",tech.unlocks.iter().cloned()
-                .collect::<Vec<_>>().join(", ")),r.w-33.0,10),
+            let summary=if !tech.description.is_empty(){
+                tech.description.as_str().to_owned()
+            }else{
+                format!("Unlocks: {}",tech.unlocks.iter().cloned().collect::<Vec<_>>().join(", "))
+            };
+            draw_ui_text(&fit(&summary,r.w-33.0,10),
                 x,details_y+88.0,10.0,ui::MUTED);
         }
     }else {
