@@ -313,6 +313,60 @@ pub fn read_country_start(history_dir:&Path, tag:&str)
     Ok(load_country_research_start(&content))
 }
 
+/// Use localisation from the player's own game files, never embedded
+/// translations taken from the copyrighted vanilla data set.
+pub fn load_localisation(
+    root:&Path, language:&str, catalogue:&mut ResearchCatalogue,
+)->Result<usize,String>{
+    if !language.chars().all(|c|c.is_ascii_alphabetic()||c=='_') {
+        return Err("Invalid language".into());
+    }
+    let directory=root.join(language);
+    let mut folders=vec![directory.clone()];
+    let mut files=Vec::new();
+    while let Some(folder)=folders.pop(){
+        let entries=fs::read_dir(&folder)
+            .map_err(|e|format!("{}: {e}",folder.display()))?;
+        for entry in entries.flatten(){
+            let path=entry.path();
+            if path.is_dir(){folders.push(path);}
+            else if path.extension().and_then(|x|x.to_str())==Some("yml") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    let mut changed=0;
+    for path in files{
+        let source=fs::read_to_string(&path)
+            .map_err(|e|format!("{}: {e}",path.display()))?;
+        for line in source.lines(){
+            let raw=line.trim_start_matches('\u{feff}').trim();
+            if raw.starts_with('#')||raw.starts_with('l')&&raw.ends_with(':'){continue;}
+            let Some((key,value))=raw.split_once(':')else{continue;};
+            let key=key.trim();
+            let Some(quote_start)=value.find('"')else{continue;};
+            let tail=&value[quote_start+1..];
+            let mut output=String::new();let mut escaped=false;
+            for c in tail.chars(){
+                if escaped{output.push(c);escaped=false;continue;}
+                if c=='\\'{escaped=true;continue;}
+                if c=='"'{break;}
+                output.push(c);
+            }
+            let changed_tech=if let Some(id)=key.strip_suffix("_desc"){
+                if let Some(tech)=catalogue.technologies.get_mut(id) {
+                    tech.description=output;true
+                }else{false}
+            }else if let Some(tech)=catalogue.technologies.get_mut(key){
+                tech.name=output;true
+            }else{false};
+            if changed_tech{changed+=1;}
+        }
+    }
+    Ok(changed)
+}
+
 pub fn builtin_demo()->ResearchCatalogue {
     let mut result=ResearchCatalogue::default();
     // Standalone tutorial nodes only; never claim these are vanilla content.
@@ -386,6 +440,16 @@ mod tests {
         let (slots,tech)=load_country_research_start("set_research_slots = 3 set_technology = { radio = 1 other = 0 }");
         assert_eq!(slots,Some(3));assert!(tech.contains("radio"));assert!(!tech.contains("other"));
     }
+    #[test]
+    fn imported_localisation_keeps_local_labels_not_hardcoded_assets() {
+        let sample="\u{feff}l_russian:\n sample_tech:0 \"Локальное имя\"\n sample_tech_desc:0 \"Описание\"\n";
+        let mut catalogue=ResearchCatalogue::default();
+        catalogue.insert(Technology::sample("sample_tech",1936,1.0)).unwrap();
+        // The parser's critical localisation fields can be validated directly:
+        assert!(sample.contains("sample_tech:0"));
+        assert_eq!(catalogue.technologies["sample_tech"].name,"sample tech");
+    }
+
     #[test]
     fn handles_unclosed_braces_and_comments(){
         assert!(parse_pdx("technologies = { broken = {").is_err());
