@@ -1526,7 +1526,7 @@ fn draw_map_viewer(
                     LIGHTGRAY,
                 );
                 draw_ui_text(
-                    &format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()),
+                    &format!("States: {}", map.state_count),
                     24.0,
                     152.0,
                     12.0,
@@ -2149,7 +2149,11 @@ async fn main() {
                 }
 
                 let compact_reload = screen_width() < 760.0;
-                let reload_clicked = if compact_reload {
+                // Prevent reload controls from drawing through the open
+                // construction panel or intercepting its queue-row clicks.
+                let reload_clicked = if construction_view.open {
+                    false
+                } else if compact_reload {
                     button("Reload map", 12.0, screen_height() - 108.0, 130.0, 34.0)
                 } else {
                     button("Reload local map", 22.0, screen_height() - 72.0, 210.0, 42.0)
