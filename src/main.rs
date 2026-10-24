@@ -5,6 +5,7 @@ mod construction;
 mod hoi_ui;
 mod construction_ui;
 mod construction_map;
+mod map_camera;
 
 use game::GameState;
 use world::World;
@@ -144,6 +145,9 @@ struct ProvinceMap {
     zoom: f32,
     target_zoom: f32,
     pan: Vec2,
+    /// World-space pixel kept under the given screen pixel while zoom eases.
+    zoom_anchor: Option<(Vec2, Vec2)>,
+    pinch_tracker: map_camera::PinchTracker,
     last_mouse: Vec2,
     dragging: bool,
     drag_moved: bool,
@@ -258,6 +262,8 @@ impl ProvinceMap {
             zoom: 1.0,
             target_zoom: 1.0,
             pan: Vec2::ZERO,
+            zoom_anchor: None,
+            pinch_tracker: map_camera::PinchTracker::default(),
             last_mouse: Vec2::ZERO,
             dragging: false,
             drag_moved: false,
@@ -266,42 +272,59 @@ impl ProvinceMap {
     }
 
     fn source_rect(&self) -> Rect {
-        let source_width = self.width as f32 / self.zoom;
-        let source_height = self.height as f32 / self.zoom;
-        let max_x = self.width as f32 - source_width;
-        let max_y = self.height as f32 - source_height;
-        Rect::new(
-            (max_x * 0.5 + self.pan.x).clamp(0.0, max_x),
-            (max_y * 0.5 + self.pan.y).clamp(0.0, max_y),
-            source_width,
-            source_height,
-        )
+        map_camera::source_rect(self.width as f32, self.height as f32, self.zoom, self.pan)
     }
 
     fn set_zoom_at(&mut self, factor: f32, anchor: Vec2, view: Rect) {
-        if view.w <= 0.0 || view.h <= 0.0 {
+        if view.w <= 0.0 || view.h <= 0.0 || !factor.is_finite() || factor <= 0.0 {
             return;
         }
+        // The source pixel remains fixed beneath the pointer THROUGH the zoom
+        // animation. Setting pan for the target zoom in advance caused jumps.
+        let world = map_camera::screen_to_world(self.source_rect(), view, anchor);
+        self.target_zoom = (self.target_zoom * factor).clamp(
+            map_camera::MIN_ZOOM, map_camera::MAX_ZOOM,
+        );
+        self.zoom_anchor = Some((world, anchor));
+    }
 
-        let old = self.source_rect();
-        let u = ((anchor.x - view.x) / view.w).clamp(0.0, 1.0);
-        let v = ((anchor.y - view.y) / view.h).clamp(0.0, 1.0);
-        let map_x = old.x + u * old.w;
-        let map_y = old.y + v * old.h;
+    fn zoom_pinch(&mut self, gesture: map_camera::PinchMotion, view: Rect) {
+        let world = map_camera::screen_to_world(
+            self.source_rect(), view, gesture.previous_center,
+        );
+        self.zoom = (self.zoom * gesture.zoom_factor).clamp(
+            map_camera::MIN_ZOOM, map_camera::MAX_ZOOM,
+        );
+        self.target_zoom = self.zoom;
+        self.zoom_anchor = None;
+        self.pan = map_camera::pan_for_anchor(
+            self.width as f32, self.height as f32, self.zoom,
+            world, gesture.center, view,
+        );
+    }
 
-        self.target_zoom = (self.target_zoom * factor).clamp(1.0, 24.0);
-        let new_w = self.width as f32 / self.target_zoom;
-        let new_h = self.height as f32 / self.target_zoom;
-        self.pan.x = map_x - u * new_w - (self.width as f32 - new_w) * 0.5;
-        self.pan.y = map_y - v * new_h - (self.height as f32 - new_h) * 0.5;
+    fn update_zoom(&mut self, dt: f32, view: Rect) {
+        let zoom_delta = self.target_zoom - self.zoom;
+        if zoom_delta.abs() < 0.0005 {
+            self.zoom = self.target_zoom;
+        } else {
+            let easing = 1.0 - (-12.0 * dt.max(0.0)).exp();
+            self.zoom += zoom_delta * easing;
+        }
+        if let Some((world, anchor)) = self.zoom_anchor {
+            self.pan = map_camera::pan_for_anchor(
+                self.width as f32, self.height as f32, self.zoom,
+                world, anchor, view,
+            );
+            if self.zoom == self.target_zoom { self.zoom_anchor = None; }
+        }
         self.clamp_pan();
     }
 
     fn clamp_pan(&mut self) {
-        let max_x = self.width as f32 - self.width as f32 / self.zoom;
-        let max_y = self.height as f32 - self.height as f32 / self.zoom;
-        self.pan.x = self.pan.x.clamp(-max_x * 0.5, max_x * 0.5);
-        self.pan.y = self.pan.y.clamp(-max_y * 0.5, max_y * 0.5);
+        self.pan = map_camera::clamp_pan(
+            self.width as f32, self.height as f32, self.zoom, self.pan,
+        );
     }
 
     fn province_at(&self, x: u32, y: u32) -> Option<(u32, [u8; 3])> {
@@ -1496,6 +1519,8 @@ fn draw_map_viewer(
             if button("Fit map", 22.0, screen_height() - 220.0, 210.0, 38.0) {
                 map.zoom = 1.0;
                 map.target_zoom = 1.0;
+                map.zoom_anchor = None;
+                map.pinch_tracker.reset();
                 map.pan = Vec2::ZERO;
             }
         }
@@ -2218,26 +2243,53 @@ async fn main() {
                         && !construction_ui::is_over_panel(mouse, &construction_view)
                         && (!construction_view.open || placement_before_ui);
 
-                    if is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                    // Macroquad sends touch events AND simulated mouse events.
+                    // Keep the mouse/UI path for a single finger, but handle
+                    // two-finger gestures independently to avoid ghost taps.
+                    let contact_points: Vec<map_camera::TouchPoint> = touches().into_iter()
+                        .filter(|touch| !matches!(touch.phase, TouchPhase::Ended | TouchPhase::Cancelled))
+                        .map(|touch| map_camera::TouchPoint {
+                            id: touch.id, position: touch.position,
+                        })
+                        .collect();
+                    let multitouch = contact_points.len() >= 2;
+                    if multitouch {
+                        current_map.dragging = false;
+                        current_map.drag_moved = true;
+                    }
+                    let pinch_blocked = contact_points.iter()
+                        .any(|point| construction_ui::is_over_panel(point.position, &construction_view))
+                        || (screen_width() >= 760.0 && contact_points.iter().any(|point| {
+                            point.position.x >= screen_width() - 405.0
+                                && point.position.y >= 70.0 && point.position.y <= 124.0
+                        }));
+                    if let Some(gesture) = current_map.pinch_tracker.update(
+                        &contact_points, rect, pinch_blocked,
+                    ) {
+                        current_map.zoom_pinch(gesture, rect);
+                    }
+
+                    if !multitouch && is_mouse_button_pressed(MouseButton::Left) && inside_map {
                         current_map.dragging = true;
                         current_map.drag_moved = false;
                         current_map.last_mouse = mouse;
                     }
 
-                    if is_mouse_button_down(MouseButton::Left) && current_map.dragging {
+                    if !multitouch && is_mouse_button_down(MouseButton::Left) && current_map.dragging {
                         let delta = mouse - current_map.last_mouse;
                         if delta.length() > 1.5 {
                             current_map.drag_moved = true;
                         }
                         if current_map.drag_moved {
                             let source = current_map.source_rect();
+                            current_map.zoom_anchor = None;
                             current_map.pan.x -= delta.x / rect.w * source.w;
                             current_map.pan.y -= delta.y / rect.h * source.h;
                             current_map.clamp_pan();
                         }
                     }
 
-                    if is_mouse_button_released(MouseButton::Left) && current_map.dragging {
+                    if !multitouch && is_mouse_button_released(MouseButton::Left) && current_map.dragging {
                         if !current_map.drag_moved && inside_map {
                             let source = current_map.source_rect();
                             let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
@@ -2288,15 +2340,7 @@ async fn main() {
                         current_map.last_mouse = mouse;
                     }
 
-                    // Frame-rate-independent easing keeps zoom smooth rather than snapping.
-                    let zoom_delta = current_map.target_zoom - current_map.zoom;
-                    if zoom_delta.abs() < 0.0005 {
-                        current_map.zoom = current_map.target_zoom;
-                    } else {
-                        let easing = 1.0 - (-12.0 * get_frame_time()).exp();
-                        current_map.zoom += zoom_delta * easing;
-                    }
-                    current_map.clamp_pan();
+                    current_map.update_zoom(get_frame_time(), rect);
                 }
 
                 let compact_reload = screen_width() < 760.0;
