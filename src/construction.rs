@@ -1238,6 +1238,7 @@ mod tests {
     #[test]
     fn cancel_and_completion_preserve_global_priority_without_index_drift() {
         let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.infrastructure = 0;
         world.states.get_mut(&1).unwrap().economy.civilian_factories = 2;
         let mut queues = ConstructionQueues::new();
         queues.insert(1, VecDeque::from([
