@@ -1426,6 +1426,7 @@ fn draw_map_viewer(
     law_preset: &mut construction::EconomicLawPreset,
     building_rules: &BuildingRules,
     construction_view: &mut construction_ui::ConstructionView,
+    game_date: game::GameDate,
 ) -> Screen {
     draw_background();
     // Steel bar + paper-toned numbers: HOI4-inspired, but original vector art.
@@ -2050,7 +2051,9 @@ fn draw_map_viewer(
                     }
                 }
                 if button("X", controls_x + 92.0, controls_y, 32.0, 23.0) {
-                    if construction::cancel_project(construction_queue, id, 0) {
+                    if construction_view.order.cancel(
+                        construction_queue, construction::ProjectRef { state_id: id, project_index: 0 },
+                    ) {
                         if !construction_queue.contains_key(&id) {
                             construction_priority.retain(|candidate| *candidate != id);
                         }
@@ -2069,7 +2072,7 @@ fn draw_map_viewer(
     if construction_view.open {
         construction_ui::draw(map.as_deref().map(|m| &m.world), player_country,
             construction_queue, construction_priority, building_rules,
-            construction_policy, law_preset, construction_notice, construction_view);
+            construction_policy, law_preset, construction_notice, construction_view, game_date);
     }
     Screen::MapViewer
 }
@@ -2159,9 +2162,11 @@ async fn main() {
                 if daily_ticks > 0 {
                     if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
                         for _ in 0..daily_ticks {
-                            construction::advance_day_ordered(&mut current_map.world, tag,
-                                &mut construction_queue, &construction_priority, &building_rules,
-                                construction_policy);
+                            construction::advance_day_by_order(
+                                &mut current_map.world, tag, &mut construction_queue,
+                                &mut construction_view.order, &building_rules,
+                                construction_policy, &construction::ConstructionModifiers::default(),
+                            );
                         }
                     }
                 }
@@ -2179,6 +2184,7 @@ async fn main() {
                     &mut construction_queue, &mut construction_priority, &mut construction_menu,
                     &mut construction_notice, &mut construction_policy,
                     &mut construction_law_preset, &building_rules, &mut construction_view,
+                    game.date,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
