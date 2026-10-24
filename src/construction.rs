@@ -7,6 +7,7 @@ use std::path::Path;
 use crate::world::World;
 
 pub const BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY: f32 = 5.0;
+pub const UNPOWERED_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY: f32 = 4.0;
 pub const MAX_CIVILIAN_FACTORIES_PER_LINE: u32 = 15;
 pub const MAX_CONSTRUCTION_QUEUE_ITEMS: usize = 1000;
 pub const MAX_SHARED_BUILDING_SLOTS: u16 = 25;
@@ -146,6 +147,7 @@ pub struct BuildingRules {
     state_level_caps: HashMap<BuildingType, u16>,
     shares_slots_overrides: HashMap<BuildingType, bool>,
     pub base_factory_speed: f32,
+    pub unpowered_factory_speed: f32,
     pub infra_max_construction_cost_effect: f32,
     pub max_civilian_factories_per_line: u32,
     pub max_shared_slots: u16,
@@ -165,7 +167,7 @@ impl Default for BuildingRules {
                 infrastructure_construction_effect: true,
             });
         }
-        Self { definitions, state_level_caps, shares_slots_overrides, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT, max_civilian_factories_per_line: MAX_CIVILIAN_FACTORIES_PER_LINE, max_shared_slots: MAX_SHARED_BUILDING_SLOTS }
+        Self { definitions, state_level_caps, shares_slots_overrides, base_factory_speed: BASE_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, unpowered_factory_speed: UNPOWERED_CONSTRUCTION_POINTS_PER_CIVILIAN_FACTORY, infra_max_construction_cost_effect: DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT, max_civilian_factories_per_line: MAX_CIVILIAN_FACTORIES_PER_LINE, max_shared_slots: MAX_SHARED_BUILDING_SLOTS }
     }
 }
 
@@ -429,20 +431,33 @@ impl ConstructionProject {
 /// Parameters for independently stacking national, per-building and state speed
 /// modifiers. Additive bonuses are combined BEFORE the infrastructure multiplier.
 /// These are CONSTRUCTION bonuses, not military equipment production efficiency.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ConstructionModifiers {
     pub national_bonus: f32,
     pub building_bonuses: HashMap<BuildingType, f32>,
     pub state_bonuses: HashMap<u32, f32>,
+    /// Country energy satisfaction 0..1. Until the energy economy is loaded,
+    /// this defaults to 1 and the full-powered factory speed is used.
+    pub powered_fraction: f32,
+}
+
+impl Default for ConstructionModifiers {
+    fn default() -> Self {
+        Self { national_bonus: 0.0, building_bonuses: HashMap::new(),
+            state_bonuses: HashMap::new(), powered_fraction: 1.0 }
+    }
 }
 
 impl ConstructionModifiers {
-    pub fn speed_factor(&self, state_id: u32, building: BuildingType) -> f32 {
+    pub fn speed_bonus(&self, state_id: u32, building: BuildingType) -> f32 {
         let bonus = self.national_bonus
             + self.building_bonuses.get(&building).copied().unwrap_or(0.0)
             + self.state_bonuses.get(&state_id).copied().unwrap_or(0.0);
-        if !bonus.is_finite() { return 1.0; }
-        (1.0 + bonus).max(0.0)
+        if bonus.is_finite() { bonus } else { 0.0 }
+    }
+
+    pub fn speed_factor(&self, state_id: u32, building: BuildingType) -> f32 {
+        (1.0 + self.speed_bonus(state_id, building)).max(0.0)
     }
 }
 
@@ -508,19 +523,36 @@ pub struct ConstructionCapacity {
 }
 
 pub fn country_capacity(world: &World, tag: &str, policy: CountryConstructionPolicy) -> Option<ConstructionCapacity> {
+    country_capacity_with_goods_modifiers(world, tag, policy, 0.0, &[], 0.0)
+}
+
+/// Post-2023 HOI4 consumer-goods method: sum expected values, multiply factor
+/// modifiers, apply the minimum, and FLOOR the number of required factories.
+/// The country's trade imports/occupied-state industry still need integration.
+pub fn country_capacity_with_goods_modifiers(
+    world: &World, tag: &str, policy: CountryConstructionPolicy,
+    expected_goods_bonus: f32, goods_factors: &[f32], minimum_fraction: f32,
+) -> Option<ConstructionCapacity> {
     let economy = world.country_economy(tag)?;
-    let ratio = if policy.consumer_goods_fraction.is_finite() {
-        policy.consumer_goods_fraction.clamp(0.0, 1.0)
+    let base = if policy.consumer_goods_fraction.is_finite() && expected_goods_bonus.is_finite() {
+        (policy.consumer_goods_fraction + expected_goods_bonus).max(0.0)
     } else { 0.0 };
+    let factor = goods_factors.iter().copied()
+        .filter(|v| v.is_finite())
+        .fold(1.0f32, |acc, v| acc * (1.0 + v).max(0.0));
+    let minimum = if minimum_fraction.is_finite() {
+        minimum_fraction.clamp(0.0, 1.0)
+    } else { 0.0 };
+    let raw_fraction = (base * factor).max(minimum);
+    let ratio = if raw_fraction.is_finite() { raw_fraction.clamp(0.0, 1.0) } else { 1.0 };
     let consumer_goods = ((economy.civilian_factories + economy.military_factories) as f32 * ratio)
-        .ceil() as u32;
-    let available = economy.civilian_factories
-        .saturating_sub(consumer_goods).saturating_sub(policy.trade_civilian_factories);
+        .floor() as u32;
+    let free_after_goods = economy.civilian_factories.saturating_sub(consumer_goods);
     Some(ConstructionCapacity {
         total_civilian: economy.civilian_factories,
         consumer_goods: consumer_goods.min(economy.civilian_factories),
-        trade: policy.trade_civilian_factories.min(economy.civilian_factories.saturating_sub(consumer_goods)),
-        available,
+        trade: policy.trade_civilian_factories.min(free_after_goods),
+        available: free_after_goods.saturating_sub(policy.trade_civilian_factories),
     })
 }
 
@@ -630,9 +662,18 @@ pub fn daily_construction_points(
     infrastructure: u16, assigned_civilian: u32,
 ) -> f32 {
     let policy_bonus = if policy.construction_speed_bonus.is_finite() { policy.construction_speed_bonus } else { 0.0 };
-    let bonuses = (modifiers.speed_factor(state_id, building) + policy_bonus).max(0.0);
+    let energy = if modifiers.powered_fraction.is_finite() {
+        modifiers.powered_fraction.clamp(0.0, 1.0)
+    } else { 1.0 };
+    let base_output = rules.unpowered_factory_speed
+        + (rules.base_factory_speed - rules.unpowered_factory_speed) * energy;
+    // Positive construction bonuses are weakened by lack of energy, as in the
+    // energy updates. Negative construction modifiers remain in force.
+    let all_bonuses = modifiers.speed_bonus(state_id, building) + policy_bonus;
+    let effective_bonus = if all_bonuses > 0.0 { all_bonuses * energy } else { all_bonuses };
+    let bonus_factor = (1.0 + effective_bonus).max(0.0);
     let infrastructure_factor = rules.infrastructure_speed_multiplier(infrastructure, building);
-    let speed = assigned_civilian as f32 * rules.base_factory_speed * bonuses * infrastructure_factor;
+    let speed = assigned_civilian as f32 * base_output * bonus_factor * infrastructure_factor;
     if speed.is_finite() { speed.max(0.0) } else { 0.0 }
 }
 
@@ -891,6 +932,7 @@ mod tests {
             national_bonus: 0.20,
             building_bonuses: HashMap::from([(BuildingType::MilitaryFactory, 0.10)]),
             state_bonuses: HashMap::from([(1, 0.10)]),
+            powered_fraction: 1.0,
         };
         // 15 x 5 IC per day x (1 + .10+.20+.10+.10) x 2 = 225 IC/day
         let speed = daily_construction_points(
@@ -915,16 +957,16 @@ mod tests {
             trade_civilian_factories: 2,
             construction_speed_bonus: 0.0,
         }).unwrap();
-        assert_eq!(civilian.consumer_goods, 8); // ceil(21 x .35)
+        assert_eq!(civilian.consumer_goods, 7); // floor(21 x .35) since 2023
         assert_eq!(civilian.trade, 2);
-        assert_eq!(civilian.available, 3);
+        assert_eq!(civilian.available, 4);
         let partial = country_capacity(&world, "TST", CountryConstructionPolicy {
             consumer_goods_fraction: EconomicLawPreset::PartialMobilization.consumer_goods_fraction(),
             trade_civilian_factories: 2,
             construction_speed_bonus: 0.0,
         }).unwrap();
-        assert_eq!(partial.consumer_goods, 5);
-        assert_eq!(partial.available, 6);
+        assert_eq!(partial.consumer_goods, 4);
+        assert_eq!(partial.available, 7);
     }
 
     #[test]
@@ -965,6 +1007,36 @@ mod tests {
         assert!((queues[&1][0].progress - 135.0).abs() < 0.01);
         advance_day(&mut world, "TST", &mut queues, &BuildingRules::default());
         assert!((queues[&1][0].progress - 285.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn multiplicative_consumer_goods_factors_and_minimum_are_applied() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 10;
+        world.states.get_mut(&1).unwrap().economy.military_factories = 10;
+        let p = CountryConstructionPolicy {
+            consumer_goods_fraction: 0.35, ..Default::default()
+        };
+        // 35% x (1 - 20%) x (1 + 50%) = 42%; floor(20 x .42) = 8.
+        let cap = country_capacity_with_goods_modifiers(&world, "TST", p, 0.0, &[-0.20, 0.50], 0.10).unwrap();
+        assert_eq!(cap.consumer_goods, 8);
+        let floored = country_capacity_with_goods_modifiers(&world, "TST", p, 0.0, &[-0.95], 0.10).unwrap();
+        assert_eq!(floored.consumer_goods, 2);
+    }
+
+    #[test]
+    fn power_shortage_lowers_daily_civilian_output_and_positive_bonuses() {
+        let rules = BuildingRules::default();
+        let policy = CountryConstructionPolicy::default();
+        let mut mods = ConstructionModifiers { national_bonus: 0.20, ..Default::default() };
+        mods.powered_fraction = 1.0;
+        assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 6.0);
+        mods.powered_fraction = 0.5;
+        assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 4.95);
+        mods.powered_fraction = 0.0;
+        assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 4.0);
+        mods.national_bonus = -0.20;
+        assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 3.2);
     }
 
     #[test]
