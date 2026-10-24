@@ -6,6 +6,7 @@ mod hoi_ui;
 mod construction_ui;
 mod construction_map;
 mod map_camera;
+mod spatial_grid;
 
 use game::GameState;
 use world::World;
@@ -140,6 +141,8 @@ struct ProvinceMap {
     terrain_texture: Texture2D,
     resource_markers: Vec<ResourceMarker>,
     city_markers: Vec<CityMarker>,
+    resource_grid: spatial_grid::SpatialGrid,
+    city_grid: spatial_grid::SpatialGrid,
     city_named_count: usize,
     localisation_file_count: usize,
     zoom: f32,
@@ -218,6 +221,14 @@ impl ProvinceMap {
             width, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
         let city_markers = build_city_markers(width, &rgba, &id_by_rgb, Path::new(STATE_DIRECTORY_PATH));
+        // Index static marker positions once at import time. At high zoom the
+        // viewport covers just a fraction of the world map.
+        let city_grid = spatial_grid::SpatialGrid::build(
+            width, height, 256.0, city_markers.iter().map(|marker| (marker.x, marker.y)),
+        );
+        let resource_grid = spatial_grid::SpatialGrid::build(
+            width, height, 256.0, resource_markers.iter().map(|marker| (marker.x, marker.y)),
+        );
         let world = World::from_map_data(
             &state_by_province, &owner_by_state, &state_name_by_id, &economy_by_state,
             &shared_slots_by_state,
@@ -257,6 +268,8 @@ impl ProvinceMap {
             terrain_texture,
             resource_markers,
             city_markers,
+            resource_grid,
+            city_grid,
             city_named_count,
             localisation_file_count,
             zoom: 1.0,
@@ -1725,7 +1738,8 @@ fn draw_map_viewer(
                 // Keep markers visible, but cap actual city-name labels per frame.
                 const MAX_CITY_LABELS_PER_FRAME: usize = 72;
                 let mut city_labels_drawn = 0usize;
-                for city in &map.city_markers {
+                for marker_index in map.city_grid.visible(source_rect) {
+                    let city = &map.city_markers[marker_index];
                     if city.x < source_rect.x || city.x > source_rect.x + source_rect.w
                         || city.y < source_rect.y || city.y > source_rect.y + source_rect.h { continue; }
                     let x = rect.x + (city.x - source_rect.x) / source_rect.w * rect.w;
@@ -1749,7 +1763,8 @@ fn draw_map_viewer(
             if map.map_mode == MapMode::Resources {
                 // HOI4-like resource badges are drawn in map space, so they follow pan and zoom.
                 let scale = (map.zoom.sqrt() * 0.85).clamp(0.75, 1.35);
-                for marker in &map.resource_markers {
+                for marker_index in map.resource_grid.visible(source_rect) {
+                    let marker = &map.resource_markers[marker_index];
                     if marker.x < source_rect.x || marker.x > source_rect.x + source_rect.w
                         || marker.y < source_rect.y || marker.y > source_rect.y + source_rect.h { continue; }
                     let x = rect.x + (marker.x - source_rect.x) / source_rect.w * rect.w;
