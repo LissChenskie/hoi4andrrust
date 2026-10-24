@@ -1677,7 +1677,7 @@ fn draw_map_viewer(
             }
 
             // Map mode selection is hidden while the dedicated construction heatmap is active.
-            if !construction_view.open {
+            if !construction_view.open && !production_view.open {
             let mode_y = if compact { 174.0 } else { 18.0 };
             let mode_x = if compact { 12.0 } else { 280.0 };
             let mode_w = if compact { ((screen_width() - 36.0) / 3.0).max(72.0) } else { 126.0 };
@@ -1935,7 +1935,7 @@ fn draw_map_viewer(
     }
 
     // The construction view owns the center/left presentation while open.
-    if !construction_view.open {
+    if !construction_view.open && !production_view.open {
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
