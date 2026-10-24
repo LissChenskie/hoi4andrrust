@@ -2271,7 +2271,7 @@ async fn main() {
     let production_rules = production::ProductionRules::default();
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
-    let (research_catalogue, research_origin) =
+    let (mut research_catalogue, research_origin) =
         match research_data::load_catalogue(Path::new("data/hoi4/common/technologies")) {
             Ok((tree, report)) => (tree, format!(
                 "{} imported technologies from {} local files",
@@ -2280,6 +2280,13 @@ async fn main() {
             Err(error) => (research_data::builtin_demo(),
                 format!("Demo research tree (local import unavailable: {error})")),
         };
+    // Read translations from the user's local files. English is the fallback
+    // for untranslated Russian labels; no proprietary localisations are bundled.
+    for language in ["english", "russian"] {
+        let _ = research_data::load_localisation(
+            Path::new("data/hoi4/localisation"), language, &mut research_catalogue,
+        );
+    }
     let mut research_rules = research::ResearchRules::default();
     if let Ok(entries) = fs::read_dir("data/hoi4/common/defines") {
         let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path())
