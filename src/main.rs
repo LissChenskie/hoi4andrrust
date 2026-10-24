@@ -2299,6 +2299,7 @@ async fn main() {
         }
     }
     let mut research_world = research::ResearchWorld::default();
+    let mut research_history_applied = std::collections::BTreeSet::<String>::new();
     let mut research_view = research_ui::ResearchView::default();
     research_view.notice = research_origin;
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
@@ -2355,13 +2356,15 @@ async fn main() {
                     }
                 }
                 if let Some(tag) = selected_country.as_deref() {
-                    if !research_world.countries.contains_key(tag) {
+                    if research_history_applied.insert(tag.to_owned()) {
                         let (slots, known) = research_data::read_country_start(
                             Path::new("data/hoi4/history/countries"), tag,
                         ).unwrap_or((Some(3), std::collections::BTreeSet::new()));
-                        let country = research_world.country_mut(
-                            tag, slots.unwrap_or(3), &research_rules,
-                        );
+                        let count = slots.unwrap_or(3);
+                        let country = research_world.country_mut(tag, count, &research_rules);
+                        // Preserve ongoing foreign AI research if this country
+                        // was simulated before the player switched to it.
+                        let _ = country.resize_slots(count, &research_rules);
                         for tech in known { country.grant(&tech, &research_catalogue); }
                     }
                 }
