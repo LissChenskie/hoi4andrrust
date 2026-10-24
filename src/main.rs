@@ -16,6 +16,13 @@ mod research_ui;
 mod session;
 mod map_graph;
 mod scenario;
+mod combat_rules;
+mod military_model;
+mod land_combat;
+mod military_data;
+mod warfare;
+mod military_history;
+mod army_ui;
 
 use game::GameState;
 use world::World;
@@ -145,6 +152,7 @@ struct ProvinceMap {
     construction_overlay_texture: Option<Texture2D>,
     construction_overlay_signature: Option<u64>,
     political_texture: Texture2D,
+    control_revision: u64,
     /// One lazily constructed texture for whichever non-political mode is open.
     /// Selecting another mode releases the previous texture.
     active_mode_texture: Option<(MapMode, Texture2D)>,
@@ -210,10 +218,17 @@ impl ProvinceMap {
             width, height, &rgba, &id_by_rgb, &state_by_province,
         );
 
-        let (color_palette, owner_by_state) = build_map_palette(
+        let (mut color_palette, owner_by_state) = build_map_palette(
             &id_by_rgb, &state_by_province, &definition_text,
             Path::new(STATE_DIRECTORY_PATH), Some(&owner_by_state),
         );
+        for (&rgb,&id) in &id_by_rgb {
+            if let Some(colors)=color_palette.colors_by_rgb.get_mut(&rgb) {
+                if world.geography.provinces.get(&id).is_some_and(|p|p.definition.kind==map_graph::ProvinceKind::Land) {
+                    colors.political=world.controller_of_province(id).map(|tag|blend_country(colors.terrain,tag_color(tag),0.48)).unwrap_or([92,96,101]);
+                }
+            }
+        }
         let political_texture = color_palette.texture_from_rgb(
             width, height, &rgba, 4, MapMode::Political,
         );
@@ -263,6 +278,7 @@ impl ProvinceMap {
             construction_overlay_texture: None,
             construction_overlay_signature: None,
             political_texture,
+            control_revision: world.control_revision,
             active_mode_texture: None,
             color_palette,
             resource_markers,
@@ -281,6 +297,31 @@ impl ProvinceMap {
             drag_moved: false,
             map_mode: MapMode::Political,
         })
+    }
+
+    fn sync_control(&mut self,world:&World) {
+        if self.control_revision==world.control_revision { return; }
+        let changed:Vec<_>=world.provinces.values().filter(|p|p.control_revision>self.control_revision)
+            .filter_map(|p|world.geography.provinces.get(&p.id).and_then(|g|g.bounds.map(|b|(p,g.definition.rgb,b)))).collect();
+        for (p,rgb,_) in &changed {
+            if let Some(colors)=self.color_palette.colors_by_rgb.get_mut(rgb) {
+                colors.political=p.controller.as_deref().map(|tag|blend_country(colors.terrain,tag_color(tag),0.48)).unwrap_or([92,96,101]);
+            }
+        }
+        // Upload just the affected raster rectangle, retaining terrain colors
+        // for neighbouring provinces inside that rectangle.
+        for (_,_,b) in changed {
+            let w=b.max_x-b.min_x+1; let h=b.max_y-b.min_y+1;
+            let mut bytes=Vec::with_capacity((w*h*4)as usize);
+            for y in b.min_y..=b.max_y { for x in b.min_x..=b.max_x {
+                let i=((y*self.width+x)*3)as usize;
+                let rgb=[self.rgb_pixels[i],self.rgb_pixels[i+1],self.rgb_pixels[i+2]];
+                let color=self.color_palette.colors_by_rgb.get(&rgb).map(|c|c.political).unwrap_or([92,96,101]);
+                bytes.extend_from_slice(&[color[0],color[1],color[2],255]);
+            }}
+            self.political_texture.update_part(&Image { bytes,width:w as u16,height:h as u16 },b.min_x as i32,b.min_y as i32,w as i32,h as i32);
+        }
+        self.control_revision=world.control_revision;
     }
 
     fn source_rect(&self) -> Rect {
@@ -1272,7 +1313,7 @@ fn draw_main_menu(map: Option<&ProvinceMap>) -> Screen {
         return Screen::Settings;
     }
 
-    draw_ui_text("Prototype milestone 02: country selection + state economy", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
+    draw_ui_text("Hourly land combat / armies / local game data", 75.0, height - 42.0, 16.0, Color::from_rgba(125, 145, 163, 255));
     Screen::MainMenu
 }
 
@@ -1417,7 +1458,7 @@ fn map_view_rect(map: &ProvinceMap, placing: bool) -> Rect {
     // Placement on small screens docks a short selector above the map;
     // hiding the state inspector lets the player actually tap the map.
     let top = if placing { if compact { 282.0 } else { 134.0 } }
-        else if compact { 210.0 } else { 82.0 };
+        else if compact { 210.0 } else { 154.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
     let bottom_reserve = if placing { if compact { 72.0 } else { 74.0 } }
         else if compact { 270.0 } else { 260.0 };
@@ -1456,6 +1497,8 @@ fn draw_map_viewer(
     research_rules: &research::ResearchRules,
     research_view: &mut research_ui::ResearchView,
     game_date: game::GameDate,
+    military: &mut warfare::Warfare,
+    army_view: &mut army_ui::ArmyView,
 ) -> Screen {
     draw_background();
     // Steel bar + paper-toned numbers: HOI4-inspired, but original vector art.
@@ -1482,16 +1525,18 @@ fn draw_map_viewer(
             }
         }
     }
-    let tab_width = if compact { ((screen_width() - 105.0) / 4.0).max(49.0) } else { 143.0 };
+    let tab_width = if compact { ((screen_width() - 110.0) / 5.0).max(38.0) } else { 118.0 };
     let tab_2 = 12.0 + tab_width + 6.0;
     let tab_3 = tab_2 + tab_width + 6.0;
     let tab_4 = tab_3 + tab_width + 6.0;
+    let tab_5 = tab_4 + tab_width + 6.0;
     if hoi_ui::small_button(if compact { "BUILD" } else { "CONSTRUCTION" },
         Rect::new(12.0, 60.0, tab_width, 33.0), construction_view.open) {
         if construction_view.open { construction_view.close(); }
         else {
             production_view.close();
             research_view.open = false;
+            army_view.close();
             construction_view.open = true;
         }
         if construction_view.open {
@@ -1506,24 +1551,32 @@ fn draw_map_viewer(
         else {
             construction_view.close();
             research_view.open = false;
+            army_view.close();
             production_view.open = true;
         }
     }
     if hoi_ui::small_button(if compact { "TECH" } else { "RESEARCH" },
         Rect::new(tab_3, 60.0, tab_width, 33.0), research_view.open) {
-        if research_view.open { research_view.open = false; }
+        if research_view.open { research_view.open = false;
+            army_view.close(); }
         else {
             construction_view.close();
             production_view.close();
             research_view.open = true;
+            army_view.close();
         }
     }
+    if hoi_ui::small_button("ARMY", Rect::new(tab_4,60.0,tab_width,33.0),army_view.open) {
+        if army_view.open {army_view.close();}else{army_view.open=true;}
+        if army_view.open { construction_view.close(); production_view.close(); research_view.open=false; }
+    }
     if hoi_ui::small_button(if compact { "MAP" } else { "POLITICAL MAP" },
-        Rect::new(tab_4, 60.0, tab_width, 33.0),
-        !construction_view.open && !production_view.open && !research_view.open) {
+        Rect::new(tab_5, 60.0, tab_width, 33.0),
+        !construction_view.open && !production_view.open && !research_view.open && !army_view.open) {
         construction_view.close();
         production_view.close();
         research_view.open = false;
+            army_view.close();
     }
     if compact {
         if let Some(map) = map.as_deref_mut() {
@@ -1566,7 +1619,8 @@ fn draw_map_viewer(
             && view.contains(mouse)
             && !construction_ui::is_over_panel(mouse, construction_view)
             && !production_ui::is_over_panel(mouse, production_view)
-            && !research_ui::is_over_panel(mouse, research_view) {
+            && !research_ui::is_over_panel(mouse, research_view)
+            && !army_ui::is_over_panel(mouse, army_view) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
@@ -1652,8 +1706,8 @@ fn draw_map_viewer(
             }
 
             // Map mode selection is hidden while the dedicated construction heatmap is active.
-            if !construction_view.open && !production_view.open && !research_view.open {
-            let mode_y = if compact { 174.0 } else { 18.0 };
+            if !construction_view.open && !production_view.open && !research_view.open && !army_view.open {
+            let mode_y = if compact { 174.0 } else { 113.0 };
             let mode_x = if compact { 12.0 } else { 280.0 };
             let mode_w = if compact { ((screen_width() - 36.0) / 3.0).max(72.0) } else { 126.0 };
             for (index, mode) in [MapMode::Political, MapMode::Resources, MapMode::Terrain].into_iter().enumerate() {
@@ -1725,6 +1779,7 @@ fn draw_map_viewer(
                     ),
                 ));
             }
+            map.sync_control(world);
             let mode_texture = map.active_mode_texture.as_ref()
                 .map(|(_, texture)| texture).unwrap_or(&map.political_texture);
             draw_texture_ex(
@@ -1762,6 +1817,7 @@ fn draw_map_viewer(
                     ..Default::default()
                 },
             );
+            army_ui::draw_counters(world,military,player_country,army_view,source_rect,rect);
             // Show city markers from zoom 8.5; city names appear only at zoom 20.
             if map.zoom >= 8.5 {
                 let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
@@ -1910,7 +1966,7 @@ fn draw_map_viewer(
     }
 
     // The construction view owns the center/left presentation while open.
-    if !construction_view.open && !production_view.open && !research_view.open {
+    if !construction_view.open && !production_view.open && !research_view.open && !army_view.open {
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
@@ -2168,12 +2224,13 @@ fn draw_map_viewer(
     }
     if production_view.open {
         production_ui::draw((world.geography.width > 0).then_some(world), player_country,
-            production_state, production_view, production_rules);
+            production_state, production_view, production_rules, military);
     }
     if research_view.open {
         research_ui::draw(player_country, research_world,
             research_catalogue, research_rules, game_date, research_view);
     }
+    army_ui::draw(world,player_country,military,production_state,production_rules,selected.map(|p|p.0),army_view);
     Screen::MapViewer
 }
 
@@ -2219,6 +2276,7 @@ async fn main() {
     let mut construction_menu: Option<u32> = None;
     let mut construction_view = construction_ui::ConstructionView::default();
     let mut production_view = production_ui::ProductionView::default();
+    let mut army_view = army_ui::ArmyView::default();
     let production_rules = production::ProductionRules::default();
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
@@ -2258,6 +2316,8 @@ async fn main() {
         let mut session = GameSession::new(loaded.world);
         for diagnostic in session.initialize_research(Path::new("data/hoi4/history/countries"),
             &research_catalogue, &research_rules) { eprintln!("[research] {diagnostic}"); }
+        session.initialize_military(Path::new("data/hoi4"));
+        for diagnostic in &session.military.diagnostics { eprintln!("[military] {diagnostic}"); }
         Ok(session)
     };
     let (mut session, mut load_error) = match start_session() {
@@ -2296,6 +2356,7 @@ async fn main() {
                             construction_notice.clear();
                             construction_view = construction_ui::ConstructionView::default();
                             production_view = production_ui::ProductionView::default();
+                            army_view = army_ui::ArmyView::default();
                             research_view.selected = None;
                             research_view.open = false;
                             Screen::MapViewer
@@ -2317,6 +2378,7 @@ async fn main() {
                         production_view.close();
                         research_view.open = false;
                         construction_view.open = true;
+                        army_view.close();
                     }
                 }
                 if is_key_pressed(KeyCode::P) {
@@ -2325,6 +2387,7 @@ async fn main() {
                         construction_view.close();
                         research_view.open = false;
                         production_view.open = true;
+                        army_view.close();
                     }
                 }
                 if is_key_pressed(KeyCode::R) {
@@ -2333,9 +2396,15 @@ async fn main() {
                         construction_view.close();
                         production_view.close();
                         research_view.open = true;
+                        army_view.close();
                     }
                 }
+                if is_key_pressed(KeyCode::A) {
+                    if army_view.open {army_view.close();}else{army_view.open=true;}
+                    if army_view.open {construction_view.close();production_view.close();research_view.open=false;}
+                }
                 if is_key_pressed(KeyCode::Escape) {
+                    army_view.close();army_view.targeting=false;
                     construction_view.close();
                     production_view.close();
                     research_view.open = false;
@@ -2358,7 +2427,7 @@ async fn main() {
                     &research_catalogue, &research_rules);
                 let GameSession { world, clock: game, player_country: selected_country,
                     construction_queues: construction_queue, construction: country_construction,
-                    production: production_state, research: research_world } = &mut session;
+                    production: production_state, research: research_world, military } = &mut session;
                 let country = country_construction.entry(selected_country.clone().unwrap_or_default()).or_default();
                 let CountryConstruction { order: construction_order, state_priority: construction_priority,
                     policy: construction_policy, law: construction_law_preset } = country;
@@ -2372,6 +2441,8 @@ async fn main() {
                 // that click must never leak through and place the building.
                 let placement_before_ui = construction_view.open && construction_view.map_placement;
                 let research_before_ui = research_view.open;
+                let army_before_ui = army_view.open;
+                let army_panel_before = army_ui::bounds(&army_view);
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), world, &load_error, &mut selected, selected_country.as_deref(),
                     construction_queue, construction_priority, construction_order, &mut construction_menu,
@@ -2379,7 +2450,7 @@ async fn main() {
                     construction_law_preset, &building_rules, &mut construction_view,
                     &mut production_view, production_state, &production_rules,
                     research_world, &research_catalogue, &research_rules,
-                    &mut research_view, game.date,
+                    &mut research_view, game.date, military, &mut army_view,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(game, &cached_date_label);
                 if pause_clicked {
@@ -2403,6 +2474,8 @@ async fn main() {
                         && !construction_ui::is_over_panel(mouse, &construction_view)
                         && !production_ui::is_over_panel(mouse, &production_view)
                         && !research_ui::is_over_panel(mouse, &research_view)
+                        && !army_ui::is_over_panel(mouse, &army_view)
+                        && !(army_before_ui && army_panel_before.contains(mouse))
                         && !research_before_ui && !research_view.open
                         && (!construction_view.open || placement_before_ui);
 
@@ -2425,6 +2498,7 @@ async fn main() {
                             construction_ui::is_over_panel(point.position, &construction_view)
                                 || production_ui::is_over_panel(point.position, &production_view)
                                 || research_ui::is_over_panel(point.position, &research_view)
+                                || army_ui::is_over_panel(point.position, &army_view)
                         })
                         || (screen_width() >= 760.0 && contact_points.iter().any(|point| {
                             point.position.x >= screen_width() - 405.0
@@ -2469,6 +2543,9 @@ async fn main() {
                                     pixel_y.min(current_map.height - 1),
                                 )
                                 .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                            if let Some((tag,province))=selected_country.as_deref().zip(selected.map(|p|p.0)) {
+                                army_ui::map_click(&mut army_view,military,world,tag,province);
+                            }
                             let selected_state_id = selected.and_then(|(province_id, _, _, _)| current_map.state_by_province.get(&province_id).copied());
                             if construction_view.open {
                                 construction_view.focused_state = selected_state_id;
@@ -2519,7 +2596,7 @@ async fn main() {
                 let compact_reload = screen_width() < 760.0;
                 // Prevent reload controls from drawing through the open
                 // construction panel or intercepting its queue-row clicks.
-                let reload_clicked = if construction_view.open || production_view.open || research_view.open {
+                let reload_clicked = if construction_view.open || production_view.open || research_view.open || army_view.open {
                     false
                 } else if compact_reload {
                     button("Reload map", 12.0, screen_height() - 108.0, 130.0, 34.0)

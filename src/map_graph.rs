@@ -102,6 +102,15 @@ pub struct ProvinceGeography {
     /// A future movement model must calibrate pixel distances to game distances.
     pub center: Option<MapPosition>,
     pub pixel_count: u64,
+    pub bounds: Option<ProvinceBounds>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProvinceBounds {
+    pub min_x: u32,
+    pub min_y: u32,
+    pub max_x: u32,
+    pub max_y: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,6 +157,7 @@ struct PixelTotals {
     y: u64,
     sin_x: f64,
     cos_x: f64,
+    bounds: Option<ProvinceBounds>,
 }
 
 impl MapGraph {
@@ -213,6 +223,19 @@ impl MapGraph {
                 current[x] = i;
                 if i != usize::MAX {
                     let t = &mut totals[i];
+                    if let Some(b) = &mut t.bounds {
+                        b.min_x = b.min_x.min(x as u32);
+                        b.max_x = b.max_x.max(x as u32);
+                        b.min_y = b.min_y.min(y as u32);
+                        b.max_y = b.max_y.max(y as u32);
+                    } else {
+                        t.bounds = Some(ProvinceBounds {
+                            min_x: x as u32,
+                            max_x: x as u32,
+                            min_y: y as u32,
+                            max_y: y as u32,
+                        });
+                    }
                     t.count += 1;
                     t.x += x as u64;
                     t.y += y as u64;
@@ -255,6 +278,7 @@ impl MapGraph {
                         definition,
                         center,
                         pixel_count: t.count,
+                        bounds: t.bounds,
                     },
                 )
             })

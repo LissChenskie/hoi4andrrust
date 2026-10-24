@@ -1,8 +1,10 @@
 # Campaign, hourly simulation and province geography
 
-This milestone prepares the existing prototype for land units and combat. It does
-not implement damage formulas, division movement, occupation economics, naval
-blockades or diplomatic access, and does not claim HOI4 engine parity.
+This document describes the original campaign/geography foundation. Land units,
+movement and hourly combat are now integrated; see [land_combat.md](land_combat.md)
+for controls, inputs, implemented rules and remaining compatibility gaps.
+Occupation economics and naval blockades remain separate systems. This project
+does not claim verified HOI4 engine parity.
 
 ## State ownership
 
@@ -39,8 +41,9 @@ At midnight the completed day runs exactly once, in this explicit prototype orde
 3. Construction for all countries, using each country's own order and policy.
 
 Factories completed in phase 3 enter production on the next daily update.
-Future hourly movement/combat systems belong at the single `advance_one_hour`
-boundary. Their exact phase order must be established against the target build.
+Hourly movement/combat runs at the single `advance_one_hour` boundary. Military
+modifiers refresh after daily research; production feeds daily army replenishment
+before construction. Exact original-engine phase order remains unverified.
 
 ## Geography and territory
 

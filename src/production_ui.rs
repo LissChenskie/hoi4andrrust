@@ -92,6 +92,7 @@ pub fn draw(
     world: Option<&World>, tag: Option<&str>,
     state: &mut ProductionState, view: &mut ProductionView,
     rules: &ProductionRules,
+    military: &crate::warfare::Warfare,
 ) {
     if !view.open { return; }
     let area = bounds();
@@ -158,7 +159,7 @@ pub fn draw(
         let tx = row.x + 56.0;
         let bx = row.x + row.w - 159.0;
         let tw = (bx - tx - 6.0).max(35.0);
-        let title = compact_label(line.equipment.label(), tw, if compact { 11 } else { 13 });
+        let title = compact_label(line.model.as_deref().unwrap_or(line.equipment.label()), tw, if compact { 11 } else { 13 });
         if ui::inside(Rect::new(icon_x, row.y + 3.0, (bx - icon_x).max(1.0), 42.0))
             && is_mouse_button_pressed(MouseButton::Left) {
             action = Some(Action::Select(line.id));
@@ -225,10 +226,10 @@ pub fn draw(
     }
     // National equipment stockpiles are stored in the simulation, not inferred
     // from completed buildings or hardcoded starting-country values.
-    let stock = Equipment::ALL.iter().map(|equipment| {
+    let stock = if snapshot.model_stockpile.is_empty() { Equipment::ALL.iter().map(|equipment| {
         let count = snapshot.stockpile.get(equipment).copied().unwrap_or(0);
         format!("{}:{count}", equipment.short_label())
-    }).collect::<Vec<_>>().join("  ");
+    }).collect::<Vec<_>>().join("  ") } else {snapshot.model_stockpile.iter().map(|(id,n)|format!("{id}:{n}")).collect::<Vec<_>>().join("  ")};
     draw_ui_text(&compact_label(&stock, list_w - 5.0, 10), list_x,
         footer_y + 99.0, 10.0, ui::TEXT);
     if !view.notice.is_empty() {
@@ -255,16 +256,32 @@ pub fn draw(
             Action::Select(id) => { view.selected_line = Some(id); }
             Action::Create(equipment) => {
                 if country.lines.len() < 128 {
-                    let id = country.create(equipment, 1, rules);
-                    view.selected_line = Some(id);
-                    view.notice = format!("{} line created", equipment.label());
+                    if let Some(model)=default_model(military,tag,equipment) {
+                        let id=country.create_model(&model,equipment,1,rules);view.selected_line=Some(id);
+                        view.notice=format!("{model} line created; choose other models in ARMY / GEAR");
+                    } else if military.catalogue.equipment.is_empty() {
+                        let id = country.create(equipment, 1, rules);view.selected_line=Some(id);
+                        view.notice="Prototype line: import equipment definitions for army stockpiles".into();
+                    } else {view.notice="No unlocked model in this category; choose ARMY / GEAR".into();}
                 } else { view.notice = "Maximum 128 production lines".to_owned(); }
             }
             Action::Switch(id, equipment) => {
-                if country.switch_equipment(id, equipment, rules) {
+                let changed=if let Some(model)=default_model(military,tag,equipment) {country.switch_model(id,&model,equipment,rules)}
+                    else if military.catalogue.equipment.is_empty(){country.switch_equipment(id,equipment,rules)}else{false};
+                if changed {
                     view.notice = "Equipment changed: some efficiency retained".to_owned();
                 }
             }
         }
     }
+}
+
+fn default_model(military:&crate::warfare::Warfare,tag:&str,category:Equipment)->Option<String> {
+    let army=military.countries.get(tag)?;
+    military.catalogue.equipment.values().filter(|e|military.catalogue.equipment_available(&e.id,&army.modifiers)&&e.cost>0.0)
+        .filter(|e|match category {
+            Equipment::InfantryKit=>e.archetype.contains("infantry"),Equipment::SupportKit=>e.archetype.contains("support"),
+            Equipment::Truck=>e.archetype.contains("motorized"),Equipment::Aircraft=>e.archetype.contains("plane"),
+            Equipment::FieldEquipment=>e.archetype.contains("artillery")||e.archetype.contains("anti_tank")||e.archetype.contains("tank"),
+        }).max_by_key(|e|(e.year,&e.id)).map(|e|e.id.clone())
 }

@@ -111,6 +111,7 @@ pub fn load(root: &Path, names: &HashMap<u32, String>) -> Result<LoadedScenario,
     );
     for &id in geography.provinces.keys() {
         world.provinces.entry(id).or_insert(Province {
+            control_revision: 0,
             id,
             state_id: None,
             controller: None,

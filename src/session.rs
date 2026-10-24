@@ -30,6 +30,7 @@ pub struct GameSession {
     pub construction: BTreeMap<String, CountryConstruction>,
     pub production: ProductionState,
     pub research: ResearchWorld,
+    pub military: crate::warfare::Warfare,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -54,6 +55,7 @@ impl GameSession {
             construction_queues: ConstructionQueues::new(),
             production: ProductionState::default(),
             research: ResearchWorld::default(),
+            military: crate::warfare::Warfare::default(),
         }
     }
 
@@ -107,7 +109,17 @@ impl GameSession {
         result
     }
 
-    /// One simulation boundary for future movement/combat systems. Simulation
+    pub fn initialize_military(&mut self, root: &Path) {
+        self.military = crate::military_history::initialize(
+            root,
+            &self.world,
+            &self.research,
+            &mut self.production,
+            self.clock.date,
+        );
+    }
+
+    /// One simulation boundary for movement and combat. Simulation
     /// order is stable (country tag order), independent of UI and render FPS.
     /// Daily order: research -> production -> construction, all at midnight.
     pub fn advance_one_hour(
@@ -117,7 +129,15 @@ impl GameSession {
         catalogue: &ResearchCatalogue,
         research: &ResearchRules,
     ) -> bool {
-        let Some(completed_day) = self.clock.advance_one_hour() else {
+        let completed_day = self.clock.advance_one_hour();
+        self.military.tick_hour(
+            &mut self.world,
+            self.clock.date,
+            self.clock.hour,
+            self.clock.elapsed_hours,
+            self.player_country.as_deref(),
+        );
+        let Some(completed_day) = completed_day else {
             return false;
         };
         let tags: Vec<_> = self.world.countries.keys().cloned().collect();
@@ -131,11 +151,26 @@ impl GameSession {
             }
         }
         self.research.day_index += 1;
+        self.military.refresh_modifiers(&self.research);
         // Every country's production sees factories present at day start.
         // Newly completed MIL participates only in the next daily production.
+        let costs = self
+            .military
+            .catalogue
+            .equipment
+            .iter()
+            .map(|(id, e)| (id.clone(), e.cost))
+            .collect();
         for tag in &tags {
-            self.production.tick_country(&self.world, tag, production);
+            if let Some(economy) = self.world.country_economy(tag) {
+                self.production.country_mut(tag).tick_with_models(
+                    economy.military_factories,
+                    production,
+                    &costs,
+                );
+            }
         }
+        self.military.replenish(&mut self.production);
         for tag in &tags {
             let country = self.construction.entry(tag.clone()).or_default();
             construction::advance_day_by_order(
@@ -155,6 +190,49 @@ impl GameSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn campaign_combat_is_hourly_and_replays_independently_of_frame_partition() {
+        fn campaign() -> GameSession {
+            let mut s = GameSession::new(crate::warfare::tests::world());
+            let mut c = crate::military_model::tests::catalogue();
+            c.rules.pixels_to_km = Some(1.0);
+            s.military = crate::warfare::Warfare::new(c);
+            s.military.ai_enabled = false;
+            for (id, tag, p) in [(1, "A", 1), (2, "B", 2)] {
+                let d = crate::military_model::tests::division(id, tag, p);
+                s.military.divisions.insert(id, d);
+            }
+            s.military.declare_war("A", "B", &s.world).unwrap();
+            let id = s.military.attack("A", &[1], 2, &s.world).unwrap();
+            s.military.battles.get_mut(&id).unwrap().trace_enabled = true;
+            s.clock.paused = false;
+            s
+        }
+        let (mut a, mut b) = (campaign(), campaign());
+        let (cat, br, pr, rr) = (
+            ResearchCatalogue::default(),
+            BuildingRules::default(),
+            ProductionRules::default(),
+            ResearchRules::default(),
+        );
+        a.advance_frame(1.0, &br, &pr, &cat, &rr);
+        for _ in 0..4 {
+            b.advance_frame(0.25, &br, &pr, &cat, &rr);
+        }
+        assert_eq!(a.military.simulated_hours, 24);
+        assert_eq!(a.military.rng.state, b.military.rng.state);
+        for id in [1, 2] {
+            assert_eq!(a.military.divisions[&id].hp, b.military.divisions[&id].hp);
+            assert_eq!(
+                a.military.divisions[&id].organization,
+                b.military.divisions[&id].organization
+            );
+        }
+        a.clock.paused = true;
+        let before = a.military.rng.state;
+        a.advance_frame(1.0, &br, &pr, &cat, &rr);
+        assert_eq!(a.military.rng.state, before);
+    }
     use crate::construction::{BuildingType, ConstructionProject};
     use crate::production::Equipment;
     use crate::research::Technology;

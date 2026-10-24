@@ -17,15 +17,37 @@ pub enum Requirement {
 }
 impl Requirement {
     pub fn allows(&self, country: &CountryResearch) -> bool {
+        self.evaluate(country) == Some(true)
+    }
+    fn evaluate(&self, country: &CountryResearch) -> Option<bool> {
         match self {
-            Self::Always(b) => *b,
-            Self::HasCountryFlag(v) => country.flags.contains(v),
-            Self::HasTechnology(v) => country.researched.contains(v),
-            Self::And(v) => v.iter().all(|x| x.allows(country)),
-            Self::Or(v) => v.iter().any(|x| x.allows(country)),
-            Self::Not(x) => !x.allows(country),
-            Self::Unsupported(_) => false,
+            Self::Always(b) => Some(*b),
+            Self::HasCountryFlag(v) => Some(country.flags.contains(v)),
+            Self::HasTechnology(v) => Some(country.researched.contains(v)),
+            Self::And(v) => {
+                let results: Vec<_> = v.iter().map(|x| x.evaluate(country)).collect();
+                if results.contains(&Some(false)) {Some(false)} else if results.contains(&None) {None} else {Some(true)}
+            }
+            Self::Or(v) => {
+                let results: Vec<_> = v.iter().map(|x| x.evaluate(country)).collect();
+                if results.contains(&Some(true)) {Some(true)} else if results.contains(&None) {None} else {Some(false)}
+            }
+            Self::Not(x) => x.evaluate(country).map(|v| !v),
+            Self::Unsupported(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod condition_regressions {
+    use super::*;
+    #[test]
+    fn negating_unknown_conditions_never_unlocks_a_technology() {
+        let country=CountryResearch::new(3,&ResearchRules::default());
+        let unknown=Requirement::Unsupported("unimplemented predicate".into());
+        assert!(!Requirement::Not(Box::new(unknown.clone())).allows(&country));
+        assert!(!Requirement::Not(Box::new(Requirement::And(vec![unknown.clone(),Requirement::Always(true)]))).allows(&country));
+        assert!(Requirement::Or(vec![unknown,Requirement::Always(true)]).allows(&country));
     }
 }
 

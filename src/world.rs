@@ -37,6 +37,7 @@ pub struct Province {
     pub state_id: Option<u32>,
     /// Actual control is per province; its legal owner is inherited from State.
     pub controller: Option<String>,
+    pub control_revision: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -45,6 +46,7 @@ pub struct World {
     pub states: BTreeMap<u32, State>,
     pub provinces: BTreeMap<u32, Province>,
     pub geography: crate::map_graph::MapGraph,
+    pub control_revision: u64,
 }
 
 impl World {
@@ -63,6 +65,7 @@ impl World {
                 id: province_id,
                 state_id: Some(state_id),
                 controller: owner_by_state.get(&state_id).cloned(),
+                control_revision: 0,
             });
             world.states.entry(state_id).or_insert_with(|| State {
                 id: state_id,
@@ -149,6 +152,9 @@ impl World {
             return false;
         }
         let Some(province) = self.provinces.get_mut(&province_id) else { return false; };
+        if province.controller.as_deref() == controller { return true; }
+        self.control_revision = self.control_revision.saturating_add(1);
+        province.control_revision = self.control_revision;
         province.controller = controller.map(str::to_owned);
         if let Some(tag) = controller {
             self.countries.entry(tag.to_owned()).or_insert_with(|| Country {
@@ -170,6 +176,8 @@ impl World {
             if let Some(province) = self.provinces.get_mut(id) {
                 if province.controller == old_owner {
                     province.controller = new_owner.filter(|s| !s.is_empty()).map(str::to_owned);
+                    self.control_revision = self.control_revision.saturating_add(1);
+                    province.control_revision = self.control_revision;
                 }
             }
         }

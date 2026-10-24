@@ -1,0 +1,939 @@
+//! Units, equipment, templates and runtime divisions. Independent from graphics.
+use crate::combat_rules::CombatRules;
+use crate::research_data::Entry;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub type DivisionId = u64;
+pub type StatBlock = BTreeMap<String, f64>;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Stats {
+    pub soft_attack: f64,
+    pub hard_attack: f64,
+    pub defense: f64,
+    pub breakthrough: f64,
+    pub hp: f64,
+    pub organization: f64,
+    pub recovery: f64,
+    pub width: f64,
+    pub armor: f64,
+    pub piercing: f64,
+    pub hardness: f64,
+    pub speed: f64,
+    pub manpower: f64,
+    pub supply: f64,
+    pub fuel: f64,
+    pub weight: f64,
+    pub training: f64,
+    pub recon: f64,
+    pub initiative: f64,
+    pub entrenchment: f64,
+    pub air_attack: f64,
+    pub reliability: f64,
+}
+
+impl Stats {
+    pub fn from_block(b: &StatBlock) -> Self {
+        let get = |k: &str| b.get(k).copied().unwrap_or(0.0);
+        Self {
+            soft_attack: get("soft_attack"),
+            hard_attack: get("hard_attack"),
+            defense: get("defense"),
+            breakthrough: get("breakthrough"),
+            hp: get("max_strength"),
+            organization: get("max_organisation"),
+            recovery: get("default_morale"),
+            width: get("combat_width"),
+            armor: get("armor_value"),
+            piercing: get("ap_attack"),
+            hardness: get("hardness"),
+            speed: get("maximum_speed"),
+            manpower: get("manpower"),
+            supply: get("supply_consumption"),
+            fuel: get("fuel_consumption"),
+            weight: get("weight"),
+            training: get("training_time"),
+            recon: get("recon"),
+            initiative: get("initiative"),
+            entrenchment: get("entrenchment"),
+            air_attack: get("air_attack"),
+            reliability: get("reliability"),
+        }
+    }
+    pub fn scaled_attacks(&self, factor: f64) -> Self {
+        let mut s = self.clone();
+        s.soft_attack *= factor;
+        s.hard_attack *= factor;
+        s.defense *= factor;
+        s.breakthrough *= factor;
+        s
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TerrainAdjustment {
+    pub attack: f64,
+    pub defense: f64,
+    pub movement: f64,
+    pub attrition: f64,
+}
+impl TerrainAdjustment {
+    pub fn add(&mut self, other: &Self, weight: f64) {
+        self.attack += other.attack * weight;
+        self.defense += other.defense * weight;
+        self.movement += other.movement * weight;
+        self.attrition += other.attrition * weight;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct EquipmentDefinition {
+    pub id: String,
+    pub archetype: String,
+    pub year: u32,
+    pub active: bool,
+    pub buildable: bool,
+    pub stats: StatBlock,
+    pub cost: f64,
+    pub modular: bool,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct BattalionDefinition {
+    pub id: String,
+    pub group: String,
+    pub categories: BTreeSet<String>,
+    pub active: bool,
+    pub divisional: bool,
+    pub regimental: bool,
+    pub affects_speed: bool,
+    pub stats: StatBlock,
+    pub need: BTreeMap<String, f64>,
+    pub terrain: BTreeMap<String, TerrainAdjustment>,
+    pub same_support_type: BTreeSet<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BattalionSlot {
+    pub unit: String,
+    pub column: usize,
+    pub row: usize,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupportSlot {
+    pub unit: String,
+    pub regiment: Option<usize>,
+    pub row: usize,
+}
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DivisionTemplate {
+    pub name: String,
+    pub line: Vec<BattalionSlot>,
+    pub support: Vec<SupportSlot>,
+    pub locked: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TechnologyEffects {
+    pub units: BTreeMap<String, StatBlock>,
+    pub equipment: BTreeMap<String, StatBlock>,
+    pub country: StatBlock,
+    pub unlock_units: BTreeSet<String>,
+    pub unlock_equipment: BTreeSet<String>,
+    pub unlock_tactics: BTreeSet<String>,
+    pub conditional_unlocks: Vec<ConditionalUnlock>,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnlockKind {
+    Unit,
+    Equipment,
+}
+#[derive(Debug, Clone)]
+pub struct ConditionalUnlock {
+    pub kind: UnlockKind,
+    pub conditions: Vec<Entry>,
+    pub ids: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TerrainDefinition {
+    pub width: f64,
+    pub extra_width: f64,
+    pub movement_cost: f64,
+    pub attack: f64,
+    pub defense: f64,
+    pub attrition: f64,
+}
+impl Default for TerrainDefinition {
+    fn default() -> Self {
+        Self {
+            width: 70.0,
+            extra_width: 35.0,
+            movement_cost: 1.0,
+            attack: 0.0,
+            defense: 0.0,
+            attrition: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Tactic {
+    pub id: String,
+    pub attacker: bool,
+    pub active: bool,
+    pub weight: f64,
+    pub trigger: Vec<Entry>,
+    pub weight_modifiers: Vec<(Vec<Entry>, f64)>,
+    pub countered_by: Option<String>,
+    pub phase: Option<String>,
+    pub required_phase: Option<String>,
+    pub attacker_bonus: f64,
+    pub defender_bonus: f64,
+    pub width_bonus: f64,
+    pub attacker_org_damage: f64,
+    pub defender_org_damage: f64,
+    pub movement: f64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MilitaryCatalogue {
+    pub rules: CombatRules,
+    pub units: BTreeMap<String, BattalionDefinition>,
+    pub equipment: BTreeMap<String, EquipmentDefinition>,
+    pub technologies: BTreeMap<String, TechnologyEffects>,
+    pub terrains: BTreeMap<String, TerrainDefinition>,
+    pub weather: BTreeMap<String, StatBlock>,
+    pub tactics: Vec<Tactic>,
+    pub diagnostics: Vec<String>,
+    pub source_files: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MilitaryModifiers {
+    pub country: StatBlock,
+    pub unit: BTreeMap<String, StatBlock>,
+    pub equipment: BTreeMap<String, StatBlock>,
+    pub unlocked_units: BTreeSet<String>,
+    pub unlocked_equipment: BTreeSet<String>,
+    pub unlocked_tactics: BTreeSet<String>,
+    pub researched: BTreeSet<String>,
+    pub flags: BTreeSet<String>,
+    pub dlcs: BTreeSet<String>,
+}
+
+fn merge_stats(a: &mut StatBlock, b: &StatBlock) {
+    for (k, v) in b {
+        *a.entry(k.clone()).or_default() += v;
+    }
+}
+impl MilitaryModifiers {
+    pub fn from_research(catalogue: &MilitaryCatalogue, known: &BTreeSet<String>) -> Self {
+        let mut result = Self {
+            researched: known.clone(),
+            ..Default::default()
+        };
+        for id in known {
+            if let Some(effect) = catalogue.technologies.get(id) {
+                merge_stats(&mut result.country, &effect.country);
+                for (k, b) in &effect.units {
+                    merge_stats(result.unit.entry(k.clone()).or_default(), b);
+                }
+                for (k, b) in &effect.equipment {
+                    merge_stats(result.equipment.entry(k.clone()).or_default(), b);
+                }
+                result
+                    .unlocked_units
+                    .extend(effect.unlock_units.iter().cloned());
+                result
+                    .unlocked_equipment
+                    .extend(effect.unlock_equipment.iter().cloned());
+                result
+                    .unlocked_tactics
+                    .extend(effect.unlock_tactics.iter().cloned());
+            }
+        }
+        result
+    }
+    pub fn value(&self, key: &str) -> f64 {
+        self.country.get(key).copied().unwrap_or(0.0)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct DerivedTemplate {
+    pub stats: Stats,
+    pub equipment: BTreeMap<String, f64>,
+    pub model_requirements: BTreeMap<String, f64>,
+    pub terrain: BTreeMap<String, TerrainAdjustment>,
+    pub equipment_cost: f64,
+    pub contributions: Vec<String>,
+}
+
+impl MilitaryCatalogue {
+    pub fn default_terrain(&self, id: &str) -> TerrainDefinition {
+        self.terrains.get(id).cloned().unwrap_or_else(|| {
+            let (width, extra_width) = match id {
+                "forest" | "jungle" => (60.0, 30.0),
+                "mountain" | "marsh" => (50.0, 25.0),
+                "urban" => (80.0, 40.0),
+                _ => (70.0, 35.0),
+            };
+            TerrainDefinition {
+                width,
+                extra_width,
+                ..Default::default()
+            }
+        })
+    }
+    pub fn equipment_available(&self, id: &str, modifiers: &MilitaryModifiers) -> bool {
+        self.equipment.get(id).is_some_and(|e| {
+            e.buildable && !e.modular && (e.active || modifiers.unlocked_equipment.contains(id))
+        })
+    }
+    pub fn best_equipment(
+        &self,
+        archetype: &str,
+        m: &MilitaryModifiers,
+    ) -> Option<&EquipmentDefinition> {
+        self.equipment
+            .values()
+            .filter(|e| e.archetype == archetype && self.equipment_available(&e.id, m))
+            .max_by(|a, b| a.year.cmp(&b.year).then_with(|| a.id.cmp(&b.id)))
+    }
+    pub fn validate_template(
+        &self,
+        t: &DivisionTemplate,
+        m: &MilitaryModifiers,
+        check_unlocks: bool,
+    ) -> Result<(), String> {
+        if t.line.is_empty() {
+            return Err("A division needs at least one line battalion".into());
+        }
+        let mut positions = BTreeSet::new();
+        let mut groups = BTreeMap::<usize, &str>::new();
+        for slot in &t.line {
+            let u = self
+                .units
+                .get(&slot.unit)
+                .ok_or_else(|| format!("Unknown battalion {}", slot.unit))?;
+            if u.group == "support" {
+                return Err("A support company cannot occupy a line slot".into());
+            }
+            if slot.column >= self.rules.regiment_columns
+                || slot.row >= self.rules.regiment_rows
+                || !positions.insert((slot.column, slot.row))
+            {
+                return Err("Invalid/duplicate line position".into());
+            }
+            if groups
+                .insert(slot.column, &u.group)
+                .is_some_and(|g| g != u.group)
+            {
+                return Err("Incompatible battalion groups in one regiment".into());
+            }
+            if check_unlocks && !u.active && !m.unlocked_units.contains(&u.id) {
+                return Err(format!("{} requires a technology", u.id));
+            }
+        }
+        let mut normal = 0;
+        let mut regiments = BTreeSet::new();
+        let mut support_types = BTreeSet::new();
+        let mut normal_rows = BTreeSet::new();
+        for slot in &t.support {
+            let u = self
+                .units
+                .get(&slot.unit)
+                .ok_or_else(|| format!("Unknown support {}", slot.unit))?;
+            if u.group != "support" {
+                return Err("Line battalion in support slot".into());
+            }
+            if let Some(column) = slot.regiment {
+                if !u.regimental
+                    || !groups.contains_key(&column)
+                    || slot.row >= self.rules.regiment_rows
+                    || !regiments.insert((column, slot.row))
+                {
+                    return Err("Invalid/duplicate regimental support slot".into());
+                }
+            } else {
+                normal += 1;
+                if !u.divisional
+                    || normal > self.rules.support_slots
+                    || slot.row >= self.rules.support_slots
+                    || !normal_rows.insert(slot.row)
+                {
+                    return Err("Division support slots exceeded".into());
+                }
+            }
+            if !support_types.insert((slot.regiment, u.id.clone()))
+                || u.same_support_type
+                    .iter()
+                    .any(|id| support_types.contains(&(slot.regiment, id.clone())))
+            {
+                return Err("Duplicate/incompatible support type".into());
+            }
+            for other in &t.support {
+                if other.regiment == slot.regiment
+                    && other.unit != u.id
+                    && self
+                        .units
+                        .get(&other.unit)
+                        .is_some_and(|v| v.same_support_type.contains(&u.id))
+                {
+                    return Err("Incompatible support companies".into());
+                }
+            }
+            if check_unlocks && !u.active && !m.unlocked_units.contains(&u.id) {
+                return Err(format!("{} requires a technology", u.id));
+            }
+        }
+        Ok(())
+    }
+    pub fn edit_cost(&self, old: &DivisionTemplate, new: &DivisionTemplate) -> Result<f64, String> {
+        if old.locked {
+            return Err("This template is locked".into());
+        }
+        self.validate_template(new, &MilitaryModifiers::default(), false)?;
+        let old_positions: BTreeMap<_, _> = old
+            .line
+            .iter()
+            .map(|s| ((s.column, s.row), &s.unit))
+            .collect();
+        let new_positions: BTreeMap<_, _> = new
+            .line
+            .iter()
+            .map(|s| ((s.column, s.row), &s.unit))
+            .collect();
+        let positions: BTreeSet<_> = old_positions
+            .keys()
+            .chain(new_positions.keys())
+            .copied()
+            .collect();
+        let changed = positions
+            .iter()
+            .filter(|p| old_positions.get(p) != new_positions.get(p))
+            .count();
+        let old_support: BTreeMap<_, _> = old
+            .support
+            .iter()
+            .map(|s| ((s.regiment, s.row), &s.unit))
+            .collect();
+        let new_support: BTreeMap<_, _> = new
+            .support
+            .iter()
+            .map(|s| ((s.regiment, s.row), &s.unit))
+            .collect();
+        let support_positions: BTreeSet<_> = old_support
+            .keys()
+            .chain(new_support.keys())
+            .copied()
+            .collect();
+        let support_changes = support_positions
+            .iter()
+            .filter(|p| old_support.get(p) != new_support.get(p))
+            .count();
+        let old_groups: BTreeSet<_> = old
+            .line
+            .iter()
+            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
+            .collect();
+        let new_groups: BTreeSet<_> = new
+            .line
+            .iter()
+            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
+            .collect();
+        let extra = new_groups
+            .difference(&old_groups)
+            .count()
+            .saturating_sub(usize::from(old_groups.is_empty()));
+        Ok(changed as f64 * self.rules.line_edit_xp
+            + support_changes as f64 * self.rules.support_edit_xp
+            + extra as f64 * self.rules.new_group_xp)
+    }
+
+    /// Equipment combat stats are averages per archetype, not multiplied by the
+    /// number of rifles/tanks. Need counts determine cost and completeness.
+    pub fn aggregate(
+        &self,
+        t: &DivisionTemplate,
+        m: &MilitaryModifiers,
+        inventory: Option<&BTreeMap<String, u32>>,
+    ) -> Result<DerivedTemplate, String> {
+        self.validate_template(t, m, false)?;
+        let mut result = DerivedTemplate::default();
+        let mut armor = Vec::new();
+        let mut piercing = Vec::new();
+        let mut hardness = 0.0;
+        let mut speed = f64::INFINITY;
+        let mut count = 0usize;
+        for (id, is_support) in t
+            .line
+            .iter()
+            .map(|s| (s.unit.as_str(), false))
+            .chain(t.support.iter().map(|s| (s.unit.as_str(), true)))
+        {
+            let u = &self.units[id];
+            let mut values = u.stats.clone();
+            for tag in std::iter::once(&u.id).chain(u.categories.iter()) {
+                if let Some(bonus) = m.unit.get(tag) {
+                    merge_stats(&mut values, bonus);
+                }
+            }
+            let mut s = Stats::from_block(&values);
+            let mut eq = StatBlock::new();
+            for (archetype, need) in &u.need {
+                *result.equipment.entry(archetype.clone()).or_default() += *need;
+                let selected: Vec<(&EquipmentDefinition, f64)> = if let Some(inventory) = inventory
+                {
+                    let total: u64 = inventory
+                        .iter()
+                        .filter_map(|(id, n)| {
+                            self.equipment
+                                .get(id)
+                                .filter(|e| &e.archetype == archetype)
+                                .map(|_| u64::from(*n))
+                        })
+                        .sum();
+                    inventory
+                        .iter()
+                        .filter_map(|(id, n)| {
+                            self.equipment
+                                .get(id)
+                                .filter(|e| &e.archetype == archetype && total > 0)
+                                .map(|e| (e, f64::from(*n) / total as f64))
+                        })
+                        .collect()
+                } else {
+                    self.best_equipment(archetype, m)
+                        .map(|e| vec![(e, 1.0)])
+                        .unwrap_or_default()
+                };
+                if selected.is_empty() && inventory.is_none() {
+                    return Err(format!("No usable equipment for {archetype}"));
+                }
+                for (e, weight) in selected {
+                    result.equipment_cost += need * e.cost * weight;
+                    *result.model_requirements.entry(e.id.clone()).or_default() += need * weight;
+                    for (k, v) in &e.stats {
+                        let bonus = m
+                            .equipment
+                            .get(&e.id)
+                            .and_then(|b| b.get(k))
+                            .copied()
+                            .unwrap_or(0.0)
+                            + m.equipment
+                                .get(&e.archetype)
+                                .and_then(|b| b.get(k))
+                                .copied()
+                                .unwrap_or(0.0);
+                        *eq.entry(k.clone()).or_default() += v * (1.0 + bonus) * weight;
+                    }
+                }
+            }
+            if !u.need.is_empty() {
+                // Unit attack/armor entries are equipment multipliers. Org/HP,
+                // manpower and utility entries remain absolute unit values.
+                let adjusted = |key: &str| {
+                    eq.get(key).copied().unwrap_or(0.0)
+                        * (1.0 + values.get(key).copied().unwrap_or(0.0)).max(0.0)
+                };
+                s.soft_attack = adjusted("soft_attack");
+                s.hard_attack = adjusted("hard_attack");
+                s.defense = adjusted("defense");
+                s.breakthrough = adjusted("breakthrough");
+                s.armor = adjusted("armor_value");
+                s.piercing = adjusted("ap_attack");
+                s.air_attack = adjusted("air_attack");
+                s.hardness =
+                    (s.hardness + eq.get("hardness").copied().unwrap_or(0.0)).clamp(0.0, 1.0);
+                let equipment_speed = eq.get("maximum_speed").copied().unwrap_or(0.0);
+                if equipment_speed > 0.0 {
+                    s.speed = if s.speed > 0.0 {
+                        s.speed.min(equipment_speed)
+                    } else {
+                        equipment_speed
+                    };
+                }
+                s.reliability = eq.get("reliability").copied().unwrap_or(0.0);
+            }
+            let a = &mut result.stats;
+            a.soft_attack += s.soft_attack;
+            a.hard_attack += s.hard_attack;
+            a.defense += s.defense;
+            a.breakthrough += s.breakthrough;
+            a.hp += s.hp;
+            a.organization += s.organization;
+            a.recovery += s.recovery;
+            a.manpower += s.manpower;
+            a.supply += s.supply;
+            a.fuel += s.fuel;
+            a.weight += s.weight;
+            a.training = a.training.max(s.training);
+            a.recon = a.recon.max(s.recon);
+            a.initiative += s.initiative;
+            a.entrenchment += s.entrenchment;
+            a.air_attack += s.air_attack;
+            if !is_support {
+                a.width += s.width;
+                hardness += s.hardness;
+            }
+            if u.affects_speed && s.speed > 0.0 {
+                speed = speed.min(s.speed);
+            }
+            armor.push(s.armor);
+            piercing.push(s.piercing);
+            count += 1;
+            let terrain_weight = if is_support {
+                1.0
+            } else {
+                1.0 / t.line.len() as f64
+            };
+            for (k, v) in &u.terrain {
+                result
+                    .terrain
+                    .entry(k.clone())
+                    .or_default()
+                    .add(v, terrain_weight);
+            }
+            result
+                .contributions
+                .push(format!("{} ({})", u.id, u.source));
+        }
+        let a = &mut result.stats;
+        a.organization /= count as f64;
+        a.recovery /= count as f64;
+        a.hardness = hardness / t.line.len() as f64;
+        let combine = |v: &[f64], w: f64| {
+            w * v.iter().copied().fold(0.0, f64::max)
+                + (1.0 - w) * v.iter().sum::<f64>() / v.len() as f64
+        };
+        a.armor = combine(&armor, self.rules.armor_max_weight);
+        a.piercing = combine(&piercing, self.rules.piercing_max_weight);
+        a.speed = if speed.is_finite() { speed } else { 0.0 };
+        a.supply *= (1.0 + m.value("supply_consumption_factor")).max(0.0);
+        a.organization *= (1.0 + m.value("army_org_factor")).max(0.0);
+        a.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        a.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        a.defense *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        a.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        Ok(result)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExperienceLevel {
+    Green,
+    Trained,
+    Regular,
+    Seasoned,
+    Veteran,
+}
+impl ExperienceLevel {
+    pub fn bonus(self) -> f64 {
+        match self {
+            Self::Green => -0.25,
+            Self::Trained => 0.0,
+            Self::Regular => 0.25,
+            Self::Seasoned => 0.5,
+            Self::Veteran => 0.75,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum DivisionOrder {
+    Hold,
+    Move { path: Vec<u32>, progress_km: f64 },
+    Attack { province: u32 },
+    Retreat { destination: u32, progress_km: f64 },
+    StrategicRedeployment { path: Vec<u32>, progress_km: f64 },
+    Train { hours: f64 },
+}
+
+#[derive(Debug, Clone)]
+pub struct Division {
+    pub id: DivisionId,
+    pub name: String,
+    pub country: String,
+    pub template: String,
+    pub province: u32,
+    pub derived: DerivedTemplate,
+    pub hp: f64,
+    pub organization: f64,
+    pub manpower: u32,
+    pub equipment: BTreeMap<String, u32>,
+    pub equipment_loss_carry: BTreeMap<String, f64>,
+    pub manpower_loss_carry: f64,
+    pub experience: ExperienceLevel,
+    pub entrenchment: f64,
+    pub planning: f64,
+    pub supply_fraction: f64,
+    pub fuel_fraction: f64,
+    pub commander_attack: f64,
+    pub commander_defense: f64,
+    pub reinforce_bonus: f64,
+    pub coordination: f64,
+    pub order: DivisionOrder,
+    pub attack_delay: u32,
+    pub battle: Option<u64>,
+    pub destroyed: bool,
+    pub recent_losses: u64,
+}
+impl Division {
+    pub fn fighting(&self) -> bool {
+        !self.destroyed && self.hp > 1e-9 && self.organization > 1e-9
+    }
+    pub fn strength(&self) -> f64 {
+        if self.derived.stats.hp > 0.0 {
+            (self.hp / self.derived.stats.hp).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
+    pub fn apply_damage(&mut self, hp: f64, org: f64, rules: &CombatRules) -> (u32, u32) {
+        let hp = hp.max(0.0).min(self.hp);
+        self.hp = (self.hp - hp).max(0.0);
+        self.organization = (self.organization - org.max(0.0)).max(0.0);
+        let fraction = hp / self.derived.stats.hp.max(1e-9) * rules.casualty_factor;
+        self.manpower_loss_carry += self.derived.stats.manpower * fraction;
+        let men = ((self.manpower_loss_carry + 1e-9).floor() as u32).min(self.manpower);
+        self.manpower -= men;
+        self.manpower_loss_carry = (self.manpower_loss_carry - f64::from(men)).max(0.0);
+        let mut lost = 0;
+        for (id, quantity) in &mut self.equipment {
+            let carry = self.equipment_loss_carry.entry(id.clone()).or_default();
+            *carry += self
+                .derived
+                .model_requirements
+                .get(id)
+                .copied()
+                .unwrap_or(f64::from(*quantity))
+                * fraction;
+            let n = (*carry + 1e-9).floor().max(0.0) as u32;
+            let n = n.min(*quantity);
+            *quantity -= n;
+            *carry = (*carry - f64::from(n)).max(0.0);
+            lost += n;
+        }
+        self.recent_losses += u64::from(men);
+        if self.hp <= 1e-9 {
+            self.destroyed = true;
+        }
+        (men, lost)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CountryArmy {
+    pub templates: BTreeMap<String, DivisionTemplate>,
+    pub manpower_pool: u64,
+    pub army_xp: f64,
+    pub modifiers: MilitaryModifiers,
+    pub base_modifiers: StatBlock,
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    #[test]
+    fn support_replacement_costs_one_edit_and_duplicate_slots_are_rejected() {
+        let mut c = catalogue();
+        let mut e = c.units["engineer"].clone();
+        e.id = "signal".into();
+        c.units.insert(e.id.clone(), e);
+        let mut a = template();
+        a.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        let mut b = a.clone();
+        b.support[0].unit = "signal".into();
+        assert_eq!(c.edit_cost(&a, &b).unwrap(), 10.0);
+        b.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        assert!(
+            c.validate_template(&b, &MilitaryModifiers::default(), false)
+                .is_err()
+        );
+    }
+    #[test]
+    fn repeated_regimental_support_is_scoped_to_its_regiment() {
+        let mut c = catalogue();
+        c.units.get_mut("engineer").unwrap().regimental = true;
+        let mut t = template();
+        t.line.push(BattalionSlot {
+            unit: "infantry".into(),
+            column: 1,
+            row: 0,
+        });
+        for column in 0..2 {
+            t.support.push(SupportSlot {
+                unit: "engineer".into(),
+                regiment: Some(column),
+                row: 0,
+            });
+        }
+        assert!(
+            c.validate_template(&t, &MilitaryModifiers::default(), false)
+                .is_ok()
+        );
+    }
+    #[test]
+    fn equipment_casualties_preserve_fractional_losses_across_hits() {
+        let mut a = division(1, "A", 1);
+        a.equipment.insert("rifle".into(), 100);
+        a.derived.model_requirements.insert("rifle".into(), 100.0);
+        let mut b = a.clone();
+        let r = CombatRules::default();
+        a.apply_damage(5.0, 0.0, &r);
+        for _ in 0..500 {
+            b.apply_damage(0.01, 0.0, &r);
+        }
+        assert_eq!(a.equipment, b.equipment);
+        assert_eq!(a.manpower, b.manpower);
+        assert!((a.hp - b.hp).abs() < 1e-9);
+    }
+    pub fn catalogue() -> MilitaryCatalogue {
+        let mut c = MilitaryCatalogue::default();
+        for (id, group, hp, org, width, hardness) in [
+            ("infantry", "infantry", 25.0, 60.0, 2.0, 0.0),
+            ("tank", "armor", 2.0, 20.0, 2.0, 0.8),
+            ("engineer", "support", 2.0, 20.0, 0.0, 0.0),
+        ] {
+            c.units.insert(
+                id.into(),
+                BattalionDefinition {
+                    id: id.into(),
+                    group: group.into(),
+                    categories: BTreeSet::new(),
+                    active: true,
+                    divisional: true,
+                    regimental: false,
+                    affects_speed: group != "support",
+                    stats: StatBlock::from([
+                        ("max_strength".into(), hp),
+                        ("max_organisation".into(), org),
+                        ("combat_width".into(), width),
+                        ("hardness".into(), hardness),
+                        ("manpower".into(), 1000.0),
+                        ("maximum_speed".into(), 4.0),
+                        ("soft_attack".into(), 10.0),
+                        ("armor_value".into(), if id == "tank" { 100.0 } else { 0.0 }),
+                    ]),
+                    need: BTreeMap::new(),
+                    terrain: BTreeMap::new(),
+                    same_support_type: BTreeSet::new(),
+                    source: "test".into(),
+                },
+            );
+        }
+        c
+    }
+    pub fn template() -> DivisionTemplate {
+        DivisionTemplate {
+            name: "test".into(),
+            line: vec![BattalionSlot {
+                unit: "infantry".into(),
+                column: 0,
+                row: 0,
+            }],
+            ..Default::default()
+        }
+    }
+    pub fn division(id: u64, country: &str, province: u32) -> Division {
+        let c = catalogue();
+        let t = template();
+        let derived = c
+            .aggregate(&t, &MilitaryModifiers::default(), None)
+            .unwrap();
+        Division {
+            id,
+            name: format!("Unit {id}"),
+            country: country.into(),
+            template: "test".into(),
+            province,
+            hp: derived.stats.hp,
+            organization: derived.stats.organization,
+            manpower: 1000,
+            derived,
+            equipment: BTreeMap::new(),
+            equipment_loss_carry: BTreeMap::new(),
+            manpower_loss_carry: 0.0,
+            experience: ExperienceLevel::Trained,
+            entrenchment: 0.0,
+            planning: 0.0,
+            supply_fraction: 1.0,
+            fuel_fraction: 1.0,
+            commander_attack: 0.0,
+            commander_defense: 0.0,
+            reinforce_bonus: 0.0,
+            coordination: 0.0,
+            order: DivisionOrder::Hold,
+            attack_delay: 0,
+            battle: None,
+            destroyed: false,
+            recent_losses: 0,
+        }
+    }
+    #[test]
+    fn aggregates_sum_mean_peak_and_line_only_hardness() {
+        let c = catalogue();
+        let mut t = template();
+        t.line.push(BattalionSlot {
+            unit: "tank".into(),
+            column: 1,
+            row: 0,
+        });
+        t.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        let a = c
+            .aggregate(&t, &MilitaryModifiers::default(), None)
+            .unwrap();
+        assert_eq!(a.stats.hp, 29.0);
+        assert_eq!(a.stats.width, 4.0);
+        assert_eq!(a.stats.hardness, 0.4);
+        assert!((a.stats.organization - 100.0 / 3.0).abs() < 1e-9);
+        assert_eq!(a.stats.armor, 60.0);
+    }
+    #[test]
+    fn designer_cost_and_regiment_group_validation() {
+        let c = catalogue();
+        let old = template();
+        let mut new = old.clone();
+        new.line.push(BattalionSlot {
+            unit: "tank".into(),
+            column: 1,
+            row: 0,
+        });
+        assert_eq!(c.edit_cost(&old, &new).unwrap(), 25.0);
+        new.line[1].column = 0;
+        new.line[1].row = 1;
+        assert!(
+            c.validate_template(&new, &MilitaryModifiers::default(), false)
+                .is_err()
+        );
+    }
+    #[test]
+    fn fractional_casualties_accumulate_and_do_not_create_equipment() {
+        let mut d = division(1, "AAA", 1);
+        d.equipment.insert("rifle".into(), 100);
+        let mut men = 0;
+        for _ in 0..100 {
+            men += d.apply_damage(0.01, 0.0, &CombatRules::default()).0;
+        }
+        assert_eq!(men, 28);
+        assert_eq!(d.manpower, 972);
+        assert!(d.equipment["rifle"] < 100);
+    }
+}

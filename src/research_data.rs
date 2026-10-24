@@ -10,12 +10,12 @@ use std::path::Path;
 #[derive(Debug, Clone)]
 pub enum Value { Atom(String), Block(Vec<Entry>) }
 #[derive(Debug, Clone)]
-pub struct Entry { pub key: String, pub value: Option<Value> }
+pub struct Entry { pub key: String, pub operator: String, pub value: Option<Value> }
 impl Entry {
-    fn atom(&self) -> Option<&str> {
+    pub fn atom(&self) -> Option<&str> {
         match self.value.as_ref()? { Value::Atom(s)=>Some(s), _=>None }
     }
-    fn block(&self) -> Option<&[Entry]> {
+    pub fn block(&self) -> Option<&[Entry]> {
         match self.value.as_ref()? { Value::Block(b)=>Some(b), _=>None }
     }
 }
@@ -37,7 +37,12 @@ fn lex(source: &str) -> Result<Vec<String>,String> {
             for v in chars.by_ref(){if v=='\n'{break;}}
             continue;
         }
-        if matches!(c,'{'|'}'|'=') {out.push(c.to_string());continue;}
+        if matches!(c,'{'|'}') {out.push(c.to_string());continue;}
+        if matches!(c,'='|'<'|'>'|'!') {
+            let mut op=c.to_string();
+            if chars.peek()==Some(&'=') {op.push('=');chars.next();}
+            out.push(op);continue;
+        }
         if c=='"' {
             let mut text=String::new();let mut closed=false;
             while let Some(next)=chars.next(){
@@ -51,7 +56,7 @@ fn lex(source: &str) -> Result<Vec<String>,String> {
         }
         let mut t=c.to_string();
         while let Some(&next)=chars.peek() {
-            if next.is_whitespace()||matches!(next,'{'|'}'|'='|'#'|'"'){break;}
+            if next.is_whitespace()||matches!(next,'{'|'}'|'='|'<'|'>'|'!'|'#'|'"'){break;}
             t.push(next);chars.next();
         }
         out.push(t);
@@ -67,7 +72,9 @@ fn entries(tokens: &[String], pos: &mut usize, block: bool) -> Result<Vec<Entry>
         }
         if tokens[*pos]=="{" || tokens[*pos]=="=" {return Err("Expected key".into());}
         let key=tokens[*pos].clone();*pos+=1;
-        let value=if tokens.get(*pos).is_some_and(|v|v=="="){
+        let operator=tokens.get(*pos).filter(|v|matches!(v.as_str(),"="|"=="|">"|"<"|">="|"<="|"!="))
+            .cloned().unwrap_or_default();
+        let value=if !operator.is_empty(){
             *pos+=1;
             if tokens.get(*pos).is_some_and(|v|v=="{"){
                 *pos+=1;Some(Value::Block(entries(tokens,pos,true)?))
@@ -82,12 +89,12 @@ fn entries(tokens: &[String], pos: &mut usize, block: bool) -> Result<Vec<Entry>
                 *pos+=1;Some(Value::Block(entries(tokens,pos,true)?))
             }else{None}
         };
-        out.push(Entry{key,value});
+        out.push(Entry{key,operator,value});
     }
     if block {Err("Unclosed brace".into())}else{Ok(out)}
 }
 pub fn parse_pdx(source:&str)->Result<Vec<Entry>,String>{
-    let tokens=lex(source)?;let mut pos=0;entries(&tokens,&mut pos,false)
+    let tokens=lex(source.trim_start_matches('\u{feff}'))?;let mut pos=0;entries(&tokens,&mut pos,false)
 }
 fn names(items:&[Entry])->BTreeSet<String>{
     items.iter().filter_map(|e|{

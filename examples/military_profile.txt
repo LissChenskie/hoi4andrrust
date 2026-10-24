@@ -1,0 +1,49 @@
+# Optional: copy to data/hoi4/military_profile.txt.
+# Explicit reconstruction inputs, not a claim of original-engine parity.
+target_version = "HOI4 1.19.3 reconstruction / requires comparison fixtures"
+seed = 19360101
+strict_geography = no
+
+# Select installed DLC explicitly. Conditional script unlocks use this list.
+dlcs = { }
+
+# Additional roots, in override order. Relative paths start at data/hoi4.
+# Each layer may contain descriptor.mod with replace_path entries.
+data_layers = { }
+
+# Scenario overrides below are examples only. Replace tags, names and province
+# IDs with those in your own data, then uncomment the necessary blocks.
+
+# war = { attacker = GER defender = POL }
+# military_access = { country = GER host = ITA }
+# strait_access = { country = GER from = 123 to = 456 }
+
+# country = {
+#     tag = GER
+#     manpower_pool = 10000
+#     army_xp = 50
+#     modifier = { army_attack_factor = 0.05 }
+# }
+
+# division = {
+#     country = GER
+#     name = "Exact OOB division name"
+#     supply_fraction = 0.75
+#     fuel_fraction = 0.8
+#     commander_attack = 0.1
+#     commander_defense = 0.1
+# }
+
+# province = {
+#     id = 123
+#     weather = mud # Exact ID from imported common/modifiers.
+#     night = no
+#     fort_level = 2
+#     attacker_air = {
+#         ground_support_bonus = 0.1
+#         enemy_superiority = 0.2
+#         cas_planes = 30
+#         plane_attack_rolls = 10 # Resolved by the upstream air simulation.
+#         aa_damage_reduction = 0.5
+#     }
+# }
