@@ -293,6 +293,26 @@ pub fn load_country_research_start(source:&str)->(Option<usize>,BTreeSet<String>
     (slots,techs)
 }
 
+/// Get starting research slots and acquired tech from a country's local
+/// Clausewitz history file. Names commonly start with a 3-letter TAG.
+pub fn read_country_start(history_dir:&Path, tag:&str)
+    ->Result<(Option<usize>,BTreeSet<String>),String> {
+    if !tag.chars().all(|c|c.is_ascii_uppercase()||c.is_ascii_digit()||c=='_') {
+        return Err("Invalid country tag".into());
+    }
+    let entries=fs::read_dir(history_dir).map_err(|e|format!("{}: {e}",history_dir.display()))?;
+    let mut paths:Vec<_>=entries.flatten().map(|e|e.path()).filter(|p| {
+        p.extension().and_then(|v|v.to_str())==Some("txt")
+            && p.file_name().and_then(|v|v.to_str())
+                .is_some_and(|name|name.starts_with(tag)
+                    && name[tag.len()..].starts_with(|c:char|c==' '||c=='-'))
+    }).collect();
+    paths.sort();
+    let Some(path)=paths.first()else{return Err(format!("No history file for {tag}"));};
+    let content=fs::read_to_string(path).map_err(|e|e.to_string())?;
+    Ok(load_country_research_start(&content))
+}
+
 pub fn builtin_demo()->ResearchCatalogue {
     let mut result=ResearchCatalogue::default();
     // Standalone tutorial nodes only; never claim these are vanilla content.
