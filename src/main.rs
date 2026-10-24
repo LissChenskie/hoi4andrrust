@@ -8,6 +8,8 @@ mod construction_map;
 mod map_camera;
 mod spatial_grid;
 mod map_pixels;
+mod production;
+mod production_ui;
 
 use game::GameState;
 use world::World;
@@ -1489,6 +1491,9 @@ fn draw_map_viewer(
     law_preset: &mut construction::EconomicLawPreset,
     building_rules: &BuildingRules,
     construction_view: &mut construction_ui::ConstructionView,
+    production_view: &mut production_ui::ProductionView,
+    production_state: &mut production::ProductionState,
+    production_rules: &production::ProductionRules,
     game_date: game::GameDate,
 ) -> Screen {
     draw_background();
@@ -1516,11 +1521,14 @@ fn draw_map_viewer(
             }
         }
     }
-    if hoi_ui::small_button("CONSTRUCTION", Rect::new(12.0, 60.0,
-        if compact { 120.0 } else { 150.0 }, 33.0), construction_view.open) {
-        if construction_view.open {
-            construction_view.close();
-        } else {
+    let tab_width = if compact { ((screen_width() - 105.0) / 3.0).max(54.0) } else { 150.0 };
+    let tab_2 = 12.0 + tab_width + 6.0;
+    let tab_3 = tab_2 + tab_width + 6.0;
+    if hoi_ui::small_button(if compact { "BUILD" } else { "CONSTRUCTION" },
+        Rect::new(12.0, 60.0, tab_width, 33.0), construction_view.open) {
+        if construction_view.open { construction_view.close(); }
+        else {
+            production_view.close();
             construction_view.open = true;
         }
         if construction_view.open {
@@ -1529,16 +1537,26 @@ fn draw_map_viewer(
             }
         }
     }
-    if hoi_ui::small_button("POLITICAL MAP", Rect::new(if compact { 137.0 } else { 170.0 },
-        60.0, if compact { 103.0 } else { 149.0 }, 33.0), !construction_view.open) {
+    if hoi_ui::small_button(if compact { "PROD" } else { "PRODUCTION" },
+        Rect::new(tab_2, 60.0, tab_width, 33.0), production_view.open) {
+        if production_view.open { production_view.close(); }
+        else {
+            construction_view.close();
+            production_view.open = true;
+        }
+    }
+    if hoi_ui::small_button(if compact { "MAP" } else { "POLITICAL MAP" },
+        Rect::new(tab_3, 60.0, tab_width, 33.0),
+        !construction_view.open && !production_view.open) {
         construction_view.close();
+        production_view.close();
     }
     if compact {
         if let Some(map) = map.as_deref_mut() {
-            if hoi_ui::small_button("+", Rect::new(246.0, 60.0, 30.0, 33.0), false) {
+            if hoi_ui::small_button("+", Rect::new(screen_width() - 69.0, 60.0, 27.0, 33.0), false) {
                 map.set_zoom_at(1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
-            if hoi_ui::small_button("-", Rect::new(281.0, 60.0, 30.0, 33.0), false) {
+            if hoi_ui::small_button("-", Rect::new(screen_width() - 37.0, 60.0, 27.0, 33.0), false) {
                 map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map, construction_view.open && construction_view.map_placement));
             }
         }
@@ -1571,7 +1589,9 @@ fn draw_map_viewer(
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let view = map_view_rect(map, construction_view.open && construction_view.map_placement);
         if wheel_y != 0.0 && (!construction_view.open || construction_view.map_placement)
-            && view.contains(mouse) && !construction_ui::is_over_panel(mouse, construction_view) {
+            && view.contains(mouse)
+            && !construction_ui::is_over_panel(mouse, construction_view)
+            && !production_ui::is_over_panel(mouse, production_view) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
@@ -2164,6 +2184,10 @@ fn draw_map_viewer(
             construction_queue, construction_priority, building_rules,
             construction_policy, law_preset, construction_notice, construction_view, game_date);
     }
+    if production_view.open {
+        production_ui::draw(map.as_deref().map(|m| &m.world), player_country,
+            production_state, production_view, production_rules);
+    }
     Screen::MapViewer
 }
 
@@ -2217,6 +2241,9 @@ async fn main() {
     let building_rules = BuildingRules::load(construction::BUILDING_DEFINITIONS_DIRECTORY);
     let mut construction_menu: Option<u32> = None;
     let mut construction_view = construction_ui::ConstructionView::default();
+    let mut production_state = production::ProductionState::default();
+    let mut production_view = production_ui::ProductionView::default();
+    let production_rules = production::ProductionRules::default();
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
     let mut cached_date_label = game.date.display();
@@ -2229,10 +2256,21 @@ async fn main() {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
                 if is_key_pressed(KeyCode::T) {
                     if construction_view.open { construction_view.close(); }
-                    else { construction_view.open = true; }
+                    else {
+                        production_view.close();
+                        construction_view.open = true;
+                    }
+                }
+                if is_key_pressed(KeyCode::P) {
+                    if production_view.open { production_view.close(); }
+                    else {
+                        construction_view.close();
+                        production_view.open = true;
+                    }
                 }
                 if is_key_pressed(KeyCode::Escape) {
                     construction_view.close();
+                    production_view.close();
                 }
                 if is_key_pressed(KeyCode::Space) {
                     game.toggle_pause();
@@ -2252,6 +2290,9 @@ async fn main() {
                 if daily_ticks > 0 {
                     if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
                         for _ in 0..daily_ticks {
+                            // Production uses factories available at the START
+                            // of each day; newly completed MIL joins next day.
+                            production_state.tick_country(&current_map.world, tag, &production_rules);
                             construction::advance_day_by_order(
                                 &mut current_map.world, tag, &mut construction_queue,
                                 &mut construction_view.order, &building_rules,
@@ -2274,6 +2315,7 @@ async fn main() {
                     &mut construction_queue, &mut construction_priority, &mut construction_menu,
                     &mut construction_notice, &mut construction_policy,
                     &mut construction_law_preset, &building_rules, &mut construction_view,
+                    &mut production_view, &mut production_state, &production_rules,
                     game.date,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
@@ -2296,6 +2338,7 @@ async fn main() {
                         && mouse.y <= 124.0;
                     let inside_map = rect.contains(mouse) && !time_controls_overlay
                         && !construction_ui::is_over_panel(mouse, &construction_view)
+                        && !production_ui::is_over_panel(mouse, &production_view)
                         && (!construction_view.open || placement_before_ui);
 
                     // Macroquad sends touch events AND simulated mouse events.
@@ -2313,7 +2356,10 @@ async fn main() {
                         current_map.drag_moved = true;
                     }
                     let pinch_blocked = contact_points.iter()
-                        .any(|point| construction_ui::is_over_panel(point.position, &construction_view))
+                        .any(|point| {
+                            construction_ui::is_over_panel(point.position, &construction_view)
+                                || production_ui::is_over_panel(point.position, &production_view)
+                        })
                         || (screen_width() >= 760.0 && contact_points.iter().any(|point| {
                             point.position.x >= screen_width() - 405.0
                                 && point.position.y >= 70.0 && point.position.y <= 124.0
@@ -2407,7 +2453,7 @@ async fn main() {
                 let compact_reload = screen_width() < 760.0;
                 // Prevent reload controls from drawing through the open
                 // construction panel or intercepting its queue-row clicks.
-                let reload_clicked = if construction_view.open {
+                let reload_clicked = if construction_view.open || production_view.open {
                     false
                 } else if compact_reload {
                     button("Reload map", 12.0, screen_height() - 108.0, 130.0, 34.0)
