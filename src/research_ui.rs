@@ -129,8 +129,8 @@ pub fn draw(
     let tree_rect=Rect::new(r.x+12.0,tree_top,r.w-24.0,tree_h);
     draw_rectangle(tree_rect.x,tree_rect.y,tree_rect.w,tree_rect.h,ui::BASE);
     draw_rectangle_lines(tree_rect.x,tree_rect.y,tree_rect.w,tree_rect.h,1.0,ui::EDGE);
-    let node_w=if compact{117.0}else{152.0};
-    let node_h=if compact{48.0}else{53.0};
+    let node_w: f32=if compact{117.0}else{152.0};
+    let node_h: f32=if compact{48.0}else{53.0};
     let row_step=node_h+17.0;
     let nodes:Vec<_>=catalogue.technologies.values().filter(|tech|tech.folder==*folder
         && catalogue.visible(&tech.id,country)).collect();
