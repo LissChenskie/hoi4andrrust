@@ -1111,7 +1111,9 @@ fn parse_definition_text(text: &str) -> Result<HashMap<[u8; 3], u32>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_definition_text;
+    use super::{build_map_palette, parse_definition_text};
+    use std::collections::HashMap;
+    use std::path::Path;
 
     #[test]
     fn parses_hoi4_semicolon_delimited_definitions() {
@@ -1126,6 +1128,26 @@ mod tests {
         let source = "province,red,green,blue,type,coastal,terrain,continent\n7,1,2,3,land,false,plains,1\n";
         let index = parse_definition_text(source).expect("valid comma-delimited definition");
         assert_eq!(index.get(&[1, 2, 3]), Some(&7));
+    }
+
+    #[test]
+    fn palette_keeps_original_political_terrain_and_resource_colours() {
+        let definition = "province;red;green;blue;type;coastal;terrain;continent\\n1;10;20;30;sea;false;ocean;1\\n2;40;50;60;land;false;plains;1\\n";
+        let definition = definition.replace("\\n", "\n");
+        let id_by_rgb = parse_definition_text(&definition).unwrap();
+        let (palette, owners) = build_map_palette(
+            &id_by_rgb, &HashMap::new(), &definition,
+            Path::new("this-test-directory-intentionally-does-not-exist"),
+        );
+        assert!(owners.is_empty());
+        let water = palette.colors_by_rgb.get(&[10, 20, 30]).unwrap();
+        assert_eq!(water.political, [55, 105, 155]);
+        assert_eq!(water.terrain, [55, 105, 155]);
+        assert_eq!(water.resources, [55, 105, 155]);
+        let land = palette.colors_by_rgb.get(&[40, 50, 60]).unwrap();
+        assert_eq!(land.political, [92, 96, 101]);
+        assert_eq!(land.terrain, [190, 176, 112]);
+        assert_eq!(land.resources, [54, 59, 65]);
     }
 
     #[test]
