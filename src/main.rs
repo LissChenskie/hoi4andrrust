@@ -134,7 +134,8 @@ struct ProvinceMap {
     state_load_status: String,
     map_border_texture: Texture2D,
     state_ids_by_pixel: map_pixels::StatePixelIds,
-    highlighted_state_texture: Option<(u32, Texture2D)>,
+    state_bounds: HashMap<u32, map_pixels::StateBounds>,
+    highlighted_state_texture: Option<(u32, map_pixels::StateBounds, Texture2D)>,
     construction_overlay_texture: Option<Texture2D>,
     construction_overlay_signature: Option<u64>,
     political_texture: Texture2D,
@@ -204,7 +205,9 @@ impl ProvinceMap {
                 Err(error) => (HashMap::new(), HashMap::new(), HashMap::new(), 0, error),
             };
 
-        let state_ids_by_pixel = build_state_ids_by_pixel(width, height, &rgba, &id_by_rgb, &state_by_province);
+        let (state_ids_by_pixel, state_bounds) = build_state_ids_by_pixel(
+            width, height, &rgba, &id_by_rgb, &state_by_province,
+        );
 
         let state_name_by_id = load_state_names(Path::new(STATE_DIRECTORY_PATH));
         let (color_palette, owner_by_state) = build_map_palette(
@@ -261,6 +264,7 @@ impl ProvinceMap {
             state_load_status,
             map_border_texture,
             state_ids_by_pixel,
+            state_bounds,
             highlighted_state_texture: None,
             construction_overlay_texture: None,
             construction_overlay_signature: None,
@@ -353,24 +357,34 @@ impl ProvinceMap {
 }
 
 
+/// Fill the compact state raster and its per-state pixel footprint in
+/// one pass. No second full-image scan is needed to build the outline index.
 fn build_state_ids_by_pixel(
     width: u32,
     height: u32,
     rgba: &[u8],
     id_by_rgb: &HashMap<[u8; 3], u32>,
     state_by_province: &HashMap<u32, u32>,
-) -> map_pixels::StatePixelIds {
+) -> (map_pixels::StatePixelIds, HashMap<u32, map_pixels::StateBounds>) {
     let max_state_id = state_by_province.values().copied().max().unwrap_or(0);
     let mut state_ids = map_pixels::StatePixelIds::new(
         width as usize * height as usize, max_state_id,
     );
+    let mut bounds = HashMap::<u32, map_pixels::StateBounds>::new();
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let rgb = [pixel[0], pixel[1], pixel[2]];
         if let Some(province_id) = id_by_rgb.get(&rgb) {
-            state_ids.set(index, state_by_province.get(province_id).copied().unwrap_or(0));
+            let id = state_by_province.get(province_id).copied().unwrap_or(0);
+            state_ids.set(index, id);
+            if id != 0 {
+                let x = index as u32 % width;
+                let y = index as u32 / width;
+                bounds.entry(id).and_modify(|box_| box_.include(x, y))
+                    .or_insert_with(|| map_pixels::StateBounds::new(x, y));
+            }
         }
     }
-    state_ids
+    (state_ids, bounds)
 }
 
 /// Single pass border generation without allocating whole-image province and
@@ -447,28 +461,14 @@ fn build_map_border_texture(
     texture
 }
 
-fn build_highlighted_state_texture(width: u32, height: u32, state_ids: &map_pixels::StatePixelIds, selected_state: u32) -> Texture2D {
-    let w = width as usize;
-    let h = height as usize;
-    let mut overlay = vec![0u8; w * h * 4];
-    for y in 0..h {
-        for x in 0..w {
-            let index = y * w + x;
-            if state_ids.get(index) != Some(selected_state) { continue; }
-            let differs = (x > 0 && state_ids.get(index - 1) != Some(selected_state))
-                || (x + 1 < w && state_ids.get(index + 1) != Some(selected_state))
-                || (y > 0 && state_ids.get(index - w) != Some(selected_state))
-                || (y + 1 < h && state_ids.get(index + w) != Some(selected_state));
-            if differs {
-                let o = index * 4;
-                overlay[o] = 255;
-                overlay[o + 1] = 218;
-                overlay[o + 2] = 105;
-                overlay[o + 3] = 235;
-            }
-        }
-    }
-    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+/// Upload only the state's bounding box, rather than a full 5632x2048
+/// texture every time the player clicks a new province.
+fn build_highlighted_state_texture(
+    width: u32, height: u32, state_ids: &map_pixels::StatePixelIds,
+    selected_state: u32, bounds: map_pixels::StateBounds,
+) -> Texture2D {
+    let overlay = map_pixels::outline_rgba(state_ids, width, height, selected_state, bounds);
+    let texture = Texture2D::from_rgba8(bounds.width() as u16, bounds.height() as u16, &overlay);
     texture.set_filter(FilterMode::Linear);
     texture
 }
@@ -1791,13 +1791,17 @@ fn draw_map_viewer(
                     draw_ui_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
                 }
             }
-            if let Some((state_id, highlight_texture)) = &map.highlighted_state_texture {
-                let _ = state_id;
-                draw_texture_ex(
-                    highlight_texture,
-                    rect.x, rect.y, WHITE,
-                    DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
-                );
+            if let Some((_, bounds, highlight_texture)) = &map.highlighted_state_texture {
+                if let Some((src, dest)) = map_pixels::visible_outline(*bounds, source_rect, rect) {
+                    draw_texture_ex(
+                        highlight_texture,
+                        dest.x, dest.y, WHITE,
+                        DrawTextureParams {
+                            source: Some(src), dest_size: Some(vec2(dest.w, dest.h)),
+                            ..Default::default()
+                        },
+                    );
+                }
             }
             if placing {
                 if let Some(tag) = player_country {
@@ -2358,9 +2362,15 @@ async fn main() {
                                     }
                                 }
                             }
-                            current_map.highlighted_state_texture = selected_state_id.map(|state_id| {
-                                (state_id, build_highlighted_state_texture(current_map.width, current_map.height, &current_map.state_ids_by_pixel, state_id))
-                            });
+                            current_map.highlighted_state_texture = selected_state_id
+                                .and_then(|state_id| current_map.state_bounds.get(&state_id).copied()
+                                    .map(|bounds| {
+                                        let texture = build_highlighted_state_texture(
+                                            current_map.width, current_map.height,
+                                            &current_map.state_ids_by_pixel, state_id, bounds,
+                                        );
+                                        (state_id, bounds, texture)
+                                    }));
                         }
                         current_map.dragging = false;
                     }
@@ -2383,6 +2393,9 @@ async fn main() {
                     button("Reload local map", 22.0, screen_height() - 72.0, 210.0, 42.0)
                 };
                 if reload_clicked {
+                    // Drop the old world's GPU textures before allocating the new
+                    // map. Otherwise reload can briefly double peak VRAM/RAM.
+                    map = None;
                     match ProvinceMap::load() {
                         Ok(loaded) => {
                             map = Some(loaded);
