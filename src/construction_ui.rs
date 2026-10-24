@@ -398,9 +398,20 @@ pub fn draw(
             text_x, row.y + 35.0, 11.0, ui::MUTED);
         ui::progress_bar(rect(text_x, row.y + 43.0, text_space, 9.0), project.progress_fraction());
         let eta_label = if assigned == 0 {
-            "WAITING FOR FACTORIES".to_owned()
-        } else { format!("Complete: {}", completion) };
-        draw_ui_text(&eta_label, text_x, row.y + 66.0, 10.0, ui::GOLD);
+            "WAITING FOR CIV".to_owned()
+        } else if narrow {
+            days_left.and_then(|days| current_date.after_days(days))
+                .map_or_else(|| "ETA UNKNOWN".to_owned(), |date| format!("ETA {}", date.display()))
+        } else {
+            format!("Complete: {}", completion)
+        };
+        // Prevent a long calendar string from overlapping UP/DN/X on phones.
+        let mut eta_visible = eta_label;
+        while !eta_visible.is_empty()
+            && crate::measure_ui_text(&eta_visible, 10).width > text_space {
+            eta_visible.pop();
+        }
+        draw_ui_text(&eta_visible, text_x, row.y + 66.0, 10.0, ui::GOLD);
         // Moving projects across state boundaries affects the real national CIV
         // scheduler, not just the way rows are displayed.
         let control_x = row.x + row.w - 103.0;
