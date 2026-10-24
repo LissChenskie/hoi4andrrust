@@ -207,8 +207,8 @@ impl CountryProduction {
             }
             line.total_produced = line.total_produced.saturating_add(made);
             line.last_day_units = made;
-            *self.stockpile.entry(line.equipment).or_default() =
-                self.stockpile.get(&line.equipment).copied().unwrap_or(0).saturating_add(made);
+            let stock = self.stockpile.entry(line.equipment).or_default();
+            *stock = stock.saturating_add(made);
             line.efficiency = (line.efficiency + rules.efficiency_gain(line.efficiency))
                 .min(rules.efficiency_cap);
         }
