@@ -33,6 +33,7 @@ impl Requirement {
 pub struct Technology {
     pub id: String,
     pub name: String,
+    pub description: String,
     pub folder: String,
     pub x: f32,
     pub y: f32,
@@ -53,7 +54,8 @@ pub struct Technology {
 impl Technology {
     pub fn sample(id: &str, year: u32, cost: f64) -> Self {
         Self {
-            id: id.to_owned(), name: id.replace('_', " "), folder: "industry".into(),
+            id: id.to_owned(), name: id.replace('_', " "), description: String::new(),
+            folder: "industry".into(),
             x: 0.0, y: 0.0, start_year: year, research_cost: cost,
             categories: BTreeSet::new(), prerequisites: BTreeSet::new(),
             xor: BTreeSet::new(), allow: Requirement::Always(true),
