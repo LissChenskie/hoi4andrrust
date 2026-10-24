@@ -2,16 +2,19 @@
 //! HOI4 (queue on left, building palette on right) without copying game art.
 use macroquad::prelude::*;
 use crate::{draw_ui_text, country_display_name, construction::{
-    self, BuildingRules, BuildingType, ConstructionModifiers, ConstructionQueues,
-    CountryConstructionPolicy, EconomicLawPreset,
+    self, BuildingRules, BuildingType, ConstructionModifiers, ConstructionOrder, ConstructionQueues,
+    CountryConstructionPolicy, EconomicLawPreset, ProjectRef,
 }, world::World};
 use crate::hoi_ui as ui;
+use crate::game::GameDate;
 
 pub struct ConstructionView {
     pub open: bool,
     pub selected_building: BuildingType,
     pub focused_state: Option<u32>,
     pub first_visible_row: usize,
+    /// Single global order of construction projects, including different states.
+    pub order: ConstructionOrder,
     /// Clicking a building switches from the full queue to map placement.
     pub map_placement: bool,
 }
@@ -23,6 +26,7 @@ impl Default for ConstructionView {
             selected_building: BuildingType::CivilianFactory,
             focused_state: None,
             first_visible_row: 0,
+            order: ConstructionOrder::default(),
             map_placement: false,
         }
     }
@@ -143,6 +147,46 @@ fn building_tile(building: BuildingType, cell: Rect, selected: bool, narrow: boo
     hovered && is_mouse_button_pressed(MouseButton::Left)
 }
 
+/// Small original factory pictogram for each national construction line.
+fn draw_queue_icon(building: BuildingType, x: f32, y: f32, size: f32) {
+    let color = match building {
+        BuildingType::CivilianFactory => Color::new(0.87, 0.58, 0.31, 1.0),
+        BuildingType::MilitaryFactory => Color::new(0.56, 0.73, 0.43, 1.0),
+        BuildingType::Dockyard => Color::new(0.47, 0.67, 0.81, 1.0),
+        BuildingType::Infrastructure => Color::new(0.79, 0.67, 0.42, 1.0),
+        BuildingType::SyntheticRefinery => Color::new(0.73, 0.59, 0.80, 1.0),
+        BuildingType::FuelSilo => Color::new(0.75, 0.67, 0.41, 1.0),
+        BuildingType::RocketSite => Color::new(0.83, 0.78, 0.70, 1.0),
+        BuildingType::NuclearReactor => Color::new(0.78, 0.68, 0.51, 1.0),
+    };
+    draw_rectangle(x, y, size, size, Color::new(0.11, 0.13, 0.13, 1.0));
+    draw_rectangle_lines(x, y, size, size, 1.0, ui::EDGE);
+    match building {
+        BuildingType::Infrastructure => {
+            for n in 0..3 {
+                let xx = x + 8.0 + n as f32 * 9.0;
+                draw_line(xx, y + 4.0, xx, y + size - 5.0, 2.5, color);
+            }
+            draw_line(x + 4.0, y + size * 0.52, x + size - 4.0, y + size * 0.52, 3.0, color);
+        }
+        BuildingType::Dockyard => {
+            draw_line(x + 5.0, y + size - 8.0, x + size - 5.0, y + size - 8.0, 4.0, color);
+            draw_line(x + size * 0.50, y + 5.0, x + size * 0.50, y + size - 8.0, 3.0, color);
+            draw_line(x + size * 0.50, y + 7.0, x + 7.0, y + 12.0, 2.0, color);
+        }
+        BuildingType::RocketSite => {
+            draw_triangle(vec2(x + size * 0.5, y + 4.0), vec2(x + 11.0, y + size - 6.0),
+                vec2(x + size - 11.0, y + size - 6.0), color);
+        }
+        _ => {
+            draw_rectangle(x + 6.0, y + size * 0.38, size - 12.0, size * 0.45, color);
+            draw_rectangle(x + 9.0, y + 6.0, 5.0, size * 0.45, color);
+            draw_rectangle(x + 20.0, y + 11.0, 5.0, size * 0.30, color);
+            draw_rectangle(x + 11.0, y + size - 12.0, 4.0, 4.0, ui::BASE);
+            draw_rectangle(x + 23.0, y + size - 12.0, 4.0, 4.0, ui::BASE);
+        }
+    }
+}
 fn build_in_state(
     world: &World, country: &str, state_id: u32,
     queues: &mut ConstructionQueues, priority: &mut Vec<u32>,
@@ -169,6 +213,7 @@ pub fn draw(
     law: &mut EconomicLawPreset,
     notice: &mut String,
     view: &mut ConstructionView,
+    current_date: GameDate,
 ) {
     if !view.open { return; }
     let area = bounds(view);
@@ -282,22 +327,17 @@ pub fn draw(
     draw_rectangle_lines(list_x, list_y, list_w, list_h, 1.0, ui::EDGE);
     draw_rectangle(list_x + 1.0, list_y + 1.0, list_w - 2.0, 24.0,
         Color::new(0.13, 0.14, 0.14, 1.0));
-    draw_ui_text("LOCATION / BUILD QUEUE", list_x + 8.0, list_y + 17.0,
+    draw_ui_text("NATIONAL CONSTRUCTION QUEUE", list_x + 8.0, list_y + 17.0,
         if narrow { 11.0 } else { 13.0 }, ui::GOLD);
 
-    let mut states: Vec<u32> = world.countries.get(tag)
-        .map(|country| country.state_ids.iter().copied().collect()).unwrap_or_default();
-    // The player has explicitly reordered these states; unqueued ones are shown
-    // after active ones in ascending ID order.
-    states.sort_unstable_by_key(|id| (
-        priority.iter().position(|candidate| candidate == id).unwrap_or(usize::MAX),
-        *id,
-    ));
-
+    // A single national construction queue, not one entry per state.
+    // Each row is a separate project with independently assigned factories.
+    view.order.sync(world, tag, queues);
     let content_y = list_y + 26.0;
-    let row_height = if narrow { 69.0 } else { 64.0 };
+    let row_height = if narrow { 83.0 } else { 79.0 };
     let visible_count = ((list_h - 29.0) / row_height).floor().max(0.0) as usize;
-    let max_first = states.len().saturating_sub(visible_count);
+    let project_count = view.order.lines.len();
+    let max_first = project_count.saturating_sub(visible_count);
     view.first_visible_row = view.first_visible_row.min(max_first);
     let list_region = rect(list_x, content_y, list_w, list_h - 26.0);
     if ui::inside(list_region) {
@@ -305,75 +345,97 @@ pub fn draw(
         if wheel > 0.0 { view.first_visible_row = view.first_visible_row.saturating_sub(2); }
         if wheel < 0.0 { view.first_visible_row = (view.first_visible_row + 2).min(max_first); }
     }
+    let allocations = construction::allocate_factories_by_order(
+        world, tag, queues, &view.order, rules, *policy,
+    );
+    // Snapshot read-only row data. Apply UI commands after drawing so a
+    // cancellation cannot invalidate indices halfway through a render pass.
+    let entries: Vec<_> = view.order.lines.iter().copied()
+        .skip(view.first_visible_row).take(visible_count)
+        .filter_map(|key| {
+            let state = world.states.get(&key.state_id)?;
+            let project = queues.get(&key.state_id)?.get(key.project_index)?.clone();
+            Some((key, project, state.name.clone().unwrap_or_else(|| format!("State {}", key.state_id)),
+                state.economy.infrastructure))
+        }).collect();
+    let mut request: Option<(char, ProjectRef)> = None;
+    for (position, (key, project, name, infrastructure)) in entries.iter().enumerate() {
+        let y = content_y + position as f32 * row_height + 1.0;
+        let row = rect(list_x + 3.0, y, list_w - 6.0, row_height - 3.0);
+        ui::row_bg(row, view.focused_state == Some(key.state_id), position % 2 == 1);
+        let assigned = allocations.iter()
+            .find(|line| line.state_id == key.state_id && line.project_index == key.project_index)
+            .map_or(0, |line| line.civilian_factories);
+        let daily = construction::daily_construction_points(
+            rules, *policy, &ConstructionModifiers::default(),
+            key.state_id, project.building, *infrastructure, assigned,
+        );
+        let days_left = construction::estimated_days_remaining(project, daily);
+        let completion = days_left.and_then(|days| current_date.after_days(days))
+            .map_or_else(|| "Waiting for CIV".to_owned(), |date| {
+                format!("{}  ({} days)", date.display(), days_left.unwrap_or(0))
+            });
+        let icon_x = row.x + 7.0;
+        draw_queue_icon(project.building, icon_x, row.y + 9.0, 39.0);
+        let text_x = row.x + 53.0;
+        let text_space = (row.w - 162.0).max(65.0);
+        let label_size: u16 = if narrow { 11 } else { 13 };
+        let title = format!("{}  -  {}", project.building.label(), name);
+        let mut visible_title = title;
+        while !visible_title.is_empty() && crate::measure_ui_text(&visible_title, label_size).width > text_space {
+            visible_title.pop();
+        }
+        if ui::inside(rect(text_x, row.y + 5.0, text_space, 26.0))
+            && is_mouse_button_pressed(MouseButton::Left) {
+            view.focused_state = Some(key.state_id);
+        }
+        draw_ui_text(&visible_title, text_x, row.y + 19.0, label_size as f32, ui::TEXT);
+        draw_ui_text(&format!("{} / {} IC  -  {} CIV",
+            project.progress.round() as u32, project.cost.round() as u32, assigned),
+            text_x, row.y + 35.0, 11.0, ui::MUTED);
+        ui::progress_bar(rect(text_x, row.y + 43.0, text_space, 9.0), project.progress_fraction());
+        let eta_label = if assigned == 0 {
+            "WAITING FOR FACTORIES".to_owned()
+        } else { format!("Complete: {}", completion) };
+        draw_ui_text(&eta_label, text_x, row.y + 66.0, 10.0, ui::GOLD);
+        // Moving projects across state boundaries affects the real national CIV
+        // scheduler, not just the way rows are displayed.
+        let control_x = row.x + row.w - 103.0;
+        if ui::small_button("UP", rect(control_x, row.y + 7.0, 31.0, 27.0), false) {
+            request = Some(('u', *key));
+        }
+        if ui::small_button("DN", rect(control_x + 35.0, row.y + 7.0, 31.0, 27.0), false) {
+            request = Some(('d', *key));
+        }
+        if ui::small_button("X", rect(control_x + 70.0, row.y + 7.0, 25.0, 27.0), false) {
+            request = Some(('x', *key));
+        }
+        draw_ui_text(&format!("#{}  {:.0}%", view.first_visible_row + position + 1,
+            project.progress_fraction() * 100.0), control_x, row.y + 56.0, 10.0, ui::MUTED);
+    }
 
-    let allocations = construction::allocate_factories(world, tag, queues, priority, rules, *policy);
-    for (position, state_id) in states.iter().copied()
-        .skip(view.first_visible_row).take(visible_count).enumerate()
-    {
-        let Some(state) = world.states.get(&state_id) else { continue; };
-        let row_y = content_y + position as f32 * row_height + 1.0;
-        let r = rect(list_x + 3.0, row_y, list_w - 6.0, row_height - 3.0);
-        ui::row_bg(r, view.focused_state == Some(state_id), position % 2 == 1);
-        let queued = queues.get(&state_id).cloned().unwrap_or_default();
-        let slots = construction::shared_slot_limit(world, state_id, rules).unwrap_or(0);
-        let occupied = usize::from(state.economy.occupied_shared_slots());
-        let reserved = construction::queued_shared_slots_with_rules(&queued, rules);
-        let free_slots = slots.saturating_sub(occupied + reserved);
-        let label = state.name.as_deref().unwrap_or("Unnamed state");
-        let label_area = rect(r.x + 4.0, r.y + 4.0, (r.w - 119.0).max(85.0), 24.0);
-        // State label selection is independent of map hit-testing.
-        if ui::inside(label_area) && is_mouse_button_pressed(MouseButton::Left) {
-            view.focused_state = Some(state_id);
-        }
-        let display: String = label.chars().take(if narrow { 17 } else { 23 }).collect();
-        draw_ui_text(&display, r.x + 8.0, r.y + 18.0, if narrow { 12.0 } else { 13.0 }, ui::TEXT);
-        let status = format!("Slots {free_slots}/{slots}  |  Infra {}", state.economy.infrastructure);
-        draw_ui_text(&status, r.x + 8.0, r.y + 33.0, 10.0, ui::MUTED);
-        let mut fraction = 0.0;
-        let mut description = "No construction orders".to_owned();
-        if let Some(project) = queued.front() {
-            fraction = project.progress_fraction();
-            let assigned = allocations.iter().find(|a| a.state_id == state_id && a.project_index == 0)
-                .map_or(0, |a| a.civilian_factories);
-            description = progress_description(world, state_id, project, assigned, *policy, rules);
-        }
-        ui::progress_bar(rect(r.x + 8.0, r.y + row_height - 23.0, (r.w - 137.0).max(55.0), 7.0), fraction);
-        draw_ui_text(&description.chars().take(40).collect::<String>(), r.x + 8.0,
-            r.y + row_height - 9.0, 10.0, ui::MUTED);
-
-        let controls_x = r.x + r.w - 113.0;
-        if ui::small_button("+", rect(controls_x, r.y + 5.0, 27.0, 27.0), false) {
-            view.focused_state = Some(state_id);
-            build_in_state(world, tag, state_id, queues, priority, rules, view, notice);
-        }
-        if ui::small_button("^", rect(controls_x + 30.0, r.y + 5.0, 24.0, 27.0), false) {
-            if let Some(index) = priority.iter().position(|id| *id == state_id) {
-                if index > 0 { priority.swap(index - 1, index); }
-            } else { priority.insert(0, state_id); }
-        }
-        if ui::small_button("v", rect(controls_x + 57.0, r.y + 5.0, 24.0, 27.0), false) {
-            if let Some(index) = priority.iter().position(|id| *id == state_id) {
-                if index + 1 < priority.len() { priority.swap(index, index + 1); }
-            } else { priority.push(state_id); }
-        }
-        if ui::small_button("X", rect(controls_x + 84.0, r.y + 5.0, 24.0, 27.0), false) {
-            if construction::cancel_project(queues, state_id, 0) {
-                if !queues.contains_key(&state_id) { priority.retain(|id| *id != state_id); }
-                *notice = format!("Cancelled first project in state {state_id}");
+    if let Some((command, key)) = request {
+        match command {
+            'u' if view.order.move_up(key) => *notice = "Moved project up in national queue".to_owned(),
+            'd' if view.order.move_down(key) => *notice = "Moved project down in national queue".to_owned(),
+            'x' if view.order.cancel(queues, key) => {
+                if !queues.contains_key(&key.state_id) {
+                    priority.retain(|id| *id != key.state_id);
+                }
+                *notice = "Construction project cancelled".to_owned();
             }
+            _ => {}
         }
-        draw_ui_text(&format!("{} queued", queued.len()), controls_x, r.y + row_height - 16.0,
-            10.0, ui::MUTED);
     }
-    if states.is_empty() {
-        draw_ui_text("No owned states. Select a country with valid map history.",
-            list_x + 8.0, content_y + 28.0, 12.0, ui::MUTED);
+    if project_count == 0 {
+        draw_ui_text("No projects yet. Select a building and click a state on the map.",
+            list_x + 9.0, content_y + 27.0, 11.0, ui::MUTED);
     }
-    if visible_count < states.len() {
-        if ui::small_button("^", rect(list_x + list_w - 60.0, list_y + 2.0, 23.0, 21.0), false) {
+    if visible_count < project_count {
+        if ui::small_button("UP", rect(list_x + list_w - 66.0, list_y + 2.0, 27.0, 21.0), false) {
             view.first_visible_row = view.first_visible_row.saturating_sub(1);
         }
-        if ui::small_button("v", rect(list_x + list_w - 32.0, list_y + 2.0, 23.0, 21.0), false) {
+        if ui::small_button("DN", rect(list_x + list_w - 35.0, list_y + 2.0, 27.0, 21.0), false) {
             view.first_visible_row = (view.first_visible_row + 1).min(max_first);
         }
     }
