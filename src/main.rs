@@ -1744,6 +1744,54 @@ fn draw_map_viewer(
                     DrawTextureParams { source: Some(source_rect), dest_size: Some(vec2(rect.w, rect.h)), ..Default::default() },
                 );
             }
+            if placing {
+                if let Some(tag) = player_country {
+                    let (mouse_x, mouse_y) = mouse_position();
+                    let mouse = vec2(mouse_x, mouse_y);
+                    if rect.contains(mouse) && !construction_ui::is_over_panel(mouse, construction_view) {
+                        let px = (source_rect.x + ((mouse_x - rect.x) / rect.w) * source_rect.w)
+                            .floor().clamp(0.0, map.width.saturating_sub(1) as f32) as u32;
+                        let py = (source_rect.y + ((mouse_y - rect.y) / rect.h) * source_rect.h)
+                            .floor().clamp(0.0, map.height.saturating_sub(1) as f32) as u32;
+                        if let Some((province, _)) = map.province_at(px, py) {
+                            if let Some(&state_id) = map.state_by_province.get(&province) {
+                                if let (Some(state), Some(capacity)) = (
+                                    map.world.states.get(&state_id),
+                                    construction_map::availability(
+                                        &map.world, tag, state_id, construction_view.selected_building,
+                                        construction_queue, building_rules,
+                                    ),
+                                ) {
+                                    let tooltip_w = 228.0;
+                                    let tooltip_h = 75.0;
+                                    let tx = (mouse_x + 13.0).min(screen_width() - tooltip_w - 6.0).max(5.0);
+                                    let ty = (mouse_y + 15.0).min(screen_height() - tooltip_h - 8.0).max(5.0);
+                                    hoi_ui::panel(tx, ty, tooltip_w, tooltip_h);
+                                    let name = state.name.as_deref().unwrap_or("Unnamed state");
+                                    draw_ui_text(&name.chars().take(27).collect::<String>(),
+                                        tx + 8.0, ty + 19.0, 14.0, hoi_ui::GOLD);
+                                    let building = construction_view.selected_building;
+                                    let built = building.built_count(state.economy);
+                                    let pending = construction_queue.get(&state_id)
+                                        .map_or(0, |q| q.iter().filter(|project| project.building == building).count());
+                                    let details = if capacity.eligible {
+                                        format!("Free {}/{}  |  Built {}  |  Queued {}",
+                                            capacity.free, capacity.capacity, built, pending)
+                                    } else {
+                                        "Not controlled by your country".to_owned()
+                                    };
+                                    draw_ui_text(&details, tx + 8.0, ty + 40.0, 11.0, hoi_ui::TEXT);
+                                    draw_ui_text(if capacity.eligible && capacity.free > 0 {
+                                        "Click to add construction"
+                                    } else {
+                                        "Cannot build here"
+                                    }, tx + 8.0, ty + 60.0, 11.0, hoi_ui::MUTED);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             draw_ui_text(
                 &if placing {
                     format!("BUILD {}  |  green: free  ->  blue: full  |  {:.1}x",
