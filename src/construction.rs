@@ -613,6 +613,144 @@ pub fn cancel_project(queues: &mut ConstructionQueues, state_id: u32, index: usi
     removed
 }
 
+/// Stable *within a queue mutation* reference for one construction order.
+/// When projects are removed, ConstructionOrder updates all subsequent indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ProjectRef {
+    pub state_id: u32,
+    pub project_index: usize,
+}
+
+/// National HOI4-style queue: every project has its own global priority, even
+/// when two projects are located in the same state.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConstructionOrder {
+    pub lines: Vec<ProjectRef>,
+}
+
+impl ConstructionOrder {
+    /// Recover missing projects (including ones placed directly on the map),
+    /// remove stale entries and keep player-defined order intact.
+    pub fn sync(&mut self, world: &World, tag: &str, queues: &ConstructionQueues) {
+        let mut seen = HashSet::new();
+        self.lines.retain(|line| {
+            world.states.get(&line.state_id)
+                .is_some_and(|state| state.owner.as_deref() == Some(tag))
+                && queues.get(&line.state_id)
+                    .is_some_and(|q| line.project_index < q.len())
+                && seen.insert(*line)
+        });
+        let mut state_ids: Vec<u32> = queues.keys().copied().collect();
+        state_ids.sort_unstable();
+        for state_id in state_ids {
+            if world.states.get(&state_id)
+                .is_none_or(|state| state.owner.as_deref() != Some(tag)) {
+                continue;
+            }
+            for project_index in 0..queues[&state_id].len() {
+                let key = ProjectRef { state_id, project_index };
+                if seen.insert(key) { self.lines.push(key); }
+            }
+        }
+    }
+
+    pub fn move_up(&mut self, key: ProjectRef) -> bool {
+        let Some(index) = self.lines.iter().position(|line| *line == key) else { return false; };
+        if index == 0 { return false; }
+        self.lines.swap(index - 1, index);
+        true
+    }
+
+    pub fn move_down(&mut self, key: ProjectRef) -> bool {
+        let Some(index) = self.lines.iter().position(|line| *line == key) else { return false; };
+        if index + 1 >= self.lines.len() { return false; }
+        self.lines.swap(index, index + 1);
+        true
+    }
+
+    /// Called BEFORE syncing after a queue removal. The remaining projects in
+    /// that state shift indices; without this step priorities could drift.
+    pub fn on_project_removed(&mut self, state_id: u32, index: usize) {
+        self.lines.retain(|line| !(line.state_id == state_id && line.project_index == index));
+        for line in &mut self.lines {
+            if line.state_id == state_id && line.project_index > index {
+                line.project_index -= 1;
+            }
+        }
+    }
+
+    pub fn cancel(&mut self, queues: &mut ConstructionQueues, key: ProjectRef) -> bool {
+        if cancel_project(queues, key.state_id, key.project_index) {
+            self.on_project_removed(key.state_id, key.project_index);
+            true
+        } else { false }
+    }
+}
+
+/// Allocate civilian factories in exact project priority order (rather than
+/// iterating whole states). A lower project can become active after moving up.
+pub fn allocate_factories_by_order(
+    world: &World, tag: &str, queues: &ConstructionQueues,
+    order: &ConstructionOrder, rules: &BuildingRules, policy: CountryConstructionPolicy,
+) -> Vec<LineAllocation> {
+    let Some(capacity) = country_capacity(world, tag, policy) else { return Vec::new(); };
+    let mut available = capacity.available;
+    let mut allocations = Vec::new();
+    for key in &order.lines {
+        if available == 0 { break; }
+        if world.states.get(&key.state_id)
+            .is_none_or(|state| state.owner.as_deref() != Some(tag)) { continue; }
+        let Some(project) = queues.get(&key.state_id)
+            .and_then(|q| q.get(key.project_index)) else { continue; };
+        if !project.cost.is_finite() || !project.progress.is_finite()
+            || project.progress >= project.cost { continue; }
+        let assigned = available.min(rules.max_civilian_factories_per_line);
+        if assigned == 0 { break; }
+        available -= assigned;
+        allocations.push(LineAllocation {
+            state_id: key.state_id,
+            project_index: key.project_index,
+            civilian_factories: assigned,
+        });
+    }
+    allocations
+}
+
+/// Daily construction tick sharing the same project ordering with the UI.
+pub fn advance_day_by_order(
+    world: &mut World, tag: &str, queues: &mut ConstructionQueues,
+    order: &mut ConstructionOrder, rules: &BuildingRules,
+    policy: CountryConstructionPolicy, modifiers: &ConstructionModifiers,
+) {
+    order.sync(world, tag, queues);
+    let allocations = allocate_factories_by_order(world, tag, queues, order, rules, policy);
+    let mut completed = Vec::new();
+    for allocation in allocations {
+        let Some(state) = world.states.get(&allocation.state_id) else { continue; };
+        let infrastructure = state.economy.infrastructure;
+        let Some(project) = queues.get_mut(&allocation.state_id)
+            .and_then(|q| q.get_mut(allocation.project_index)) else { continue; };
+        let speed = daily_construction_points(
+            rules, policy, modifiers, allocation.state_id, project.building,
+            infrastructure, allocation.civilian_factories,
+        );
+        project.progress += speed;
+        if project.progress + f32::EPSILON >= project.cost {
+            completed.push((allocation.state_id, allocation.project_index, project.building));
+        }
+    }
+    // Reverse per-state indices so completed projects cannot shift other
+    // removal targets during the same in-game day.
+    completed.sort_unstable_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    for (state_id, index, building) in completed {
+        if let Some(state) = world.states.get_mut(&state_id) {
+            building.add_one(&mut state.economy);
+        }
+        order.cancel(queues, ProjectRef { state_id, project_index: index });
+    }
+    order.sync(world, tag, queues);
+}
+
 /// One independently scheduled project. Up to 15 CIV are assigned per line.
 /// Two queued projects in the same state can use separate lines concurrently.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1062,6 +1200,64 @@ mod tests {
         assert_eq!(enqueue_project(
             &world, "TST", 1, &mut queues, &BuildingRules::default(), BuildingType::MilitaryFactory,
         ), Err("Country construction queue is full"));
+    }
+
+    #[test]
+    fn global_project_priority_controls_factory_assignment_across_states() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 15;
+        world.states.insert(2, State { id: 2, name: None, owner: Some("TST".to_owned()),
+            province_ids: vec![], shared_building_slots: 5,
+            economy: StateEconomy::default() });
+        world.countries.get_mut("TST").unwrap().state_ids.insert(2);
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, VecDeque::from([
+            ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1000.0 },
+            ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1000.0 },
+        ]));
+        queues.insert(2, VecDeque::from([
+            ConstructionProject { building: BuildingType::Dockyard, progress: 0.0, cost: 1000.0 },
+        ]));
+        let mut order = ConstructionOrder::default();
+        order.sync(&world, "TST", &queues);
+        let second_state = ProjectRef { state_id: 2, project_index: 0 };
+        assert!(order.move_up(second_state));
+        assert!(order.move_up(second_state));
+        assert_eq!(order.lines[0], second_state);
+        let allocations = allocate_factories_by_order(&world, "TST", &queues, &order,
+            &BuildingRules::default(), CountryConstructionPolicy::default());
+        assert_eq!(allocations.len(), 1);
+        assert_eq!(allocations[0].state_id, 2);
+        advance_day_by_order(&mut world, "TST", &mut queues, &mut order,
+            &BuildingRules::default(), CountryConstructionPolicy::default(),
+            &ConstructionModifiers::default());
+        assert_eq!(queues[&2][0].progress, 75.0);
+        assert_eq!(queues[&1][0].progress, 0.0);
+    }
+
+    #[test]
+    fn cancel_and_completion_preserve_global_priority_without_index_drift() {
+        let mut world = test_world();
+        world.states.get_mut(&1).unwrap().economy.civilian_factories = 2;
+        let mut queues = ConstructionQueues::new();
+        queues.insert(1, VecDeque::from([
+            ConstructionProject { building: BuildingType::Infrastructure, progress: 0.0, cost: 1.0 },
+            ConstructionProject { building: BuildingType::MilitaryFactory, progress: 0.0, cost: 1000.0 },
+            ConstructionProject { building: BuildingType::Dockyard, progress: 0.0, cost: 1000.0 },
+        ]));
+        let mut order = ConstructionOrder::default();
+        order.sync(&world, "TST", &queues);
+        assert!(order.move_up(ProjectRef { state_id: 1, project_index: 2 }));
+        assert!(order.move_up(ProjectRef { state_id: 1, project_index: 2 }));
+        advance_day_by_order(&mut world, "TST", &mut queues, &mut order,
+            &BuildingRules::default(), CountryConstructionPolicy::default(),
+            &ConstructionModifiers::default());
+        assert_eq!(world.states[&1].economy.infrastructure, 0); // lower-priority project waits
+        assert!(order.cancel(&mut queues, ProjectRef { state_id: 1, project_index: 0 }));
+        assert_eq!(order.lines.iter().map(|line| line.project_index).collect::<Vec<_>>(),
+            vec![1, 0]);
+        assert_eq!(queues[&1].len(), 2);
+        assert_eq!(queues[&1][1].building, BuildingType::Dockyard);
     }
 
     #[test]
