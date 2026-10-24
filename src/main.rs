@@ -1106,24 +1106,7 @@ fn window_conf() -> Conf {
 }
 
 fn time_control_button(label: &str, x: f32, y: f32, width: f32, height: f32, active: bool) -> bool {
-    let (mouse_x, mouse_y) = mouse_position();
-    let hovered = mouse_x >= x
-        && mouse_x <= x + width
-        && mouse_y >= y
-        && mouse_y <= y + height;
-    let background = if active {
-        Color::from_rgba(111, 52, 46, 255)
-    } else if hovered {
-        Color::from_rgba(57, 92, 125, 255)
-    } else {
-        Color::from_rgba(35, 54, 76, 255)
-    };
-    draw_rectangle(x, y, width, height, background);
-    draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(91, 125, 154, 255));
-    let font_size = if width < 40.0 { 13.0 } else { 15.0 };
-    let text_width = measure_ui_text(label, font_size as u16).width;
-    draw_ui_text(label, x + (width - text_width) * 0.5, y + height * 0.64, font_size, WHITE);
-    hovered && is_mouse_button_pressed(MouseButton::Left)
+    hoi_ui::small_button(label, Rect::new(x, y, width, height), active)
 }
 
 fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) {
@@ -1188,52 +1171,69 @@ fn draw_time_controls(game: &GameState, date_label: &str) -> (bool, Option<u8>) 
 }
 
 fn button(label: &str, x: f32, y: f32, width: f32, height: f32) -> bool {
-    let (mouse_x, mouse_y) = mouse_position();
-    let hovered = mouse_x >= x
-        && mouse_x <= x + width
-        && mouse_y >= y
-        && mouse_y <= y + height;
-
-    let background = if hovered {
-        Color::from_rgba(57, 92, 125, 255)
-    } else {
-        Color::from_rgba(35, 54, 76, 255)
-    };
-
-    draw_rectangle(x, y, width, height, background);
-    draw_rectangle_lines(x, y, width, height, 1.0, Color::from_rgba(91, 125, 154, 255));
-    draw_ui_text(label, x + 20.0, y + height * 0.63, 23.0, WHITE);
-
-    hovered && is_mouse_button_pressed(MouseButton::Left)
+    hoi_ui::small_button(label, Rect::new(x, y, width, height), false)
 }
 
 fn draw_background() {
-    clear_background(Color::from_rgba(12, 20, 31, 255));
-    draw_rectangle(0.0, 0.0, screen_width(), 5.0, Color::from_rgba(111, 52, 46, 255));
+    clear_background(hoi_ui::BASE);
+    // Fine etched horizontal lines instead of flat prototype-blue rectangles.
+    for i in 0..20 {
+        let y = (screen_height() / 20.0) * i as f32;
+        let tone = 0.075 + i as f32 * 0.0016;
+        draw_rectangle(0.0, y, screen_width(), (screen_height() / 20.0) + 1.0,
+            Color::new(tone, tone + 0.009, tone + 0.010, 1.0));
+    }
+    for i in 0..8 {
+        let y = i as f32 * 100.0 + 52.0;
+        if y < screen_height() {
+            draw_line(0.0, y, screen_width(), y, 1.0, Color::new(0.18, 0.19, 0.18, 0.17));
+        }
+    }
+    draw_rectangle(0.0, 0.0, screen_width(), 4.0, hoi_ui::GOLD);
 }
 
-fn draw_main_menu() -> Screen {
+fn draw_main_menu(map: Option<&ProvinceMap>) -> Screen {
     if screen_width() < 760.0 {
-        return draw_main_menu_compact();
+        return draw_main_menu_compact(map);
     }
     draw_background();
 
     let width = screen_width();
     let height = screen_height();
-    draw_ui_text("HOI4 MOBILE", 72.0, 110.0, 48.0, WHITE);
-    draw_ui_text("Independent Rust strategy prototype", 75.0, 143.0, 19.0, Color::from_rgba(160, 177, 195, 255));
+    draw_ui_text("HOI4 MOBILE", 72.0, 110.0, 48.0, hoi_ui::GOLD);
+    draw_ui_text("THE STRATEGIC COMMAND", 75.0, 143.0, 19.0, hoi_ui::MUTED);
 
-    // Decorative map-like shapes only; these are not real HOI4 geography.
+    // Preview the genuine map raster already loaded from the player's files.
+    // No invented cartography, copied interface texture or bundled game art.
     let panel_x = width * 0.48;
     let panel_y = 72.0;
     let panel_w = width * 0.46;
     let panel_h = height - 125.0;
-    draw_rectangle(panel_x, panel_y, panel_w, panel_h, Color::from_rgba(17, 31, 43, 255));
-    draw_rectangle_lines(panel_x, panel_y, panel_w, panel_h, 1.0, Color::from_rgba(48, 69, 84, 255));
-    draw_ellipse(panel_x + panel_w * 0.29, panel_y + panel_h * 0.32, panel_w * 0.22, panel_h * 0.12, 0.2, Color::from_rgba(57, 80, 72, 255));
-    draw_ellipse(panel_x + panel_w * 0.55, panel_y + panel_h * 0.48, panel_w * 0.25, panel_h * 0.17, -0.3, Color::from_rgba(57, 80, 72, 255));
-    draw_ellipse(panel_x + panel_w * 0.70, panel_y + panel_h * 0.75, panel_w * 0.11, panel_h * 0.08, 0.1, Color::from_rgba(57, 80, 72, 255));
-    draw_ui_text("MAP PREVIEW", panel_x + 20.0, panel_y + panel_h - 24.0, 16.0, Color::from_rgba(160, 177, 195, 255));
+    hoi_ui::panel(panel_x, panel_y, panel_w, panel_h);
+    let preview = Rect::new(panel_x + 7.0, panel_y + 7.0, panel_w - 14.0, panel_h - 50.0);
+    if let Some(map) = map {
+        draw_texture_ex(&map.political_texture, preview.x, preview.y, WHITE,
+            DrawTextureParams { dest_size: Some(vec2(preview.w, preview.h)), ..Default::default() });
+        draw_texture_ex(&map.map_border_texture, preview.x, preview.y, WHITE,
+            DrawTextureParams { dest_size: Some(vec2(preview.w, preview.h)), ..Default::default() });
+    } else {
+        draw_rectangle(preview.x, preview.y, preview.w, preview.h, Color::new(0.13, 0.17, 0.17, 1.0));
+        let step = 34.0;
+        for ix in 1..(preview.w / step) as usize {
+            let x = preview.x + ix as f32 * step;
+            draw_line(x, preview.y, x, preview.y + preview.h, 1.0, Color::new(0.27, 0.31, 0.29, 0.45));
+        }
+        for iy in 1..(preview.h / step) as usize {
+            let y = preview.y + iy as f32 * step;
+            draw_line(preview.x, y, preview.x + preview.w, y, 1.0,
+                Color::new(0.27, 0.31, 0.29, 0.45));
+        }
+        draw_ui_text("WORLD MAP DATA NOT LOADED", preview.x + 18.0, preview.y + preview.h * 0.50, 17.0, hoi_ui::GOLD);
+    }
+    draw_rectangle(panel_x + 7.0, panel_y + panel_h - 40.0, panel_w - 14.0, 32.0,
+        Color::new(0.14, 0.16, 0.16, 1.0));
+    draw_ui_text("1936  /  STRATEGIC MAP", panel_x + 20.0,
+        panel_y + panel_h - 18.0, 14.0, hoi_ui::GOLD);
 
     let button_x = 74.0;
     let button_w = (width * 0.34).clamp(250.0, 360.0);
@@ -1252,10 +1252,10 @@ fn draw_main_menu() -> Screen {
 }
 
 
-fn draw_main_menu_compact() -> Screen {
+fn draw_main_menu_compact(_map: Option<&ProvinceMap>) -> Screen {
     draw_background();
-    draw_ui_text("HOI4 MOBILE", 22.0, 82.0, 36.0, WHITE);
-    draw_ui_text("Independent Rust strategy prototype", 24.0, 111.0, 15.0, LIGHTGRAY);
+    draw_ui_text("HOI4 MOBILE", 22.0, 82.0, 36.0, hoi_ui::GOLD);
+    draw_ui_text("THE STRATEGIC COMMAND", 24.0, 111.0, 15.0, hoi_ui::MUTED);
 
     let button_x = 20.0;
     let button_w = (screen_width() - 40.0).max(180.0);
@@ -1494,7 +1494,7 @@ fn draw_map_viewer(
         }
     }
     if compact {
-        hoi_ui::panel(12.0, 113.0, (screen_width() - 24.0).max(1.0), 79.0);
+        hoi_ui::panel(12.0, 113.0, (screen_width() - 24.0).max(1.0), 54.0);
     } else {
         hoi_ui::panel(12.0, 112.0, 242.0, (screen_height() - 126.0).max(1.0));
         hoi_ui::header(17.0, 116.0, 231.0, "STRATEGIC OVERVIEW");
@@ -1516,24 +1516,24 @@ fn draw_map_viewer(
                 draw_ui_text(
                     &format!("{} × {}  |  {} provinces", map.width, map.height, map.province_count),
                     24.0,
-                    104.0,
-                    15.0,
+                    132.0,
+                    13.0,
                     LIGHTGRAY,
                 );
                 draw_ui_text(
                     &format!("States: {}  |  owners: {}", map.state_count, map.owner_by_state.len()),
                     24.0,
-                    133.0,
-                    13.0,
+                    152.0,
+                    12.0,
                     LIGHTGRAY,
                 );
                 if let Some(capacity) = player_country.and_then(|tag| construction::country_capacity(
                     &map.world, tag, *construction_policy,
                 )) {
                     draw_ui_text(&format!("Construction CIV: {} / {}",
-                        capacity.available, capacity.total_civilian), 24.0, 160.0, 12.0, LIGHTGRAY);
+                        capacity.available, capacity.total_civilian), 196.0, 151.0, 12.0, LIGHTGRAY);
                 } else {
-                    draw_ui_text("Select a state to inspect it", 24.0, 160.0, 13.0, LIGHTGRAY);
+                    draw_ui_text("Tap a state", 196.0, 151.0, 11.0, LIGHTGRAY);
                 }
             } else {
                 draw_ui_text(&format!("Size: {} × {}", map.width, map.height), 28.0, 143.0, 17.0, LIGHTGRAY);
@@ -2021,7 +2021,7 @@ async fn main() {
 
     loop {
         let next_screen = match screen {
-            Screen::MainMenu => draw_main_menu(),
+            Screen::MainMenu => draw_main_menu(map.as_ref()),
             Screen::CountrySelect => draw_country_select(map.as_ref(), &mut selected_country, &mut country_page),
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
