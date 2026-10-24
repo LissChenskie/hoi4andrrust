@@ -39,6 +39,17 @@ impl GameDate {
         }
     }
 
+    /// Predicted date for a construction project whose current daily
+    /// factory allocation and speed remain unchanged.
+    pub fn after_days(self, days: u32) -> Option<Self> {
+        // Far-future predictions are not meaningful for the prototype and
+        // should not stall a UI frame with millions of date operations.
+        if days > 100_000 { return None; }
+        let mut result = self;
+        for _ in 0..days { result.advance_one_day(); }
+        Some(result)
+    }
+
     pub fn display(self) -> String {
         format!("{:04}.{:02}.{:02}", self.year, self.month, self.day)
     }
@@ -129,6 +140,14 @@ mod tests {
         let mut date = GameDate { year: 1936, month: 12, day: 31 };
         date.advance_one_day();
         assert_eq!(date, GameDate { year: 1937, month: 1, day: 1 });
+    }
+
+    #[test]
+    fn completion_date_prediction_advances_across_leap_february() {
+        let day = GameDate { year: 1936, month: 2, day: 27 };
+        assert_eq!(day.after_days(3), Some(GameDate { year: 1936, month: 3, day: 1 }));
+        assert_eq!(day.after_days(0), Some(day));
+        assert_eq!(day.after_days(100_001), None);
     }
 
     #[test]
