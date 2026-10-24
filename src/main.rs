@@ -2410,6 +2410,7 @@ async fn main() {
                 // building may collapse a panel over the map in the same frame:
                 // that click must never leak through and place the building.
                 let placement_before_ui = construction_view.open && construction_view.map_placement;
+                let research_before_ui = research_view.open;
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
                     &mut construction_queue, &mut construction_priority, &mut construction_menu,
@@ -2441,6 +2442,7 @@ async fn main() {
                         && !construction_ui::is_over_panel(mouse, &construction_view)
                         && !production_ui::is_over_panel(mouse, &production_view)
                         && !research_ui::is_over_panel(mouse, &research_view)
+                        && !research_before_ui && !research_view.open
                         && (!construction_view.open || placement_before_ui);
 
                     // Macroquad sends touch events AND simulated mouse events.
@@ -2457,8 +2459,8 @@ async fn main() {
                         current_map.dragging = false;
                         current_map.drag_moved = true;
                     }
-                    let pinch_blocked = contact_points.iter()
-                        .any(|point| {
+                    let pinch_blocked = research_before_ui || research_view.open
+                        || contact_points.iter().any(|point| {
                             construction_ui::is_over_panel(point.position, &construction_view)
                                 || production_ui::is_over_panel(point.position, &production_view)
                                 || research_ui::is_over_panel(point.position, &research_view)
