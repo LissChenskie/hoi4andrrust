@@ -94,10 +94,13 @@ pub fn state_colors(
 
 /// This function is independent from Macroquad, allowing deterministic tests
 /// without a graphics context. State ID 0 and missing states remain transparent.
-pub fn rgba_pixels(state_ids_by_pixel: &[u32], colors: &HashMap<u32, [u8; 4]>) -> Vec<u8> {
+pub fn rgba_pixels(
+    state_ids_by_pixel: &crate::map_pixels::StatePixelIds,
+    colors: &HashMap<u32, [u8; 4]>,
+) -> Vec<u8> {
     let mut pixels = vec![0u8; state_ids_by_pixel.len() * 4];
-    for (idx, state_id) in state_ids_by_pixel.iter().enumerate() {
-        if let Some(color) = colors.get(state_id) {
+    for idx in 0..state_ids_by_pixel.len() {
+        if let Some(color) = state_ids_by_pixel.get(idx).and_then(|id| colors.get(&id)) {
             pixels[idx * 4..idx * 4 + 4].copy_from_slice(color);
         }
     }
@@ -188,7 +191,7 @@ mod tests {
     #[test]
     fn overlay_keeps_unknown_states_and_sea_transparent() {
         let colors = HashMap::from([(1u32, [1, 2, 3, 4])]);
-        assert_eq!(rgba_pixels(&[0, 1, 2], &colors),
+        assert_eq!(rgba_pixels(&crate::map_pixels::StatePixelIds::from_slice(&[0, 1, 2]), &colors),
             vec![0, 0, 0, 0, 1, 2, 3, 4, 0, 0, 0, 0]);
     }
 }
