@@ -12,6 +12,7 @@ pub struct ResearchView {
     pub folder_index:usize,
     pub selected:Option<String>,
     pub scroll_rows:usize,
+    pub scroll_columns:usize,
     pub notice:String,
 }
 
@@ -113,10 +114,10 @@ pub fn draw(
     view.folder_index=view.folder_index.min(folders.len()-1);
     let btn=if compact{31.0}else{37.0};
     if ui::small_button("<",Rect::new(tabs.x,tabs.y,btn,tabs.h),false) {
-        view.folder_index=view.folder_index.saturating_sub(1);view.scroll_rows=0;
+        view.folder_index=view.folder_index.saturating_sub(1);view.scroll_rows=0;view.scroll_columns=0;
     }
     if ui::small_button(">",Rect::new(tabs.x+tabs.w-btn,tabs.y,btn,tabs.h),false) {
-        view.folder_index=(view.folder_index+1).min(folders.len()-1);view.scroll_rows=0;
+        view.folder_index=(view.folder_index+1).min(folders.len()-1);view.scroll_rows=0;view.scroll_columns=0;
     }
     let folder=&folders[view.folder_index];
     draw_ui_text(&fit(&format!("{}   {}/{}",folder.to_uppercase(),
@@ -135,11 +136,15 @@ pub fn draw(
     let nodes:Vec<_>=catalogue.technologies.values().filter(|tech|tech.folder==*folder
         && catalogue.visible(&tech.id,country)).collect();
     let max_row=nodes.iter().map(|tech|tech.y.max(0.0) as usize).max().unwrap_or(0);
+    let max_col=nodes.iter().map(|tech|tech.x.max(0.0) as usize).max().unwrap_or(0);
     let rows_visible=(tree_h/row_step).ceil().max(1.0) as usize;
+    let col_step=node_w+12.0;
+    let cols_visible=(tree_rect.w/col_step).floor().max(1.0) as usize;
     view.scroll_rows=view.scroll_rows.min(max_row.saturating_sub(rows_visible.saturating_sub(1)));
+    view.scroll_columns=view.scroll_columns.min(max_col.saturating_sub(cols_visible.saturating_sub(1)));
     let coords=|x:f32,y:f32|->Vec2{
-        vec2(tree_rect.x+12.0+x.max(0.0)*((node_w+12.0).min((tree_rect.w-node_w).max(22.0)))
-            ,tree_rect.y+9.0+(y.max(0.0)-view.scroll_rows as f32)*row_step)
+        vec2(tree_rect.x+12.0+(x.max(0.0)-view.scroll_columns as f32)*col_step,
+            tree_rect.y+9.0+(y.max(0.0)-view.scroll_rows as f32)*row_step)
     };
     // Parent links are rendered before nodes. Arrow color follows completion.
     for tech in &nodes{
@@ -147,7 +152,9 @@ pub fn draw(
         for parent in &tech.prerequisites{
             if let Some(p)=catalogue.technologies.get(parent).filter(|p|p.folder==*folder){
                 let start=coords(p.x,p.y);
-                if start.y+node_h>=tree_rect.y && dest.y<=tree_rect.y+tree_h {
+                if start.y+node_h>=tree_rect.y && dest.y<=tree_rect.y+tree_h
+                    && start.x>=tree_rect.x && start.x+node_w<=tree_rect.x+tree_rect.w
+                    && dest.x>=tree_rect.x && dest.x+node_w<=tree_rect.x+tree_rect.w {
                     draw_line(start.x+node_w*0.5,start.y+node_h,
                         dest.x+node_w*0.5,dest.y,2.0,
                         if country.researched.contains(parent){ui::GREEN}else{ui::EDGE});
@@ -157,7 +164,8 @@ pub fn draw(
     }
     for tech in &nodes{
         let pos=coords(tech.x,tech.y);
-        if pos.y<tree_rect.y || pos.y+node_h>tree_rect.y+tree_rect.h {continue;}
+        if pos.y<tree_rect.y || pos.y+node_h>tree_rect.y+tree_rect.h
+            || pos.x<tree_rect.x || pos.x+node_w>tree_rect.x+tree_rect.w {continue;}
         let area=Rect::new(pos.x,pos.y,node_w.min(tree_rect.w-20.0),node_h);
         let done=country.researched.contains(&tech.id);
         let active=country.slots.iter().any(|slot|slot.active.as_ref()
@@ -180,6 +188,12 @@ pub fn draw(
         let (_,dy)=mouse_wheel();
         if dy>0.0{view.scroll_rows=view.scroll_rows.saturating_sub(1);}
         else if dy<0.0{view.scroll_rows=(view.scroll_rows+1).min(max_row);}
+    }
+    if ui::small_button("<",Rect::new(tree_rect.x+3.0,tree_rect.y+3.0,20.0,22.0),false) {
+        view.scroll_columns=view.scroll_columns.saturating_sub(1);
+    }
+    if ui::small_button(">",Rect::new(tree_rect.x+27.0,tree_rect.y+3.0,20.0,22.0),false) {
+        view.scroll_columns=(view.scroll_columns+1).min(max_col);
     }
     if ui::small_button("^",Rect::new(tree_rect.x+tree_rect.w-24.0,tree_rect.y+3.0,20.0,22.0),false){
         view.scroll_rows=view.scroll_rows.saturating_sub(1);
