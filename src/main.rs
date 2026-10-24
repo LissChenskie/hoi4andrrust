@@ -10,6 +10,9 @@ mod spatial_grid;
 mod map_pixels;
 mod production;
 mod production_ui;
+mod research;
+mod research_data;
+mod research_ui;
 
 use game::GameState;
 use world::World;
@@ -1494,6 +1497,10 @@ fn draw_map_viewer(
     production_view: &mut production_ui::ProductionView,
     production_state: &mut production::ProductionState,
     production_rules: &production::ProductionRules,
+    research_world: &mut research::ResearchWorld,
+    research_catalogue: &research::ResearchCatalogue,
+    research_rules: &research::ResearchRules,
+    research_view: &mut research_ui::ResearchView,
     game_date: game::GameDate,
 ) -> Screen {
     draw_background();
@@ -1521,14 +1528,16 @@ fn draw_map_viewer(
             }
         }
     }
-    let tab_width = if compact { ((screen_width() - 105.0) / 3.0).max(54.0) } else { 150.0 };
+    let tab_width = if compact { ((screen_width() - 105.0) / 4.0).max(49.0) } else { 143.0 };
     let tab_2 = 12.0 + tab_width + 6.0;
     let tab_3 = tab_2 + tab_width + 6.0;
+    let tab_4 = tab_3 + tab_width + 6.0;
     if hoi_ui::small_button(if compact { "BUILD" } else { "CONSTRUCTION" },
         Rect::new(12.0, 60.0, tab_width, 33.0), construction_view.open) {
         if construction_view.open { construction_view.close(); }
         else {
             production_view.close();
+            research_view.open = false;
             construction_view.open = true;
         }
         if construction_view.open {
@@ -1542,14 +1551,25 @@ fn draw_map_viewer(
         if production_view.open { production_view.close(); }
         else {
             construction_view.close();
+            research_view.open = false;
             production_view.open = true;
         }
     }
+    if hoi_ui::small_button(if compact { "TECH" } else { "RESEARCH" },
+        Rect::new(tab_3, 60.0, tab_width, 33.0), research_view.open) {
+        if research_view.open { research_view.open = false; }
+        else {
+            construction_view.close();
+            production_view.close();
+            research_view.open = true;
+        }
+    }
     if hoi_ui::small_button(if compact { "MAP" } else { "POLITICAL MAP" },
-        Rect::new(tab_3, 60.0, tab_width, 33.0),
-        !construction_view.open && !production_view.open) {
+        Rect::new(tab_4, 60.0, tab_width, 33.0),
+        !construction_view.open && !production_view.open && !research_view.open) {
         construction_view.close();
         production_view.close();
+        research_view.open = false;
     }
     if compact {
         if let Some(map) = map.as_deref_mut() {
@@ -1591,7 +1611,8 @@ fn draw_map_viewer(
         if wheel_y != 0.0 && (!construction_view.open || construction_view.map_placement)
             && view.contains(mouse)
             && !construction_ui::is_over_panel(mouse, construction_view)
-            && !production_ui::is_over_panel(mouse, production_view) {
+            && !production_ui::is_over_panel(mouse, production_view)
+            && !research_ui::is_over_panel(mouse, research_view) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
@@ -1677,7 +1698,7 @@ fn draw_map_viewer(
             }
 
             // Map mode selection is hidden while the dedicated construction heatmap is active.
-            if !construction_view.open && !production_view.open {
+            if !construction_view.open && !production_view.open && !research_view.open {
             let mode_y = if compact { 174.0 } else { 18.0 };
             let mode_x = if compact { 12.0 } else { 280.0 };
             let mode_w = if compact { ((screen_width() - 36.0) / 3.0).max(72.0) } else { 126.0 };
@@ -1935,7 +1956,7 @@ fn draw_map_viewer(
     }
 
     // The construction view owns the center/left presentation while open.
-    if !construction_view.open && !production_view.open {
+    if !construction_view.open && !production_view.open && !research_view.open {
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
@@ -2188,6 +2209,10 @@ fn draw_map_viewer(
         production_ui::draw(map.as_deref().map(|m| &m.world), player_country,
             production_state, production_view, production_rules);
     }
+    if research_view.open {
+        research_ui::draw(player_country, research_world,
+            research_catalogue, research_rules, game_date, research_view);
+    }
     Screen::MapViewer
 }
 
@@ -2244,6 +2269,31 @@ async fn main() {
     let mut production_state = production::ProductionState::default();
     let mut production_view = production_ui::ProductionView::default();
     let production_rules = production::ProductionRules::default();
+    // Use the player's own versioned game files if present. Never redistribute
+    // proprietary technology files or pretend demo nodes are the vanilla tree.
+    let (research_catalogue, research_origin) =
+        match research_data::load_catalogue(Path::new("data/hoi4/common/technologies")) {
+            Ok((tree, report)) => (tree, format!(
+                "{} imported technologies from {} local files",
+                report.imported_technologies, report.parsed_files,
+            )),
+            Err(error) => (research_data::builtin_demo(),
+                format!("Demo research tree (local import unavailable: {error})")),
+        };
+    let mut research_rules = research::ResearchRules::default();
+    if let Ok(entries) = fs::read_dir("data/hoi4/common/defines") {
+        let mut paths: Vec<_> = entries.flatten().map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|x| x.to_str()) == Some("lua")).collect();
+        paths.sort();
+        for path in paths {
+            if let Ok(source) = fs::read_to_string(path) {
+                research_data::update_rules_from_defines(&source, &mut research_rules);
+            }
+        }
+    }
+    let mut research_world = research::ResearchWorld::default();
+    let mut research_view = research_ui::ResearchView::default();
+    research_view.notice = research_origin;
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
     let mut cached_date_label = game.date.display();
@@ -2258,6 +2308,7 @@ async fn main() {
                     if construction_view.open { construction_view.close(); }
                     else {
                         production_view.close();
+                        research_view.open = false;
                         construction_view.open = true;
                     }
                 }
@@ -2265,12 +2316,22 @@ async fn main() {
                     if production_view.open { production_view.close(); }
                     else {
                         construction_view.close();
+                        research_view.open = false;
                         production_view.open = true;
+                    }
+                }
+                if is_key_pressed(KeyCode::R) {
+                    if research_view.open { research_view.open = false; }
+                    else {
+                        construction_view.close();
+                        production_view.close();
+                        research_view.open = true;
                     }
                 }
                 if is_key_pressed(KeyCode::Escape) {
                     construction_view.close();
                     production_view.close();
+                    research_view.open = false;
                 }
                 if is_key_pressed(KeyCode::Space) {
                     game.toggle_pause();
@@ -2286,10 +2347,38 @@ async fn main() {
                         game.set_speed(speed);
                     }
                 }
+                if let Some(tag) = selected_country.as_deref() {
+                    if !research_world.countries.contains_key(tag) {
+                        let (slots, known) = research_data::read_country_start(
+                            Path::new("data/hoi4/history/countries"), tag,
+                        ).unwrap_or((Some(3), std::collections::BTreeSet::new()));
+                        let country = research_world.country_mut(
+                            tag, slots.unwrap_or(3), &research_rules,
+                        );
+                        for tech in known { country.grant(&tech, &research_catalogue); }
+                    }
+                }
+                let previous_date = game.date;
                 let daily_ticks = game.update(get_frame_time());
                 if daily_ticks > 0 {
-                    if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
-                        for _ in 0..daily_ticks {
+                    let mut simulation_date = previous_date;
+                    for _ in 0..daily_ticks {
+                        // Tech timing runs on each simulated calendar day,
+                        // never repeatedly using the final date of a multi-tick frame.
+                        if let Some(current_map) = map.as_ref() {
+                            for tag in current_map.world.countries.keys() {
+                                research_world.country_mut(tag, 3, &research_rules);
+                                research_world.tick_country(tag, &research_catalogue,
+                                    &research_rules, simulation_date);
+                                if research_world.day_index % 7 == 0
+                                    && selected_country.as_deref() != Some(tag.as_str()) {
+                                    research_world.ai_choose(tag, &research_catalogue,
+                                        &research_rules, simulation_date);
+                                }
+                            }
+                        }
+                        research_world.day_index += 1;
+                        if let (Some(tag), Some(current_map)) = (selected_country.as_deref(), map.as_mut()) {
                             // Production uses factories available at the START
                             // of each day; newly completed MIL joins next day.
                             production_state.tick_country(&current_map.world, tag, &production_rules);
@@ -2299,6 +2388,7 @@ async fn main() {
                                 construction_policy, &construction::ConstructionModifiers::default(),
                             );
                         }
+                        simulation_date.advance_one_day();
                     }
                 }
                 if game.date != cached_date {
@@ -2316,7 +2406,8 @@ async fn main() {
                     &mut construction_notice, &mut construction_policy,
                     &mut construction_law_preset, &building_rules, &mut construction_view,
                     &mut production_view, &mut production_state, &production_rules,
-                    game.date,
+                    &mut research_world, &research_catalogue, &research_rules,
+                    &mut research_view, game.date,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
@@ -2339,6 +2430,7 @@ async fn main() {
                     let inside_map = rect.contains(mouse) && !time_controls_overlay
                         && !construction_ui::is_over_panel(mouse, &construction_view)
                         && !production_ui::is_over_panel(mouse, &production_view)
+                        && !research_ui::is_over_panel(mouse, &research_view)
                         && (!construction_view.open || placement_before_ui);
 
                     // Macroquad sends touch events AND simulated mouse events.
@@ -2359,6 +2451,7 @@ async fn main() {
                         .any(|point| {
                             construction_ui::is_over_panel(point.position, &construction_view)
                                 || production_ui::is_over_panel(point.position, &production_view)
+                                || research_ui::is_over_panel(point.position, &research_view)
                         })
                         || (screen_width() >= 760.0 && contact_points.iter().any(|point| {
                             point.position.x >= screen_width() - 405.0
@@ -2453,7 +2546,7 @@ async fn main() {
                 let compact_reload = screen_width() < 760.0;
                 // Prevent reload controls from drawing through the open
                 // construction panel or intercepting its queue-row clicks.
-                let reload_clicked = if construction_view.open || production_view.open {
+                let reload_clicked = if construction_view.open || production_view.open || research_view.open {
                     false
                 } else if compact_reload {
                     button("Reload map", 12.0, screen_height() - 108.0, 130.0, 34.0)
