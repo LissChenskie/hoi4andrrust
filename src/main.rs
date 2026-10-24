@@ -2,6 +2,8 @@ mod state;
 mod game;
 mod world;
 mod construction;
+mod hoi_ui;
+mod construction_ui;
 
 use game::GameState;
 use world::World;
@@ -1415,14 +1417,41 @@ fn draw_map_viewer(
     construction_policy: &mut construction::CountryConstructionPolicy,
     law_preset: &mut construction::EconomicLawPreset,
     building_rules: &BuildingRules,
+    construction_view: &mut construction_ui::ConstructionView,
 ) -> Screen {
     draw_background();
-    draw_rectangle(0.0, 5.0, screen_width(), 58.0, Color::from_rgba(20, 32, 46, 255));
-    let title = player_country.map(|tag| format!("WORLD MAP  ·  {} ({tag})", country_display_name(tag)))
-        .unwrap_or_else(|| "WORLD MAP".to_owned());
-    draw_ui_text(&title, 22.0, 42.0, if screen_width() < 760.0 { 17.0 } else { 25.0 }, WHITE);
-
+    // Steel bar + paper-toned numbers: HOI4-inspired, but original vector art.
     let compact = screen_width() < 760.0;
+    draw_rectangle(0.0, 0.0, screen_width(), 52.0, hoi_ui::BASE);
+    draw_rectangle(0.0, 49.0, screen_width(), 3.0, hoi_ui::GOLD);
+    draw_rectangle(0.0, 52.0, screen_width(), 51.0, hoi_ui::FACE);
+    draw_rectangle(0.0, 99.0, screen_width(), 3.0, hoi_ui::EDGE);
+    let name = player_country.map(country_display_name).unwrap_or("NO COUNTRY");
+    let country_label = if compact { player_country.unwrap_or("---").to_owned() } else {
+        format!("{name}  [{}]", player_country.unwrap_or("---"))
+    };
+    draw_ui_text(&country_label, 14.0, 31.0, if compact { 17.0 } else { 20.0 }, hoi_ui::GOLD);
+    if let (Some(world), Some(tag)) = (map.as_deref(), player_country) {
+        if let Some(total) = world.world.country_economy(tag) {
+            if compact {
+                draw_ui_text(&format!("C:{}  M:{}  D:{}", total.civilian_factories,
+                    total.military_factories, total.dockyards), 102.0, 30.0, 12.0, hoi_ui::TEXT);
+            } else {
+                hoi_ui::stat(260.0, 7.0, 95.0, "CIV FACTORIES", &total.civilian_factories.to_string());
+                hoi_ui::stat(362.0, 7.0, 95.0, "MIL FACTORIES", &total.military_factories.to_string());
+                hoi_ui::stat(464.0, 7.0, 88.0, "DOCKYARDS", &total.dockyards.to_string());
+                hoi_ui::stat(559.0, 7.0, 88.0, "STATES", &total.states.to_string());
+            }
+        }
+    }
+    if hoi_ui::small_button("CONSTRUCTION", Rect::new(12.0, 60.0,
+        if compact { 132.0 } else { 150.0 }, 33.0), construction_view.open) {
+        construction_view.open = !construction_view.open;
+    }
+    if hoi_ui::small_button("POLITICAL MAP", Rect::new(if compact { 150.0 } else { 170.0 },
+        60.0, if compact { 125.0 } else { 149.0 }, 33.0), !construction_view.open) {
+        construction_view.open = false;
+    }
     if compact {
         if let Some(map) = map.as_deref_mut() {
             if button("+", screen_width() - 176.0, 15.0, 34.0, 38.0) {
@@ -1432,11 +1461,11 @@ fn draw_map_viewer(
                 map.set_zoom_at(1.0 / 1.25, vec2(screen_width() * 0.5, screen_height() * 0.55), map_view_rect(map));
             }
         }
-        if button("Back", screen_width() - 86.0, 15.0, 72.0, 38.0) {
+        if hoi_ui::small_button("MENU", Rect::new(screen_width() - 73.0, 11.0, 65.0, 31.0), false) {
             return Screen::MainMenu;
         }
     } else {
-        if button("Main menu", screen_width() - 160.0, 15.0, 138.0, 38.0) {
+        if hoi_ui::small_button("MENU", Rect::new(screen_width() - 107.0, 10.0, 95.0, 32.0), false) {
             return Screen::MainMenu;
         }
         if let Some(map) = map.as_deref_mut() {
@@ -1458,17 +1487,17 @@ fn draw_map_viewer(
         let (_, wheel_y) = mouse_wheel();
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let view = map_view_rect(map);
-        if wheel_y != 0.0 && view.contains(mouse) {
+        if wheel_y != 0.0 && !construction_view.open && view.contains(mouse) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
         }
     }
     if compact {
-        draw_rectangle(12.0, 74.0, screen_width() - 24.0, 116.0, Color::from_rgba(18, 30, 43, 255));
+        hoi_ui::panel(12.0, 113.0, (screen_width() - 24.0).max(1.0), 79.0);
     } else {
-        draw_rectangle(12.0, 78.0, 242.0, screen_height() - 92.0, Color::from_rgba(18, 30, 43, 255));
-        draw_ui_text("MAP DATA", 28.0, 109.0, 18.0, WHITE);
+        hoi_ui::panel(12.0, 112.0, 242.0, (screen_height() - 126.0).max(1.0));
+        hoi_ui::header(17.0, 116.0, 231.0, "STRATEGIC OVERVIEW");
     }
 
     match map.as_deref_mut() {
@@ -1695,7 +1724,8 @@ fn draw_map_viewer(
         }
     }
 
-    // HOI4-inspired bottom state inspector. Closing it also clears the map selection.
+    // The construction view owns the center/left presentation while open.
+    if !construction_view.open {
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
@@ -1926,6 +1956,12 @@ fn draw_map_viewer(
         }
     }
 
+    }
+    if construction_view.open {
+        construction_ui::draw(map.as_deref().map(|m| &m.world), player_country,
+            construction_queue, construction_priority, building_rules,
+            construction_policy, law_preset, construction_notice, construction_view);
+    }
     Screen::MapViewer
 }
 
@@ -1978,6 +2014,7 @@ async fn main() {
     let mut construction_law_preset = construction::EconomicLawPreset::default();
     let building_rules = BuildingRules::load(construction::BUILDING_DEFINITIONS_DIRECTORY);
     let mut construction_menu: Option<u32> = None;
+    let mut construction_view = construction_ui::ConstructionView::default();
     // Rebuild the date label only when the simulation date changes, not every rendered frame.
     let mut cached_date = game.date;
     let mut cached_date_label = game.date.display();
@@ -1988,6 +2025,12 @@ async fn main() {
             Screen::CountrySelect => draw_country_select(map.as_ref(), &mut selected_country, &mut country_page),
             Screen::MapViewer => {
                 // Optional desktop keyboard shortcuts; touch buttons below are the primary controls.
+                if is_key_pressed(KeyCode::T) {
+                    construction_view.open = !construction_view.open;
+                }
+                if is_key_pressed(KeyCode::Escape) {
+                    construction_view.open = false;
+                }
                 if is_key_pressed(KeyCode::Space) {
                     game.toggle_pause();
                 }
@@ -2021,7 +2064,7 @@ async fn main() {
                     map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
                     &mut construction_queue, &mut construction_priority, &mut construction_menu,
                     &mut construction_notice, &mut construction_policy,
-                    &mut construction_law_preset, &building_rules,
+                    &mut construction_law_preset, &building_rules, &mut construction_view,
                 );
                 let (pause_clicked, speed_clicked) = draw_time_controls(&game, &cached_date_label);
                 if pause_clicked {
@@ -2041,7 +2084,8 @@ async fn main() {
                         && mouse.x >= screen_width() - 405.0
                         && mouse.y >= 70.0
                         && mouse.y <= 124.0;
-                    let inside_map = rect.contains(mouse) && !time_controls_overlay;
+                    let inside_map = rect.contains(mouse) && !time_controls_overlay
+                        && !(construction_view.open && construction_ui::is_over_panel(mouse));
 
                     if is_mouse_button_pressed(MouseButton::Left) && inside_map {
                         current_map.dragging = true;
