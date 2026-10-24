@@ -2170,6 +2170,10 @@ async fn main() {
                     cached_date_label = game.date.display();
                 }
 
+                // Capture placement mode before UI click handlers run. Selecting a
+                // building may collapse a panel over the map in the same frame:
+                // that click must never leak through and place the building.
+                let placement_before_ui = construction_view.open && construction_view.map_placement;
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), &load_error, &mut selected, selected_country.as_deref(),
                     &mut construction_queue, &mut construction_priority, &mut construction_menu,
@@ -2195,7 +2199,8 @@ async fn main() {
                         && mouse.y >= 70.0
                         && mouse.y <= 124.0;
                     let inside_map = rect.contains(mouse) && !time_controls_overlay
-                        && !construction_ui::is_over_panel(mouse, &construction_view);
+                        && !construction_ui::is_over_panel(mouse, &construction_view)
+                        && (!construction_view.open || placement_before_ui);
 
                     if is_mouse_button_pressed(MouseButton::Left) && inside_map {
                         current_map.dragging = true;
