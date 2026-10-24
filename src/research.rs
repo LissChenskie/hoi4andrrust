@@ -277,9 +277,12 @@ impl CountryResearch {
         self.unlocks.extend(tech.unlocks.iter().cloned());
         for (key, value) in &tech.modifiers {
             *self.applied_modifiers.entry(key.clone()).or_default() += *value;
+            // Existing national modifiers and research bonuses are additive;
+            // a newly completed technology must not overwrite them.
+            if key == "research_speed_factor" {
+                self.speed_bonus += *value;
+            }
         }
-        self.speed_bonus = *self.applied_modifiers.get("research_speed_factor")
-            .unwrap_or(&self.speed_bonus);
     }
     pub fn tick(&mut self, catalogue: &ResearchCatalogue, rules: &ResearchRules, date: GameDate) {
         let day_work: Vec<Option<f64>> = self.slots.iter().map(|slot| {
@@ -471,6 +474,59 @@ mod tests {
         assert!(c.resize_slots(1,&rules).is_err());
         assert!(c.cancel(1));assert!(c.resize_slots(1,&rules).is_ok());
     }
+    #[test]
+    fn speed_bonuses_are_additive_and_respect_ten_percent_floor() {
+        let tree=tree();let rules=ResearchRules::default();
+        let mut country=CountryResearch::new(1,&rules);
+        let tech=&tree.technologies["a"];
+        let active=ActiveResearch {tech_id:"a".into(),progress:0.0,locked_bonus:0.0,ahead_reduction:0.0};
+        country.speed_bonus=0.5;
+        country.category_bonuses.insert("industry".into(),0.1);
+        assert!((daily_speed(tech,&country,&active,&rules,GameDate::START)-1.6).abs()<1e-10);
+        country.speed_bonus=-2.0;
+        assert!((daily_speed(tech,&country,&active,&rules,GameDate::START)-0.1).abs()<1e-10);
+    }
+    #[test]
+    fn speed_changes_affect_ongoing_research_but_used_focus_bonus_does_not() {
+        let tree=tree();let rules=ResearchRules::default();
+        let mut country=CountryResearch::new(1,&rules);
+        country.available_bonuses.push(ResearchBonus{
+            name:"focus".into(),category:Some("industry".into()),technology:None,
+            speed:0.5,ahead_reduction_years:1.0,uses:1,
+        });
+        country.start(0,"a",&tree,&rules,GameDate::START).unwrap();
+        let active=country.slots[0].active.as_ref().unwrap().clone();
+        let tech=&tree.technologies["a"];
+        assert!((daily_speed(tech,&country,&active,&rules,GameDate::START)-1.5).abs()<1e-10);
+        country.speed_bonus=0.2;
+        assert!((daily_speed(tech,&country,&active,&rules,GameDate::START)-1.7).abs()<1e-10);
+        assert_eq!(country.available_bonuses[0].uses,0);
+    }
+    #[test]
+    fn era_ahead_dynamic_eta_is_recomputed_from_the_day_step() {
+        let mut cat=ResearchCatalogue::default();
+        cat.insert(Technology::sample("future",1938,1.0)).unwrap();
+        let rules=ResearchRules::default();
+        let mut c=CountryResearch::new(1,&rules);
+        c.start(0,"future",&cat,&rules,GameDate::START).unwrap();
+        let eta_1936=c.estimated_days(0,&cat,&rules,GameDate::START).unwrap();
+        let eta_later=c.estimated_days(0,&cat,&rules,GameDate{
+            year:1937,month:12,day:31
+        }).unwrap();
+        assert!(eta_1936>eta_later);
+        assert!(eta_1936>110);
+    }
+    #[test]
+    fn tech_speed_modifier_does_not_replace_manual_country_bonus() {
+        let mut cat=tree();
+        cat.technologies.get_mut("a").unwrap().modifiers.insert("research_speed_factor".into(),0.1);
+        let rules=ResearchRules::default();
+        let mut c=CountryResearch::new(1,&rules);
+        c.speed_bonus=0.25;
+        c.grant("a",&cat);
+        assert!((c.speed_bonus-0.35).abs()<1e-10);
+    }
+
     #[test]
     fn research_grants_unlocks_and_country_state_isolated() {
         let mut tree=tree();
