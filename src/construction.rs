@@ -283,8 +283,9 @@ impl BuildingRules {
 
     pub fn infrastructure_speed_multiplier(&self, infrastructure: u16, building: BuildingType) -> f32 {
         if !self.definition(building).infrastructure_construction_effect { return 1.0; }
-        1.0 + f32::from(infrastructure.min(MAX_INFRASTRUCTURE_LEVEL))
-            * self.infra_max_construction_cost_effect / f32::from(MAX_INFRASTRUCTURE_LEVEL)
+        let infra_cap = self.max_state_level(BuildingType::Infrastructure).max(1);
+        1.0 + f32::from(infrastructure.min(infra_cap))
+            * self.infra_max_construction_cost_effect / f32::from(infra_cap)
     }
 }
 
@@ -905,6 +906,17 @@ mod tests {
         world.states.get_mut(&1).unwrap().economy.infrastructure = 5;
         advance_day(&mut world, "TST", &mut q, &rules);
         assert_eq!(q[&1][0].progress, 30.0);
+    }
+
+    #[test]
+    fn infrastructure_multiplier_respects_imported_level_cap() {
+        let mut rules = BuildingRules::default();
+        rules.state_level_caps.insert(BuildingType::Infrastructure, 10);
+        let bonus_at_half = rules.infrastructure_speed_multiplier(5, BuildingType::CivilianFactory);
+        assert_eq!(bonus_at_half, 1.5);
+        let bonus_at_full = rules.infrastructure_speed_multiplier(10, BuildingType::CivilianFactory);
+        assert_eq!(bonus_at_full, 2.0);
+        assert_eq!(rules.infrastructure_speed_multiplier(99, BuildingType::CivilianFactory), 2.0);
     }
 
     #[test]
