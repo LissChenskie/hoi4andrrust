@@ -61,6 +61,71 @@ fn progress_description(
         project.building.short_label(), rules.max_civilian_factories_per_line)
 }
 
+/// Hand-drawn, scalable building pictograms. No borrowed Paradox sprites.
+fn building_tile(building: BuildingType, cell: Rect, selected: bool, narrow: bool) -> bool {
+    let hovered = ui::inside(cell);
+    let bg = if selected { Color::new(0.38, 0.31, 0.20, 1.0) }
+        else if hovered { Color::new(0.27, 0.29, 0.27, 1.0) }
+        else { Color::new(0.19, 0.21, 0.20, 1.0) };
+    draw_rectangle(cell.x, cell.y, cell.w, cell.h, bg);
+    draw_rectangle_lines(cell.x, cell.y, cell.w, cell.h,
+        if selected { 2.0 } else { 1.0 }, if selected { ui::GOLD } else { ui::EDGE });
+    let accent = match building {
+        BuildingType::CivilianFactory => Color::new(0.86, 0.56, 0.27, 1.0),
+        BuildingType::MilitaryFactory => Color::new(0.57, 0.70, 0.43, 1.0),
+        BuildingType::Dockyard => Color::new(0.53, 0.70, 0.77, 1.0),
+        BuildingType::Infrastructure => Color::new(0.73, 0.65, 0.43, 1.0),
+        BuildingType::SyntheticRefinery => Color::new(0.63, 0.52, 0.73, 1.0),
+        BuildingType::FuelSilo => Color::new(0.71, 0.63, 0.41, 1.0),
+        BuildingType::RocketSite => Color::new(0.70, 0.69, 0.66, 1.0),
+        BuildingType::NuclearReactor => Color::new(0.78, 0.70, 0.47, 1.0),
+    };
+    let icon_size = if narrow { 22.0 } else { 25.0 };
+    let ix = cell.x + if narrow { 7.0 } else { (cell.w - icon_size) * 0.5 };
+    let iy = cell.y + if narrow { 7.0 } else { 5.0 };
+    let cx = ix + icon_size * 0.5;
+    // Distinct original silhouettes that remain readable on 360px screens.
+    match building {
+        BuildingType::Infrastructure => {
+            for i in 0..3 {
+                let dx = i as f32 * 5.0;
+                draw_line(ix + dx + 4.0, iy + 2.0, ix + dx + 4.0, iy + icon_size - 2.0, 2.0, accent);
+            }
+            draw_line(ix + 1.0, iy + icon_size * 0.5, ix + icon_size, iy + icon_size * 0.5, 2.0, accent);
+        }
+        BuildingType::Dockyard => {
+            draw_line(ix + 3.0, iy + icon_size * 0.7, ix + icon_size - 2.0, iy + icon_size * 0.7, 3.0, accent);
+            draw_line(cx, iy + 1.0, cx, iy + icon_size - 3.0, 3.0, accent);
+            draw_line(cx, iy + 3.0, ix + 5.0, iy + 9.0, 2.0, accent);
+            draw_line(ix + 4.0, iy + icon_size - 2.0, ix + icon_size - 2.0, iy + icon_size - 2.0, 2.0, accent);
+        }
+        BuildingType::FuelSilo | BuildingType::NuclearReactor => {
+            draw_circle_lines(cx, iy + icon_size * 0.48, icon_size * 0.39, 3.0, accent);
+            draw_circle(cx, iy + icon_size * 0.48, 3.3, accent);
+            draw_line(ix + 3.0, iy + icon_size - 1.0, ix + icon_size - 2.0, iy + icon_size - 1.0, 2.0, accent);
+        }
+        BuildingType::RocketSite => {
+            draw_triangle(vec2(cx, iy + 1.0), vec2(cx - 6.0, iy + icon_size - 4.0),
+                vec2(cx + 6.0, iy + icon_size - 4.0), accent);
+            draw_rectangle(ix + 3.0, iy + icon_size - 6.0, icon_size - 6.0, 4.0, accent);
+        }
+        _ => {
+            draw_rectangle(ix + 2.0, iy + 10.0, icon_size - 3.0, icon_size - 11.0, accent);
+            draw_rectangle(ix + 5.0, iy + 2.0, 4.0, 12.0, accent);
+            draw_triangle(vec2(ix + 8.0, iy + 11.0), vec2(ix + 15.0, iy + 5.0),
+                vec2(ix + 19.0, iy + 11.0), accent);
+            draw_rectangle(ix + 7.0, iy + 17.0, 3.0, 4.0, bg);
+            draw_rectangle(ix + 14.0, iy + 17.0, 3.0, 4.0, bg);
+        }
+    }
+    let size = if narrow { 10.0 } else { 11.0 };
+    let text_x = if narrow { cell.x + 30.0 } else { cell.x + 7.0 };
+    draw_ui_text(building.short_label(), text_x,
+        if narrow { cell.y + 25.0 } else { cell.y + cell.h - 6.0 }, size,
+        if selected { ui::GOLD } else { ui::TEXT });
+    hovered && is_mouse_button_pressed(MouseButton::Left)
+}
+
 fn build_in_state(
     world: &World, country: &str, state_id: u32,
     queues: &mut ConstructionQueues, priority: &mut Vec<u32>,
@@ -113,7 +178,7 @@ pub fn draw(
 
     let stat_y = area.y + 43.0;
     let gap = 5.0;
-    let available_w = (area.w - 23.0) / 4.0;
+    let available_w = (area.w - 35.0) / 4.0;
     let labels = [("CIVILIAN", format!("{free}/{total}")), ("GOODS", consumer.to_string()),
         ("TRADE", trade.to_string()), ("QUEUED", active_lines.to_string())];
     for (index, (label, value)) in labels.into_iter().enumerate() {
@@ -138,8 +203,8 @@ pub fn draw(
         let row = index / cols;
         let x = palette_x + col as f32 * (cell_w + cell_gap);
         let y = palette_y + row as f32 * (cell_h + 5.0);
-        if ui::small_button(building.short_label(), rect(x, y, cell_w, cell_h),
-            building == view.selected_building) {
+        if building_tile(building, rect(x, y, cell_w, cell_h),
+            building == view.selected_building, narrow) {
             view.selected_building = building;
         }
     }
