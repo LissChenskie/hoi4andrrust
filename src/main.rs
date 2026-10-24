@@ -7,6 +7,7 @@ mod construction_ui;
 mod construction_map;
 mod map_camera;
 mod spatial_grid;
+mod map_pixels;
 
 use game::GameState;
 use world::World;
@@ -132,7 +133,7 @@ struct ProvinceMap {
     state_count: usize,
     state_load_status: String,
     map_border_texture: Texture2D,
-    state_ids_by_pixel: Vec<u32>,
+    state_ids_by_pixel: map_pixels::StatePixelIds,
     highlighted_state_texture: Option<(u32, Texture2D)>,
     construction_overlay_texture: Option<Texture2D>,
     construction_overlay_signature: Option<u64>,
@@ -358,33 +359,34 @@ fn build_state_ids_by_pixel(
     rgba: &[u8],
     id_by_rgb: &HashMap<[u8; 3], u32>,
     state_by_province: &HashMap<u32, u32>,
-) -> Vec<u32> {
-    let mut state_ids = vec![0u32; width as usize * height as usize];
+) -> map_pixels::StatePixelIds {
+    let max_state_id = state_by_province.values().copied().max().unwrap_or(0);
+    let mut state_ids = map_pixels::StatePixelIds::new(
+        width as usize * height as usize, max_state_id,
+    );
     for (index, pixel) in rgba.chunks_exact(4).enumerate() {
         let rgb = [pixel[0], pixel[1], pixel[2]];
         if let Some(province_id) = id_by_rgb.get(&rgb) {
-            state_ids[index] = state_by_province.get(province_id).copied().unwrap_or(0);
+            state_ids.set(index, state_by_province.get(province_id).copied().unwrap_or(0));
         }
     }
     state_ids
 }
 
+/// Single pass border generation without allocating whole-image province and
+/// owner ID arrays. Those two old u32 buffers each consumed width*height*4
+/// temporary bytes (about 44 MiB apiece for a vanilla 5632x2048 map).
 fn build_map_border_texture(
     width: u32,
     height: u32,
     rgba: &[u8],
     id_by_rgb: &HashMap<[u8; 3], u32>,
-    state_ids: &[u32],
+    state_ids: &map_pixels::StatePixelIds,
     owner_by_state: &HashMap<u32, String>,
 ) -> Texture2D {
     let w = width as usize;
     let h = height as usize;
-    let pixel_count = w * h;
 
-    let mut province_ids = vec![0u32; pixel_count];
-
-    // Assign compact, collision-free owner IDs once. A u32 per pixel is half
-    // the memory of the old u64 owner layer, without hash lookups in the edge loop.
     let mut owner_ids_by_tag = HashMap::<&str, u32>::new();
     let mut owner_ids_by_state = HashMap::<u32, u32>::new();
     for (&state_id, owner) in owner_by_state {
@@ -393,25 +395,15 @@ fn build_map_border_texture(
         owner_ids_by_state.insert(state_id, owner_id);
     }
 
-    let mut owners = vec![0u32; pixel_count];
-    for (index, pixel) in rgba.chunks_exact(4).enumerate() {
-        let rgb = [pixel[0], pixel[1], pixel[2]];
-        if let Some(province_id) = id_by_rgb.get(&rgb) {
-            province_ids[index] = *province_id;
-            let state_id = state_ids.get(index).copied().unwrap_or(0);
-            owners[index] = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
-        }
-    }
-
-    let mut overlay = vec![0u8; pixel_count * 4];
+    let mut overlay = vec![0u8; w * h * 4];
     for y in 0..h {
         for x in 0..w {
             let index = y * w + x;
-            let province_id = province_ids[index];
-            if province_id == 0 { continue; }
-            let state_id = state_ids.get(index).copied().unwrap_or(0);
-            let owner = owners[index];
-
+            let o = index * 4;
+            let pixel_color = [rgba[o], rgba[o + 1], rgba[o + 2]];
+            if !id_by_rgb.contains_key(&pixel_color) { continue; }
+            let state_id = state_ids.get(index).unwrap_or(0);
+            let owner = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
             let mut country_edge = false;
             let mut state_edge = false;
             let mut province_edge = false;
@@ -422,49 +414,51 @@ fn build_map_border_texture(
                 if y + 1 < h { Some(index + w) } else { None },
             ];
             for neighbour in neighbours.into_iter().flatten() {
-                if owner != 0 && owners[neighbour] != 0 && owners[neighbour] != owner {
+                let n = neighbour * 4;
+                // Province definition has a one-to-one mapping between RGB and
+                // province IDs, so comparing source RGB avoids another u32 map.
+                if rgba[n] == pixel_color[0] && rgba[n + 1] == pixel_color[1]
+                    && rgba[n + 2] == pixel_color[2] { continue; }
+                let neighbour_state = state_ids.get(neighbour).unwrap_or(0);
+                let neighbour_owner = owner_ids_by_state.get(&neighbour_state).copied().unwrap_or(0);
+                if owner != 0 && neighbour_owner != 0 && neighbour_owner != owner {
                     country_edge = true;
-                } else if state_id != 0 && state_ids.get(neighbour).copied().unwrap_or(0) != state_id {
+                } else if state_id != 0 && neighbour_state != state_id {
                     state_edge = true;
-                } else if province_ids[neighbour] != province_id {
+                } else {
                     province_edge = true;
                 }
             }
-
             let (color, alpha) = if country_edge {
                 ([232u8, 220u8, 194u8], 150u8)
             } else if state_edge {
                 ([235u8, 198u8, 120u8], 38u8)
             } else if province_edge {
                 ([20u8, 25u8, 31u8], 34u8)
-            } else {
-                continue;
-            };
-            let o = index * 4;
+            } else { continue; };
             overlay[o] = color[0];
             overlay[o + 1] = color[1];
             overlay[o + 2] = color[2];
             overlay[o + 3] = alpha;
         }
     }
-
     let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
     texture.set_filter(FilterMode::Linear);
     texture
 }
 
-fn build_highlighted_state_texture(width: u32, height: u32, state_ids: &[u32], selected_state: u32) -> Texture2D {
+fn build_highlighted_state_texture(width: u32, height: u32, state_ids: &map_pixels::StatePixelIds, selected_state: u32) -> Texture2D {
     let w = width as usize;
     let h = height as usize;
     let mut overlay = vec![0u8; w * h * 4];
     for y in 0..h {
         for x in 0..w {
             let index = y * w + x;
-            if state_ids[index] != selected_state { continue; }
-            let differs = (x > 0 && state_ids[index - 1] != selected_state)
-                || (x + 1 < w && state_ids[index + 1] != selected_state)
-                || (y > 0 && state_ids[index - w] != selected_state)
-                || (y + 1 < h && state_ids[index + w] != selected_state);
+            if state_ids.get(index) != Some(selected_state) { continue; }
+            let differs = (x > 0 && state_ids.get(index - 1) != Some(selected_state))
+                || (x + 1 < w && state_ids.get(index + 1) != Some(selected_state))
+                || (y > 0 && state_ids.get(index - w) != Some(selected_state))
+                || (y + 1 < h && state_ids.get(index + w) != Some(selected_state));
             if differs {
                 let o = index * 4;
                 overlay[o] = 255;
