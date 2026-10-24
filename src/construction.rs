@@ -1032,7 +1032,7 @@ mod tests {
         mods.powered_fraction = 1.0;
         assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 6.0);
         mods.powered_fraction = 0.5;
-        assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 4.95);
+        assert!((daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1) - 4.95).abs() < 0.0001);
         mods.powered_fraction = 0.0;
         assert_eq!(daily_construction_points(&rules, policy, &mods, 1, BuildingType::CivilianFactory, 0, 1), 4.0);
         mods.national_bonus = -0.20;
