@@ -496,7 +496,10 @@ impl CombatRules {
                     self.regiment_rows = v.clamp(1.0, 64.0) as usize;
                     true
                 }
-                "MAX_DIVISION_SUPPORT_WIDTH" => {
+                // WIDTH is the number of columns (one in the base game),
+                // not the number of companies in that column. Reading it as
+                // a capacity discarded almost every multi-support OOB.
+                "MAX_DIVISION_SUPPORT_HEIGHT" => {
                     self.support_slots = v.clamp(0.0, 64.0) as usize;
                     true
                 }
@@ -549,6 +552,18 @@ impl CombatRules {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn support_capacity_uses_height_and_never_column_width() {
+        let mut r = CombatRules::default();
+        r.import_defines(
+            "NDefines.NMilitary.MAX_DIVISION_SUPPORT_WIDTH = 1\nNDefines.NMilitary.MAX_DIVISION_SUPPORT_HEIGHT = 5",
+            "base.lua",
+        );
+        assert_eq!(r.support_slots, 5);
+        r.import_defines("NDefines.NMilitary.MAX_DIVISION_SUPPORT_HEIGHT = 8", "mod.lua");
+        r.import_defines("NDefines.NMilitary.MAX_DIVISION_SUPPORT_WIDTH = 1", "later.lua");
+        assert_eq!(r.support_slots, 8);
+    }
     #[test]
     fn nested_lua_tables_and_namespaced_overrides_keep_land_and_naval_rules_separate() {
         let mut r = CombatRules::default();

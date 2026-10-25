@@ -484,7 +484,7 @@ pub fn initialize(
 mod tests {
     use super::*;
     #[test]
-    fn army_with_engineer_families_imports_every_formation_and_ordered_name() {
+    fn real_support_grid_defines_do_not_discard_armies_with_several_companies() {
         let root = std::env::temp_dir().join(format!(
             "hoi4-army-count-{}-{}",
             std::process::id(),
@@ -500,8 +500,13 @@ mod tests {
         }
         put(
             &root,
+            "common/defines/00.lua",
+            "NDefines = {\nNMilitary = {\nMAX_DIVISION_SUPPORT_WIDTH = 1,\nMAX_DIVISION_SUPPORT_HEIGHT = 5,\n},\n}",
+        );
+        put(
+            &root,
             "common/units/parts.txt",
-            "sub_units={infantry={group=infantry active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 maximum_speed=4 need={rifles=100}} engineer={group=support active=yes same_support_type=engineer max_strength=2 max_organisation=20 manpower=300 need={rifles=10}}}",
+            "sub_units={infantry={group=infantry active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 maximum_speed=4 need={rifles=100}} engineer={group=support active=yes same_support_type=engineer max_strength=2 max_organisation=20 manpower=300 need={rifles=10}} artillery={group=support active=yes same_support_type=artillery max_strength=0.2 manpower=300 need={rifles=12}}}",
         );
         put(
             &root,
@@ -514,7 +519,7 @@ mod tests {
             "if={limit={has_dlc=D} set_oob=wrong else={set_oob=A_1936}} ",
         );
         let mut oob = String::from(
-            "division_template={name=Infantry regiments={infantry={x=0 y=0}} support={engineer={x=0 y=0}}} division_template={name=Mountain regiments={infantry={x=0 y=0}}} units={",
+            "division_template={name=Infantry regiments={infantry={x=0 y=0}} support={engineer={x=0 y=0} artillery={x=0 y=1}}} division_template={name=Mountain regiments={infantry={x=0 y=0}}} units={",
         );
         for i in 1..32 {
             oob.push_str(&format!("division={{division_name={{is_name_ordered=yes name_order={i}}} division_template=Infantry location=1}}"));

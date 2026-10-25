@@ -8,6 +8,7 @@ mod construction_map;
 mod map_camera;
 mod spatial_grid;
 mod map_pixels;
+mod map_borders;
 mod production;
 mod production_ui;
 mod research;
@@ -232,10 +233,8 @@ impl ProvinceMap {
         let political_texture = color_palette.texture_from_rgb(
             width, height, &rgba, 4, MapMode::Political,
         );
-        // One combined static border layer reduces GPU texture memory and draw calls.
-        let map_border_texture = build_map_border_texture(
-            width, height, &rgba, &id_by_rgb, &state_ids_by_pixel, &owner_by_state,
-        );
+        // One combined layer; capture updates replace only affected rectangles.
+        let map_border_texture = build_map_border_texture(world, &rgba);
         let resource_markers = build_resource_markers(
             width, &rgba, &id_by_rgb, &state_by_province, Path::new(STATE_DIRECTORY_PATH),
         );
@@ -318,6 +317,15 @@ impl ProvinceMap {
                 bytes.extend_from_slice(&[color[0],color[1],color[2],255]);
             }}
             self.political_texture.update_part(&Image { bytes,width:w as u16,height:h as u16 },b.min_x as i32,b.min_y as i32,w as i32,h as i32);
+        }
+        let borders = map_borders::BorderRaster::new(world, &self.rgb_pixels, 3);
+        for bounds in map_borders::dirty_regions(world, self.control_revision) {
+            let w = bounds.width();
+            let h = bounds.height();
+            self.map_border_texture.update_part(
+                &Image { bytes: borders.rgba(bounds), width: w as u16, height: h as u16 },
+                bounds.left as i32, bounds.top as i32, w as i32, h as i32,
+            );
         }
         self.control_revision=world.control_revision;
     }
@@ -420,76 +428,13 @@ fn build_state_ids_by_pixel(
     (state_ids, bounds)
 }
 
-/// Single pass border generation without allocating whole-image province and
-/// owner ID arrays. Those two old u32 buffers each consumed width*height*4
-/// temporary bytes (about 44 MiB apiece for a vanilla 5632x2048 map).
-fn build_map_border_texture(
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-    id_by_rgb: &HashMap<[u8; 3], u32>,
-    state_ids: &map_pixels::StatePixelIds,
-    owner_by_state: &HashMap<u32, String>,
-) -> Texture2D {
-    let w = width as usize;
-    let h = height as usize;
-
-    let mut owner_ids_by_tag = HashMap::<&str, u32>::new();
-    let mut owner_ids_by_state = HashMap::<u32, u32>::new();
-    for (&state_id, owner) in owner_by_state {
-        let next_id = owner_ids_by_tag.len() as u32 + 1;
-        let owner_id = *owner_ids_by_tag.entry(owner.as_str()).or_insert(next_id);
-        owner_ids_by_state.insert(state_id, owner_id);
-    }
-
-    let mut overlay = vec![0u8; w * h * 4];
-    for y in 0..h {
-        for x in 0..w {
-            let index = y * w + x;
-            let o = index * 4;
-            let pixel_color = [rgba[o], rgba[o + 1], rgba[o + 2]];
-            if !id_by_rgb.contains_key(&pixel_color) { continue; }
-            let state_id = state_ids.get(index).unwrap_or(0);
-            let owner = owner_ids_by_state.get(&state_id).copied().unwrap_or(0);
-            let mut country_edge = false;
-            let mut state_edge = false;
-            let mut province_edge = false;
-            let neighbours = [
-                if x > 0 { Some(index - 1) } else { None },
-                if x + 1 < w { Some(index + 1) } else { None },
-                if y > 0 { Some(index - w) } else { None },
-                if y + 1 < h { Some(index + w) } else { None },
-            ];
-            for neighbour in neighbours.into_iter().flatten() {
-                let n = neighbour * 4;
-                // Province definition has a one-to-one mapping between RGB and
-                // province IDs, so comparing source RGB avoids another u32 map.
-                if rgba[n] == pixel_color[0] && rgba[n + 1] == pixel_color[1]
-                    && rgba[n + 2] == pixel_color[2] { continue; }
-                let neighbour_state = state_ids.get(neighbour).unwrap_or(0);
-                let neighbour_owner = owner_ids_by_state.get(&neighbour_state).copied().unwrap_or(0);
-                if owner != 0 && neighbour_owner != 0 && neighbour_owner != owner {
-                    country_edge = true;
-                } else if state_id != 0 && neighbour_state != state_id {
-                    state_edge = true;
-                } else {
-                    province_edge = true;
-                }
-            }
-            let (color, alpha) = if country_edge {
-                ([232u8, 220u8, 194u8], 150u8)
-            } else if state_edge {
-                ([235u8, 198u8, 120u8], 38u8)
-            } else if province_edge {
-                ([20u8, 25u8, 31u8], 34u8)
-            } else { continue; };
-            overlay[o] = color[0];
-            overlay[o + 1] = color[1];
-            overlay[o + 2] = color[2];
-            overlay[o + 3] = alpha;
-        }
-    }
-    let texture = Texture2D::from_rgba8(width as u16, height as u16, &overlay);
+/// Use current control for both initial rendering and later capture updates.
+fn build_map_border_texture(world: &World, rgba: &[u8]) -> Texture2D {
+    let borders = map_borders::BorderRaster::new(world, rgba, 4);
+    let overlay = borders.rgba(borders.full_bounds());
+    let texture = Texture2D::from_rgba8(
+        world.geography.width as u16, world.geography.height as u16, &overlay,
+    );
     texture.set_filter(FilterMode::Linear);
     texture
 }
@@ -1871,16 +1816,20 @@ fn draw_map_viewer(
                     draw_ui_text(marker.label, x - tw * 0.5, y + size * 0.35, size, WHITE);
                 }
             }
-            if let Some((_, bounds, highlight_texture)) = &map.highlighted_state_texture {
-                if let Some((src, dest)) = map_pixels::visible_outline(*bounds, source_rect, rect) {
-                    draw_texture_ex(
-                        highlight_texture,
-                        dest.x, dest.y, WHITE,
-                        DrawTextureParams {
-                            source: Some(src), dest_size: Some(vec2(dest.w, dest.h)),
-                            ..Default::default()
-                        },
-                    );
+            // Army selection must not leave a bright administrative outline
+            // over the moving control border. Construction still needs it.
+            if army_view.selected.is_empty() || placing {
+                if let Some((_, bounds, highlight_texture)) = &map.highlighted_state_texture {
+                    if let Some((src, dest)) = map_pixels::visible_outline(*bounds, source_rect, rect) {
+                        draw_texture_ex(
+                            highlight_texture,
+                            dest.x, dest.y, WHITE,
+                            DrawTextureParams {
+                                source: Some(src), dest_size: Some(vec2(dest.w, dest.h)),
+                                ..Default::default()
+                            },
+                        );
+                    }
                 }
             }
             if placing {
