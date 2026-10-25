@@ -45,7 +45,7 @@ pub fn resolve(
     fn alternatives<'a>(b: &'a [Entry], out: &mut Vec<(&'a str, &'a [Entry])>) {
         for e in b
             .iter()
-            .filter(|e| matches!(e.key.as_str(), "else_if" | "else"))
+            .filter(|e| (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")))
         {
             if let Some(b) = e.block() {
                 out.push((&e.key, b));
@@ -72,13 +72,13 @@ pub fn resolve(
                 }
                 continue;
             }
-            if e.key == "if" {
+            if e.key.eq_ignore_ascii_case("if") {
                 let Some(b) = e.block() else {
                     continue;
                 };
                 let mut chain = vec![("if", b)];
                 alternatives(b, &mut chain);
-                while i < entries.len() && matches!(entries[i].key.as_str(), "else_if" | "else") {
+                while i < entries.len() && (entries[i].key.eq_ignore_ascii_case("else") || entries[i].key.eq_ignore_ascii_case("else_if")) {
                     let e = &entries[i];
                     i += 1;
                     if let Some(b) = e.block() {
@@ -89,7 +89,7 @@ pub fn resolve(
                 for (kind, b) in chain {
                     let limit = b
                         .iter()
-                        .find(|e| e.key == "limit")
+                        .find(|e| e.key.eq_ignore_ascii_case("limit"))
                         .and_then(Entry::block)
                         .unwrap_or(&[]);
                     let ctx = TacticContext {
@@ -99,7 +99,7 @@ pub fn resolve(
                         modifiers: m,
                         numbers: BTreeMap::new(),
                     };
-                    let allowed = if kind == "else" {
+                    let allowed = if kind.eq_ignore_ascii_case("else") {
                         Some(true)
                     } else {
                         evaluate_conditions(limit, &ctx)
@@ -108,7 +108,7 @@ pub fn resolve(
                         Some(true) => {
                             let body: Vec<_> = b
                                 .iter()
-                                .filter(|e| !matches!(e.key.as_str(), "limit" | "else_if" | "else"))
+                                .filter(|e| !(e.key.eq_ignore_ascii_case("limit") || e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")))
                                 .cloned()
                                 .collect();
                             walk(&body, tag, m, today, out, diagnostics);
@@ -130,7 +130,7 @@ pub fn resolve(
                 }
                 continue;
             }
-            if matches!(e.key.as_str(), "else" | "else_if") {
+            if (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")) {
                 continue;
             }
             match e.key.as_str() {
@@ -173,6 +173,16 @@ pub fn resolve(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn uppercase_country_history_selects_the_correct_oob_and_keeps_ids() {
+        let raw=crate::pdx::parse_pdx("IF={LIMIT={has_dlc=D} set_oob=ModernCase set_technology={CaSeD=1}} ELSE_IF={LIMIT={always=no} set_oob=Wrong} ELSE={set_oob=LegacyCase}").unwrap();
+        let mut modifiers=crate::military_model::MilitaryModifiers::default();modifiers.dlcs.insert("D".into());
+        let (selected,diagnostics)=super::resolve(&raw,"AAA",&modifiers,crate::game::GameDate::START);
+        assert!(diagnostics.is_empty());assert!(selected.iter().any(|e|e.key=="set_oob"&&e.atom()==Some("ModernCase")));
+        assert!(!selected.iter().any(|e|e.atom()==Some("LegacyCase")||e.atom()==Some("Wrong")));
+        let (selected,_)=super::resolve(&raw,"AAA",&Default::default(),crate::game::GameDate::START);
+        assert!(selected.iter().any(|e|e.key=="set_oob"&&e.atom()==Some("LegacyCase")));
+    }
     use super::*;
     #[test]
     fn nested_and_sibling_else_choose_exactly_one_branch_and_ignore_future_history() {

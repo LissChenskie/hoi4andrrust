@@ -324,6 +324,14 @@ pub fn atom<'a>(b: &'a [Entry], key: &str) -> Option<&'a str> {
 pub fn block<'a>(b: &'a [Entry], key: &str) -> Option<&'a [Entry]> {
     find(b, key)?.block()
 }
+/// Control keywords such as LIMIT are case insensitive; identifier lookups
+/// through block()/find() deliberately keep their original case semantics.
+pub fn keyword_block<'a>(b: &'a [Entry], keyword: &str) -> Option<&'a [Entry]> {
+    b.iter()
+        .rev()
+        .find(|e| e.key.eq_ignore_ascii_case(keyword))?
+        .block()
+}
 pub fn number(b: &[Entry], key: &str) -> Option<f64> {
     atom(b, key)?.parse().ok().filter(|x: &f64| x.is_finite())
 }

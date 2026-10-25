@@ -20,6 +20,8 @@ pub struct Installation {
     pub enabled_dlcs: Vec<String>,
     pub installed_dlcs: Vec<String>,
     pub dlc_selection_verified: bool,
+    #[serde(default)]
+    pub dlc_selection_source: Option<String>,
     pub data_layers: Vec<String>,
     pub load_order_verified: bool,
     pub scenario: Option<String>,
@@ -142,9 +144,37 @@ pub fn installation(root: &Path) -> Installation {
             install
         })
 }
+/// Compatibility for the imported 1.15 branch: these former DLC are part of
+/// the base game. Their legacy has_dlc checks still occur in the source data.
+/// Do not apply a modern entitlement policy to unknown or other versions.
+pub fn base_game_dlcs(install: &Installation) -> BTreeSet<String> {
+    let Some(version) = install
+        .version
+        .as_deref()
+        .filter(|_| install.version_source.is_some())
+    else {
+        return BTreeSet::new();
+    };
+    let mut parts = version.split('.');
+    if parts.next() != Some("1")
+        || parts.next() != Some("15")
+        || parts.next().and_then(|s| s.parse::<u32>().ok()).is_none()
+    {
+        return BTreeSet::new();
+    }
+    [
+        "Together for Victory",
+        "Death or Dishonor",
+        "Waking the Tiger",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
 pub fn profile_context(root: &Path) -> ResearchContext {
     let mut ctx = ResearchContext::default();
     let install = installation(root);
+    ctx.base_game_dlcs = base_game_dlcs(&install);
     if root.join("research-import.json").is_file() {
         ctx.dlcs = install.enabled_dlcs.into_iter().collect();
         ctx.dlc_selection_unverified = !install.dlc_selection_verified;
@@ -154,6 +184,7 @@ pub fn profile_context(root: &Path) -> ResearchContext {
     {
         ctx.dlcs = block(&b, "dlcs").map(names).unwrap_or_default();
     }
+    ctx.dlcs.extend(ctx.base_game_dlcs.iter().cloned());
     ctx
 }
 pub fn effective_files(
@@ -895,7 +926,7 @@ impl ResearchDataset {
             "partially_supported_fields":self.diagnostics.iter().filter(|s|s.contains("частичная поддержка поля")).count(),
             "unresolved_lua_defines":self.diagnostics.iter().filter(|s|s.contains("не вычислено Lua-выражение")).count()
         });
-        serde_json::json!({"expected_technology_ids":self.source_technology_ids,"missing_technology_ids":self.source_technology_ids.difference(&actual_ids).collect::<Vec<_>>(),"unexpected_technology_ids":actual_ids.difference(&self.source_technology_ids).collect::<Vec<_>>(),"failed_source_files":self.failed_source_files,"eof_terminated_sources":self.eof_terminated_sources,"missing_country_ids":self.source_country_ids.iter().filter(|id|!self.histories.contains_key(*id)).collect::<Vec<_>>(),"define_values":self.define_values,"schema":CACHE_VERSION,"installation":self.installation,"fingerprint":self.registry.fingerprint,"source_files":self.files.len(),"technologies":self.registry.technologies.len(),"ids":self.registry.technologies.keys().collect::<Vec<_>>(),"ordinary_technologies":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Standard).count(),"doctrine_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Doctrine).count(),"special_project_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::SpecialProject).count(),"separate_definition_files":self.registry.scripts.sources.values().filter(|s|s.kind=="separate_research_definition").map(|s|&s.source).collect::<BTreeSet<_>>(),"countries":self.histories.len(),"scenarios":scenarios,"diagnostics":self.diagnostics,"diagnostic_summary":diagnostic_summary,"research_rules":self.rules,"rule_sources":self.rule_sources,"technology_definitions":self.registry.technologies,"original_game_timing_comparisons":0,"parity_verified":false})
+        serde_json::json!({"expected_technology_ids":self.source_technology_ids,"missing_technology_ids":self.source_technology_ids.difference(&actual_ids).collect::<Vec<_>>(),"unexpected_technology_ids":actual_ids.difference(&self.source_technology_ids).collect::<Vec<_>>(),"failed_source_files":self.failed_source_files,"eof_terminated_sources":self.eof_terminated_sources,"missing_country_ids":self.source_country_ids.iter().filter(|id|!self.histories.contains_key(*id)).collect::<Vec<_>>(),"define_values":self.define_values,"schema":CACHE_VERSION,"installation":self.installation,"base_game_dlc_features":base_game_dlcs(&self.installation),"fingerprint":self.registry.fingerprint,"source_files":self.files.len(),"technologies":self.registry.technologies.len(),"ids":self.registry.technologies.keys().collect::<Vec<_>>(),"ordinary_technologies":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Standard).count(),"doctrine_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Doctrine).count(),"special_project_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::SpecialProject).count(),"separate_definition_files":self.registry.scripts.sources.values().filter(|s|s.kind=="separate_research_definition").map(|s|&s.source).collect::<BTreeSet<_>>(),"countries":self.histories.len(),"scenarios":scenarios,"diagnostics":self.diagnostics,"diagnostic_summary":diagnostic_summary,"research_rules":self.rules,"rule_sources":self.rule_sources,"technology_definitions":self.registry.technologies,"original_game_timing_comparisons":0,"parity_verified":false})
     }
 }
 fn apply_localisations(
@@ -1391,6 +1422,59 @@ mod tests {
         );
         f.put("launcher-settings.json", "{\"gameVersion\":\"2.test\"}");
         assert_eq!(game_version(&f.0).unwrap().0, "2.test");
+    }
+    #[test]
+    fn bundled_115_features_are_known_without_assuming_paid_dlc_ownership() {
+        let f = fixture();
+        let mut install = Installation {
+            version: Some("1.15.4".into()),
+            version_source: Some("launcher-settings.json:rawVersion".into()),
+            ..Default::default()
+        };
+        atomic_json(&f.0.join("research-import.json"), &install).unwrap();
+        let context = profile_context(&f.0);
+        assert_eq!(context.base_game_dlcs.len(), 3);
+        assert!(context.dlc_selection_unverified);
+        let c = initialize_country(
+            &[],
+            "AAA",
+            GameDate::START,
+            &ResearchCatalogue::default(),
+            &ResearchRules::default(),
+            &context,
+        );
+        assert_eq!(
+            research_script::evaluate(&parse_pdx("has_dlc=\"Waking the Tiger\"").unwrap(), &c),
+            Some(true)
+        );
+        assert_eq!(
+            research_script::evaluate(&parse_pdx("has_dlc=\"No Step Back\"").unwrap(), &c),
+            None
+        );
+        install.dlc_selection_verified = true;
+        atomic_json(&f.0.join("research-import.json"), &install).unwrap();
+        let context = profile_context(&f.0);
+        assert!(context.dlcs.contains("Together for Victory"));
+        assert!(!context.dlcs.contains("No Step Back"));
+        let c = initialize_country(
+            &[],
+            "AAA",
+            GameDate::START,
+            &ResearchCatalogue::default(),
+            &ResearchRules::default(),
+            &context,
+        );
+        assert_eq!(
+            research_script::evaluate(&parse_pdx("has_dlc=\"No Step Back\"").unwrap(), &c),
+            Some(false)
+        );
+        for version in ["1.0", "1.14.2", "1.15.invalid", "1.17.0"] {
+            install.version = Some(version.into());
+            assert!(base_game_dlcs(&install).is_empty());
+        }
+        install.version = Some("1.15.4".into());
+        install.version_source = None;
+        assert!(base_game_dlcs(&install).is_empty());
     }
     #[test]
     fn eof_wrappers_preserve_country_dates_ideas_and_focus_rewards_with_provenance() {

@@ -167,6 +167,8 @@ pub struct ResearchContext {
     pub date: Option<GameDate>,
     pub dlcs: BTreeSet<String>,
     pub dlc_selection_unverified: bool,
+    #[serde(default)]
+    pub base_game_dlcs: BTreeSet<String>,
     pub global_flags: BTreeSet<String>,
     pub completed_focuses: BTreeSet<String>,
     pub ideas: BTreeSet<String>,

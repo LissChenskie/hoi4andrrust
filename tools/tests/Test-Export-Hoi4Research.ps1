@@ -113,6 +113,21 @@ $global:LASTEXITCODE = 0
     & $testScript -ProjectPath $testProject -GamePath (Join-Path $testRoot 'offline game') -UserDataPath $testUserData -ReuseExport
     Assert-Call $testProject (Join-Path $testProject 'data\hoi4')
 
+    # One explicit switch enables all installed DLC, including offline reimport.
+    & $testScript -ProjectPath $testProject -GamePath (Join-Path $testRoot 'offline game') -UserDataPath $testUserData -ReuseExport -AllInstalledDlc
+    Assert-Call $testProject (Join-Path $testProject 'data\hoi4')
+    $allDlcCall = Get-Content -LiteralPath (Join-Path $testProject 'cargo-call.json') -Raw | ConvertFrom-Json
+    Assert-Equal $true ($allDlcCall -contains '--all-installed-dlc') 'AllInstalledDlc was not forwarded'
+    Assert-Equal $false ($allDlcCall -contains '--no-dlc') 'All DLC must not be combined with NoDlc'
+    foreach ($mode in @(@{NoDlc=$true},@{EnabledDlc=@('Authored DLC')})) {
+        $conflictCaught = $false
+        try { & $testScript -ProjectPath $testProject -GamePath $testGame -ReuseExport -AllInstalledDlc @mode } catch {
+            if ($_.Exception.Message -notlike '*Choose one of*') { throw }
+            $conflictCaught = $true
+        }
+        Assert-Equal $true $conflictCaught 'Conflicting DLC switches must fail'
+    }
+
     # Compiler errors must propagate, while the caller's directory is restored.
     Set-Content -LiteralPath (Join-Path $testProject 'fail-cargo') -Value 'fail'
     $caughtFailure = $false

@@ -8,6 +8,7 @@ param(
     [ValidateSet('1936','1939')][string]$Scenario = '1936',
     [string[]]$EnabledDlc = @(),
     [switch]$NoDlc,
+    [switch]$AllInstalledDlc,
     [string[]]$DataLayers = @(),
     [string]$Checksum
 )
@@ -49,8 +50,9 @@ if (Test-Path -LiteralPath (Join-Path $GamePath 'hoi4.exe') -PathType Leaf) {
     $arguments += @('--exe-sha256',(Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash)
 }
 if ($Checksum) { $arguments += @('--checksum',$Checksum) }
-if ($NoDlc -and $EnabledDlc.Count) { throw 'Choose NoDlc or EnabledDlc.' }
+if (($NoDlc -and $AllInstalledDlc) -or ($EnabledDlc.Count -gt 0 -and ($NoDlc -or $AllInstalledDlc))) { throw 'Choose one of NoDlc, EnabledDlc, AllInstalledDlc.' }
 if ($NoDlc) { $arguments += '--no-dlc' }
+if ($AllInstalledDlc) { $arguments += '--all-installed-dlc' }
 foreach ($dlc in $EnabledDlc) { $arguments += @('--dlc',$dlc) }
 foreach ($layer in $DataLayers) { $arguments += @('--layer',$layer) }
 if ($DataLayers.Count) { $arguments += '--layers-verified' }
@@ -59,14 +61,14 @@ try {
     & cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "Exporter exited with code $LASTEXITCODE" }
 } finally { Pop-Location }
-$dlcVerified = $NoDlc -or $EnabledDlc.Count -gt 0
+$dlcVerified = $NoDlc -or $AllInstalledDlc -or $EnabledDlc.Count -gt 0
 $profilePath = Join-Path $OutputPath 'research-import.json'
 if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
     $profile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
     $dlcVerified = $profile.dlc_selection_verified
 }
 if (!$dlcVerified) {
-    Write-Warning 'DLC selection is unknown. Re-run with -EnabledDlc and exact enabled DLC names, or -NoDlc. Installed DLC is not proof that it is active.'
+    Write-Warning 'DLC selection is unknown. Use -AllInstalledDlc only if all installed DLC are enabled, -EnabledDlc with exact names, or -NoDlc.'
 }
 Write-Host "Ready: $OutputPath\research-report.json"
 Write-Host 'The HOI4 checksum cannot be calculated from hoi4.exe. Pass -Checksum only after reading it in the original game.'

@@ -1,6 +1,6 @@
 //! Local data preparation; does not need a GPU or an Android device.
 use hoi4_mobile::research_import::{
-    Installation, ResearchDataset, atomic_json, game_version, installation,
+    Installation, ResearchDataset, atomic_json, base_game_dlcs, game_version, installation,
 };
 use std::{
     fs,
@@ -48,10 +48,39 @@ fn repeated(args: &[String], key: &str) -> Vec<String> {
         .collect()
 }
 fn validate_profile(args: &[String]) -> Result<(), String> {
-    if args.iter().any(|s| s == "--no-dlc") && args.iter().any(|s| s == "--dlc") {
-        return Err("Choose --no-dlc or --dlc".into());
+    if ["--no-dlc", "--dlc", "--all-installed-dlc"]
+        .iter()
+        .filter(|flag| args.iter().any(|s| s == **flag))
+        .count()
+        > 1
+    {
+        return Err("Choose one of --no-dlc, --dlc, --all-installed-dlc".into());
     }
     Ok(())
+}
+/// All installed DLC are enabled only on the user's explicit instruction.
+/// Neither installation metadata nor an old journal makes this selection.
+fn select_dlcs(
+    args: &[String],
+    installed: &[String],
+) -> Result<Option<(Vec<String>, &'static str)>, String> {
+    validate_profile(args)?;
+    if args.iter().any(|s| s == "--all-installed-dlc") {
+        if installed.is_empty() || installed.iter().any(|s| s.starts_with("UNPARSED:")) {
+            return Err("A complete installed DLC list is required for --all-installed-dlc. Make a fresh export or specify --dlc names.".into());
+        }
+        let mut names = installed.to_vec();
+        names.sort();
+        names.dedup();
+        return Ok(Some((names, "user:all_installed")));
+    }
+    if args.iter().any(|s| s == "--no-dlc") {
+        return Ok(Some((Vec::new(), "user:no_dlc")));
+    }
+    if args.iter().any(|s| s == "--dlc") {
+        return Ok(Some((repeated(args, "--dlc"), "user:explicit_list")));
+    }
+    Ok(None)
 }
 fn copy_metadata(game: &Path, output: &Path) -> Result<(), String> {
     for name in ["launcher-settings.json", "version.txt"] {
@@ -107,13 +136,19 @@ fn refresh_metadata(root: &Path, args: &[String]) -> Result<(), String> {
     if let Some(scenario) = arg(args, "--scenario") {
         install.scenario = Some(scenario);
     }
-    if args.iter().any(|s| s == "--no-dlc" || s == "--dlc") {
-        install.enabled_dlcs = repeated(args, "--dlc");
+    if let Some((enabled, source)) = select_dlcs(args, &install.installed_dlcs)? {
+        install.enabled_dlcs = enabled;
         install.dlc_selection_verified = true;
+        install.dlc_selection_source = Some(source.into());
         let path = root.join("military_profile.txt");
         let mut profile = fs::read_to_string(&path).unwrap_or_default();
-        let names = install
+        let effective = install
             .enabled_dlcs
+            .iter()
+            .cloned()
+            .chain(base_game_dlcs(&install))
+            .collect::<std::collections::BTreeSet<_>>();
+        let names = effective
             .iter()
             .map(|s| format!("\"{}\"", s.replace('\\', "/").replace('"', "\\\"")))
             .collect::<Vec<_>>()
@@ -229,7 +264,11 @@ fn export(args: &[String]) -> Result<(), String> {
         dlcs(&game.join("dlc"), &mut installed)?;
         installed.sort();
         installed.dedup();
-        let enabled = repeated(args, "--dlc");
+        let selection = select_dlcs(args, &installed)?;
+        let enabled = selection
+            .as_ref()
+            .map(|(names, _)| names.clone())
+            .unwrap_or_default();
         let (version, version_source) = if let Some(version) = arg(args, "--version") {
             (Some(version), Some("command line --version".into()))
         } else {
@@ -243,7 +282,8 @@ fn export(args: &[String]) -> Result<(), String> {
             executable_sha256: arg(args, "--exe-sha256"),
             enabled_dlcs: enabled.clone(),
             installed_dlcs: installed,
-            dlc_selection_verified: args.iter().any(|s| s == "--no-dlc" || s == "--dlc"),
+            dlc_selection_verified: selection.is_some(),
+            dlc_selection_source: selection.as_ref().map(|(_, source)| (*source).into()),
             load_order_verified: layers.is_empty() || args.iter().any(|s| s == "--layers-verified"),
             data_layers: layers.clone(),
             scenario: arg(args, "--scenario"),
@@ -252,11 +292,16 @@ fn export(args: &[String]) -> Result<(), String> {
         atomic_json(&staging.join("research-import.json"), &install)?;
         // Existing military import consumes the same explicit order and DLC selection.
         let quote = |s: &str| format!("\"{}\"", s.replace('\\', "/").replace('"', "\\\""));
+        let effective = enabled
+            .iter()
+            .cloned()
+            .chain(base_game_dlcs(&install))
+            .collect::<std::collections::BTreeSet<_>>();
         fs::write(
             staging.join("military_profile.txt"),
             format!(
                 "dlcs = {{ {} }}\ndata_layers = {{ {} }}\n",
-                enabled
+                effective
                     .iter()
                     .map(|s| quote(s))
                     .collect::<Vec<_>>()
@@ -311,6 +356,41 @@ fn compile(root: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
     #[test]
+    fn all_installed_is_explicit_and_requires_complete_metadata() {
+        let installed = vec![
+            "Authored Z".into(),
+            "Authored A".into(),
+            "Authored Z".into(),
+        ];
+        assert_eq!(select_dlcs(&[], &installed).unwrap(), None);
+        let all = vec!["--all-installed-dlc".into()];
+        assert_eq!(
+            select_dlcs(&all, &installed).unwrap(),
+            Some((
+                vec!["Authored A".into(), "Authored Z".into()],
+                "user:all_installed"
+            ))
+        );
+        assert!(select_dlcs(&all, &[]).is_err());
+        assert!(select_dlcs(&all, &["UNPARSED: broken.dlc".into()]).is_err());
+        for flags in [
+            vec!["--all-installed-dlc", "--no-dlc"],
+            vec!["--all-installed-dlc", "--dlc", "Authored A"],
+            vec!["--no-dlc", "--dlc", "Authored A"],
+        ] {
+            let args = flags.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert!(select_dlcs(&args, &installed).is_err());
+        }
+        assert_eq!(
+            select_dlcs(&["--no-dlc".into()], &installed).unwrap(),
+            Some((Vec::new(), "user:no_dlc"))
+        );
+        assert_eq!(
+            select_dlcs(&["--dlc".into(), "Authored A".into()], &installed).unwrap(),
+            Some((vec!["Authored A".into()], "user:explicit_list"))
+        );
+    }
+    #[test]
     fn reimport_preserves_profile_and_separates_legacy_exe_version() {
         let root =
             std::env::temp_dir().join(format!("hoi4-reimport-profile-{}", std::process::id()));
@@ -319,6 +399,7 @@ mod tests {
             version: Some("1.0".into()),
             scenario: Some("1939".into()),
             enabled_dlcs: vec!["Authored DLC".into()],
+            installed_dlcs: vec!["Authored DLC".into(), "Another DLC".into()],
             dlc_selection_verified: true,
             data_layers: vec!["layers/one".into()],
             ..Default::default()
@@ -337,6 +418,25 @@ mod tests {
         assert!(install.dlc_selection_verified);
         assert!(install.version.is_none());
         assert_eq!(install.executable_version.as_deref(), Some("1.0"));
+        refresh_metadata(&root, &["--all-installed-dlc".into()]).unwrap();
+        let install = installation(&root);
+        assert!(install.dlc_selection_verified);
+        assert_eq!(
+            install.dlc_selection_source.as_deref(),
+            Some("user:all_installed")
+        );
+        assert_eq!(install.enabled_dlcs, vec!["Another DLC", "Authored DLC"]);
+        let profile = hoi4_mobile::pdx::parse_pdx(
+            &fs::read_to_string(root.join("military_profile.txt")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            hoi4_mobile::pdx::names(hoi4_mobile::pdx::block(&profile, "dlcs").unwrap())
+                .into_iter()
+                .collect::<Vec<_>>(),
+            install.enabled_dlcs
+        );
+        assert_eq!(install.data_layers, original.data_layers);
         fs::write(
             root.join("launcher-settings.json"),
             "{\"rawVersion\":\"1.test\"}",
@@ -362,7 +462,7 @@ fn main() {
             let root=Path::new(args.get(1).map(String::as_str).unwrap_or("data/hoi4"));
             refresh_metadata(root,&args[2.min(args.len())..]).and_then(|_|compile(root))
         },
-        _=>Err("Usage: hoi4-research export --game <folder> [--out data/hoi4] [--dlc <exact name> | --no-dlc] [--layer <directory>] | import [data/hoi4] | audit [data/hoi4] [--game <folder>] [--dlc <exact name> | --no-dlc]".into())
+        _=>Err("Usage: hoi4-research export --game <folder> [--out data/hoi4] [--dlc <exact name> | --no-dlc | --all-installed-dlc] [--layer <directory>] | import [data/hoi4] | audit [data/hoi4] [--game <folder>] [--dlc <exact name> | --no-dlc | --all-installed-dlc]".into())
     };
     if let Err(e) = result {
         eprintln!("Research import failed: {e}");

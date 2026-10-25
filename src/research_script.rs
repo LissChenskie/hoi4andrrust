@@ -99,12 +99,11 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
         return vec![None];
     }
     fn alternatives<'a>(body: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
-        for e in body
-            .iter()
-            .filter(|e| matches!(e.key.as_str(), "else_if" | "else"))
-        {
+        for e in body.iter().filter(|e| {
+            (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+        }) {
             if let Some(b) = e.block() {
-                out.push((e.key == "else", b));
+                out.push((e.key.eq_ignore_ascii_case("else"), b));
                 alternatives(b, out);
             }
         }
@@ -113,12 +112,14 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
     let mut index = 0;
     while let Some(e) = entries.get(index) {
         index += 1;
-        if e.key != "if" {
-            result.push(if matches!(e.key.as_str(), "else" | "else_if") {
-                None
-            } else {
-                predicate(e, c, depth)
-            });
+        if !e.key.eq_ignore_ascii_case("if") {
+            result.push(
+                if (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")) {
+                    None
+                } else {
+                    predicate(e, c, depth)
+                },
+            );
             continue;
         }
         let Some(body) = e.block() else {
@@ -127,11 +128,14 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
         };
         let mut chain = vec![(false, body)];
         alternatives(body, &mut chain);
-        while index < entries.len() && matches!(entries[index].key.as_str(), "else" | "else_if") {
+        while index < entries.len()
+            && (entries[index].key.eq_ignore_ascii_case("else")
+                || entries[index].key.eq_ignore_ascii_case("else_if"))
+        {
             let branch = &entries[index];
             index += 1;
             if let Some(body) = branch.block() {
-                chain.push((branch.key == "else", body));
+                chain.push((branch.key.eq_ignore_ascii_case("else"), body));
                 alternatives(body, &mut chain);
             }
         }
@@ -140,7 +144,11 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
             match if otherwise {
                 Some(true)
             } else {
-                evaluate_depth(block(body, "limit").unwrap_or(&[]), c, depth + 1)
+                evaluate_depth(
+                    crate::pdx::keyword_block(body, "limit").unwrap_or(&[]),
+                    c,
+                    depth + 1,
+                )
             } {
                 Some(false) => continue,
                 None => {
@@ -150,7 +158,11 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
                 Some(true) => {
                     let selected = body
                         .iter()
-                        .filter(|e| !matches!(e.key.as_str(), "limit" | "else" | "else_if"))
+                        .filter(|e| {
+                            !(e.key.eq_ignore_ascii_case("limit")
+                                || e.key.eq_ignore_ascii_case("else")
+                                || e.key.eq_ignore_ascii_case("else_if"))
+                        })
                         .cloned()
                         .collect::<Vec<_>>();
                     value = evaluate_depth(&selected, c, depth + 1);
@@ -213,7 +225,9 @@ fn predicate(e: &Entry, c: &CountryResearch, d: u8) -> Option<bool> {
             .map(|units| raw.map(|id| units.contains(id)))
             .flatten(),
         "has_dlc" => {
-            if ctx.dlc_selection_unverified {
+            if raw.is_some_and(|id| ctx.base_game_dlcs.contains(id)) {
+                Some(true)
+            } else if ctx.dlc_selection_unverified {
                 None
             } else {
                 raw.map(|v| ctx.dlcs.contains(v))
@@ -359,26 +373,28 @@ fn execute(
         }
         *budget -= 1;
         let nested = e.block().unwrap_or(&[]);
-        if e.key == "if" {
+        if e.key.eq_ignore_ascii_case("if") {
             let chain_start = index - 1;
             let mut alternatives = vec![(false, nested)];
             fn collect<'a>(b: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
-                for e in b
-                    .iter()
-                    .filter(|e| matches!(e.key.as_str(), "else" | "else_if"))
-                {
+                for e in b.iter().filter(|e| {
+                    (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+                }) {
                     if let Some(b) = e.block() {
-                        out.push((e.key == "else", b));
+                        out.push((e.key.eq_ignore_ascii_case("else"), b));
                         collect(b, out);
                     }
                 }
             }
             collect(nested, &mut alternatives);
-            while index < b.len() && matches!(b[index].key.as_str(), "else" | "else_if") {
+            while index < b.len()
+                && (b[index].key.eq_ignore_ascii_case("else")
+                    || b[index].key.eq_ignore_ascii_case("else_if"))
+            {
                 let e = &b[index];
                 index += 1;
                 if let Some(b) = e.block() {
-                    alternatives.push((e.key == "else", b));
+                    alternatives.push((e.key.eq_ignore_ascii_case("else"), b));
                     collect(b, &mut alternatives);
                 }
             }
@@ -387,14 +403,22 @@ fn execute(
                     Some(true)
                 } else {
                     evaluate(
-                        &expand_triggers(block(body, "limit").unwrap_or(&[]), &cat.scripts, 0),
+                        &expand_triggers(
+                            crate::pdx::keyword_block(body, "limit").unwrap_or(&[]),
+                            &cat.scripts,
+                            0,
+                        ),
                         c,
                     )
                 } {
                     Some(true) => {
                         let selected: Vec<_> = body
                             .iter()
-                            .filter(|e| !matches!(e.key.as_str(), "limit" | "else" | "else_if"))
+                            .filter(|e| {
+                                !(e.key.eq_ignore_ascii_case("limit")
+                                    || e.key.eq_ignore_ascii_case("else")
+                                    || e.key.eq_ignore_ascii_case("else_if"))
+                            })
                             .cloned()
                             .collect();
                         execute(c, &selected, cat, rules, date, source, depth + 1, budget);
@@ -737,6 +761,13 @@ impl crate::research::ResearchWorld {
 pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     for e in entries {
+        if ["if", "else", "else_if", "limit"]
+            .iter()
+            .any(|key| e.key.eq_ignore_ascii_case(key))
+        {
+            out.extend(unsupported_predicates(e.block().unwrap_or(&[])));
+            continue;
+        }
         match e.key.as_str() {
             "AND" | "and" | "OR" | "or" | "NOT" | "not" | "NOR" | "nor" | "NAND" | "nand"
             | "ROOT" | "THIS" | "hidden_trigger" | "if" | "else_if" | "else" | "limit" => {
@@ -782,6 +813,29 @@ pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
 #[cfg(test)]
 mod global_flag_tests {
     use super::*;
+    #[test]
+    fn uppercase_control_keywords_preserve_technology_ids_and_unknown_guards() {
+        let rules = ResearchRules::default();
+        let mut cat = ResearchCatalogue::default();
+        crate::research_data::parse_technology_file("technologies={CaSeD={} Legacy={}}", &mut cat)
+            .unwrap();
+        let b=crate::pdx::parse_pdx("IF={LIMIT={has_dlc=D} set_technology={CaSeD=1}} ELSE_IF={LIMIT={always=no} set_technology={Legacy=1}} ELSE={set_country_flag=Fallback}").unwrap();
+        let mut c = CountryResearch::new(1, &rules);
+        c.context.dlc_selection_unverified = true;
+        apply_effects(&mut c, &b, &cat, &rules, GameDate::START, "fixture");
+        assert!(c.researched.is_empty());
+        assert!(!c.flags.contains("Fallback"));
+        c.context.dlc_selection_unverified = false;
+        c.context.dlcs.insert("D".into());
+        apply_effects(&mut c, &b, &cat, &rules, GameDate::START, "fixture");
+        assert!(c.researched.contains("CaSeD"));
+        assert!(!c.researched.contains("Legacy"));
+        let trigger =
+            crate::pdx::parse_pdx("IF={LIMIT={has_dlc=D} has_tech=CaSeD} ELSE={always=no}")
+                .unwrap();
+        assert_eq!(evaluate(&trigger, &c), Some(true));
+        assert!(unsupported_predicates(&trigger).is_empty());
+    }
     #[test]
     fn conditional_triggers_select_branches_and_keep_unknown() {
         let mut c = CountryResearch::new(1, &ResearchRules::default());
