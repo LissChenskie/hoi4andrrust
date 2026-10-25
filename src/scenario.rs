@@ -15,6 +15,13 @@ pub struct LoadedScenario {
 }
 
 pub fn load(root: &Path, names: &HashMap<u32, String>) -> Result<LoadedScenario, String> {
+    load_at(root, names, GameDate::START)
+}
+pub fn load_at(
+    root: &Path,
+    names: &HashMap<u32, String>,
+    start: GameDate,
+) -> Result<LoadedScenario, String> {
     let map_directory = root.join("map");
     let bitmap = image::open(map_directory.join("provinces.bmp"))
         .map_err(|error| format!("Could not load province geography: {error}"))?
@@ -67,19 +74,18 @@ pub fn load(root: &Path, names: &HashMap<u32, String>) -> Result<LoadedScenario,
             .push("Named strait rules require future diplomatic/naval permission checks".into());
     }
     let state_directory = root.join("history/states");
-    let membership =
-        match state::load_state_membership(&state_directory, &root.join("common/state_category")) {
-            Ok(data) => data,
-            Err(error) => {
-                diagnostics.push(error);
-                StateMembership::default()
-            }
-        };
-    let date = (
-        GameDate::START.year,
-        u32::from(GameDate::START.month),
-        u32::from(GameDate::START.day),
-    );
+    let membership = match state::load_state_membership_at(
+        &state_directory,
+        &root.join("common/state_category"),
+        start,
+    ) {
+        Ok(data) => data,
+        Err(error) => {
+            diagnostics.push(error);
+            StateMembership::default()
+        }
+    };
+    let date = (start.year, u32::from(start.month), u32::from(start.day));
     let mut owners = HashMap::new();
     let mut controllers = HashMap::new();
     if let Ok(entries) = fs::read_dir(&state_directory) {

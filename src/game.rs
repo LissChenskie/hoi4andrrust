@@ -1,6 +1,8 @@
 //! Deterministic game-time state, kept separate from rendering and input.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct GameDate {
     pub year: u32,
     pub month: u8,

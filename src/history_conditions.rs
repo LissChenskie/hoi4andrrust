@@ -18,6 +18,9 @@ fn date(raw: &str) -> Option<GameDate> {
     Some(GameDate { year, month, day })
 }
 pub fn profile_dlcs(root: &Path) -> BTreeSet<String> {
+    if root.join("research-import.json").is_file() {
+        return hoi4_mobile::research_import::profile_context(root).dlcs;
+    }
     std::fs::read_to_string(root.join("military_profile.txt"))
         .ok()
         .and_then(|s| parse_pdx(&s).ok())

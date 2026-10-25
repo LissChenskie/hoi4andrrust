@@ -86,6 +86,22 @@ impl Default for ProductionRules {
 }
 
 impl ProductionRules {
+    pub fn for_research(&self, c: Option<&crate::research::CountryResearch>) -> Self {
+        let mut r = *self;
+        if let Some(c) = c {
+            r.factory_output_bonus += c.modifier("industrial_capacity_factory");
+            r.efficiency_cap = (r.efficiency_cap
+                + c.modifier("production_factory_max_efficiency_factor"))
+            .max(0.0);
+            r.efficiency_growth *=
+                (1.0 + c.modifier("production_factory_efficiency_gain_factor")).max(0.0);
+            r.starting_efficiency = (r.starting_efficiency
+                + c.modifier("production_factory_start_efficiency_factor"))
+            .clamp(0.0, r.efficiency_cap.max(0.0));
+        }
+        r
+    }
+
     pub fn ic_per_factory(&self) -> f64 {
         let power = self.powered_fraction.clamp(0.0, 1.0);
         let output = self.base_factory_output

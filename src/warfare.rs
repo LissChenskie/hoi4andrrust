@@ -96,6 +96,48 @@ impl Warfare {
                     .military_access
                     .contains(&(country.into(), controller.into())))
     }
+    pub fn use_research_registry(
+        &mut self,
+        registry: &crate::research::ResearchCatalogue,
+        research: &ResearchWorld,
+    ) {
+        let db = std::sync::Arc::make_mut(&mut self.catalogue);
+        db.technologies.clear();
+        for t in registry.technologies.values() {
+            let mut effect = TechnologyEffects::default();
+            effect.country = t.modifiers.clone();
+            for e in &t.effects {
+                match e {
+                    crate::research::TechnologyEffect::ScopedModifier { scope, values } => {
+                        if db.equipment.contains_key(scope) {
+                            effect.equipment.insert(scope.clone(), values.clone());
+                        } else if db.units.contains_key(scope) || scope.starts_with("category_") {
+                            effect.units.insert(scope.clone(), values.clone());
+                        }
+                    }
+                    crate::research::TechnologyEffect::Unlock { kind, id, limit }
+                        if limit.is_empty() =>
+                    {
+                        match kind.as_str() {
+                            "enable_subunits" => {
+                                effect.unlock_units.insert(id.clone());
+                            }
+                            "enable_equipments" => {
+                                effect.unlock_equipment.insert(id.clone());
+                            }
+                            "enable_tactic" => {
+                                effect.unlock_tactics.insert(id.clone());
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            db.technologies.insert(t.id.clone(), effect);
+        }
+        self.refresh_modifiers(research);
+    }
     pub fn refresh_modifiers(&mut self, research: &ResearchWorld) {
         for (tag, country) in &mut self.countries {
             let known = research
@@ -109,6 +151,22 @@ impl Warfare {
             m.flags = country.modifiers.flags.clone();
             if let Some(c) = research.country(tag) {
                 m.flags.extend(c.flags.iter().cloned());
+                for unlock in &c.unlocks {
+                    if let Some((kind, id)) = unlock.split_once(':') {
+                        match kind {
+                            "enable_subunits" => {
+                                m.unlocked_units.insert(id.into());
+                            }
+                            "enable_equipments" => {
+                                m.unlocked_equipment.insert(id.into());
+                            }
+                            "enable_tactic" => {
+                                m.unlocked_tactics.insert(id.into());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
             m.dlcs = country.modifiers.dlcs.clone();
             for tech in &known {
@@ -1798,5 +1856,41 @@ pub(crate) mod tests {
         assert_eq!(p.country("A").unwrap().model_stockpile["rifle"], 7);
         assert_eq!(w.countries["A"].manpower_pool, 500);
         assert!(w.disband("A", 1, &mut p).is_err());
+    }
+}
+
+#[cfg(test)]
+mod research_registry_integration {
+    use super::*;
+    #[test]
+    fn registry_effects_change_real_template_stats_without_double_application() {
+        let db = crate::military_model::tests::catalogue();
+        let template = crate::military_model::tests::template();
+        let before = db
+            .aggregate(&template, &MilitaryModifiers::default(), None)
+            .unwrap();
+        let mut registry = crate::research::ResearchCatalogue::default();
+        crate::research_data::parse_technology_file("technologies={training={research_cost=1 modifier={army_attack_factor=0.2} infantry={soft_attack=0.3}}}",&mut registry).unwrap();
+        let rules = crate::research::ResearchRules::default();
+        let mut research = ResearchWorld::default();
+        research
+            .country_mut("AAA", 1, &rules)
+            .grant("training", &registry);
+        let mut warfare = Warfare::new(db);
+        warfare.use_research_registry(&registry, &research);
+        let known = &research.country("AAA").unwrap().researched;
+        let m = MilitaryModifiers::from_research(&warfare.catalogue, known);
+        let once = warfare.catalogue.aggregate(&template, &m, None).unwrap();
+        assert!(once.stats.soft_attack > before.stats.soft_attack);
+        warfare.use_research_registry(&registry, &research);
+        let twice = warfare
+            .catalogue
+            .aggregate(
+                &template,
+                &MilitaryModifiers::from_research(&warfare.catalogue, known),
+                None,
+            )
+            .unwrap();
+        assert_eq!(once.stats.soft_attack, twice.stats.soft_attack);
     }
 }

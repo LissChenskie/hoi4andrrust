@@ -662,6 +662,22 @@ pub fn draw_chrome(
                 ui::GOLD,
             );
         }
+        if let Some(c) = tag.and_then(|t| research.country(t)) {
+            if let Some(id) = c.completed.last() {
+                let r = Rect::new(x + 88.0, l.top + 8.0, 39.0, 31.0);
+                if x + 150.0 < l.outliner().x
+                    && icon_button(
+                        Icon::Research,
+                        r,
+                        true,
+                        "Исследование завершено",
+                        &format!("{id}. Нажмите, чтобы открыть исследования."),
+                    )
+                {
+                    actions.push(Action::Open(Panel::Research));
+                }
+            }
+        }
         let used = tag.and_then(|t| prod.country(t)).map_or(0, |c| {
             c.lines.iter().map(|l| l.requested_factories).sum::<u32>()
         });

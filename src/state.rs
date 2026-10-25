@@ -473,6 +473,9 @@ fn load_state_category_slots(directory: &Path) -> Result<HashMap<String, u16>, S
 }
 
 pub fn load_state_membership(directory: &Path, category_directory: &Path) -> Result<StateMembership, String> {
+    load_state_membership_at(directory,category_directory,crate::game::GameDate::START)
+}
+pub fn load_state_membership_at(directory:&Path,category_directory:&Path,date:crate::game::GameDate)->Result<StateMembership,String>{
     let entries = fs::read_dir(directory)
         .map_err(|error| format!("Could not read state directory {}: {error}", directory.display()))?;
     let mut paths: Vec<PathBuf> = entries
@@ -496,7 +499,8 @@ pub fn load_state_membership(directory: &Path, category_directory: &Path) -> Res
         let definitions = parse_state_file(&source)
             .map_err(|error| format!("{}: {error}", path.display()))?;
 
-        for state in definitions {
+        for mut state in definitions {
+            state.economy=economy_at(&source,state.id,date)?;
             if !state_ids.insert(state.id) {
                 return Err(format!("Duplicate state ID {} (found in {})", state.id, path.display()));
             }
@@ -662,5 +666,80 @@ mod tests {
     fn rejects_duplicate_provinces_within_state() {
         let source = "state = { id = 1 provinces = { 2 2 } }";
         assert!(parse_state_file(source).unwrap_err().contains("lists province 2 more than once"));
+    }
+}
+
+
+fn economy_at(source: &str, id: u32, date: crate::game::GameDate) -> Result<StateEconomy, String> {
+    use crate::pdx::{Entry, atom, block, parse_pdx};
+    fn apply(b: &[Entry], date: crate::game::GameDate, e: &mut StateEconomy) {
+        let mut dated = Vec::new();
+        for entry in b {
+            if entry.key == "buildings" {
+                for v in entry.block().unwrap_or(&[]) {
+                    if let Some(n) = v.atom().and_then(|s| s.parse::<u16>().ok()) {
+                        match v.key.as_str() {
+                            "infrastructure" => e.infrastructure = n,
+                            "industrial_complex" => e.civilian_factories = n,
+                            "arms_factory" => e.military_factories = n,
+                            "dockyard" => e.dockyards = n,
+                            "synthetic_refinery" => e.synthetic_refineries = n,
+                            "fuel_silo" => e.fuel_silos = n,
+                            "rocket_site" => e.rocket_sites = n,
+                            "nuclear_reactor" => e.nuclear_reactors = n,
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            if let Some(at) = hoi4_mobile::research_script::parse_date(&entry.key) {
+                if at <= date {
+                    dated.push((at, entry));
+                }
+            }
+        }
+        dated.sort_by_key(|(d, _)| *d);
+        for (_, entry) in dated {
+            apply(entry.block().unwrap_or(&[]), date, e);
+        }
+    }
+    let b = parse_pdx(source)?;
+    let mut economy = StateEconomy::default();
+    if let Some(b) = b
+        .iter()
+        .filter(|e| e.key == "state")
+        .filter_map(Entry::block)
+        .find(|b| atom(b, "id").and_then(|s| s.parse().ok()) == Some(id))
+    {
+        apply(b, date, &mut economy);
+        apply(block(b, "history").unwrap_or(&[]), date, &mut economy);
+    }
+    Ok(economy)
+}
+
+#[cfg(test)]
+mod bookmark_economy_tests {
+    use super::*;
+    #[test]
+    fn dated_industry_uses_latest_block_not_after_the_scenario() {
+        let s = "state={id=1 provinces={1} history={owner=AAA buildings={arms_factory=2 industrial_complex=3} 1939.1.1={buildings={arms_factory=7}} 1940.1.1={buildings={arms_factory=10}}}}";
+        assert_eq!(
+            economy_at(s, 1, crate::game::GameDate::START)
+                .unwrap()
+                .military_factories,
+            2
+        );
+        let later = economy_at(
+            s,
+            1,
+            crate::game::GameDate {
+                year: 1939,
+                month: 8,
+                day: 14,
+            },
+        )
+        .unwrap();
+        assert_eq!(later.military_factories, 7);
+        assert_eq!(later.civilian_factories, 3);
     }
 }

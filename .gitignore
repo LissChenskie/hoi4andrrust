@@ -1,5 +1,4 @@
 /target/
-/data/hoi4/
-/assets/local-game-data/
-.DS_Store
-Thumbs.db
+/Cargo.lock
+/data/
+*.tmp

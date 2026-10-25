@@ -78,7 +78,7 @@ mod tests {
         ]);
         assert_eq!(grid.visible(Rect::new(100.0, 120.0, 170.0, 150.0)), vec![1, 3]);
         assert_eq!(grid.visible(Rect::new(980.0, 980.0, 44.0, 44.0)), vec![2]);
-        assert_eq!(grid.visible(Rect::new(-100.0, -100.0, 110.0, 110.0)), vec![]);
+        assert!(grid.visible(Rect::new(-100.0, -100.0, 110.0, 110.0)).is_empty());
     }
 
     #[test]

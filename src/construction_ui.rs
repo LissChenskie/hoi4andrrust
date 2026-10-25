@@ -266,6 +266,7 @@ pub fn draw(
     notice: &mut String,
     view: &mut ConstructionView,
     current_date: GameDate,
+    modifiers: &ConstructionModifiers,
 ) {
     if !view.open {
         return;
@@ -451,7 +452,7 @@ pub fn draw(
         let daily = construction::daily_construction_points(
             rules,
             *policy,
-            &ConstructionModifiers::default(),
+            modifiers,
             key.state_id,
             project.building,
             *infrastructure,

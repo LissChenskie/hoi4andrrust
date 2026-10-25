@@ -27,6 +27,7 @@ pub struct GameSession {
     pub clock: GameState,
     pub player_country: Option<String>,
     pub construction_queues: ConstructionQueues,
+    pub base_shared_slots: BTreeMap<u32, u16>,
     pub construction: BTreeMap<String, CountryConstruction>,
     pub production: ProductionState,
     pub research: ResearchWorld,
@@ -48,6 +49,11 @@ impl GameSession {
             .map(|tag| (tag, CountryConstruction::default()))
             .collect();
         Self {
+            base_shared_slots: world
+                .states
+                .iter()
+                .map(|(id, s)| (*id, s.shared_building_slots))
+                .collect(),
             world,
             construction,
             clock: GameState::default(),
@@ -60,7 +66,7 @@ impl GameSession {
     }
 
     /// Apply every country's starting history BEFORE any AI or daily tick.
-    /// Missing/unsupported history is reported and uses an explicit 3-slot fallback.
+    /// Missing history is reported and receives zero slots; no national start is invented.
     pub fn initialize_research(
         &mut self,
         history: &Path,
@@ -76,10 +82,10 @@ impl GameSession {
                 Ok(start) => start,
                 Err(error) => {
                     diagnostics.push(error);
-                    (Some(3), Default::default())
+                    (Some(0), Default::default())
                 }
             };
-            let country = self.research.country_mut(tag, slots.unwrap_or(3), rules);
+            let country = self.research.country_mut(tag, slots.unwrap_or(0), rules);
             for tech in known {
                 if !country.researched.contains(&tech) && !country.grant(&tech, catalogue) {
                     // Known history remains authoritative even when the UI
@@ -94,6 +100,95 @@ impl GameSession {
         diagnostics
     }
 
+    pub fn initialize_research_dataset(
+        &mut self,
+        data: &hoi4_mobile::research_import::ResearchDataset,
+        root: &Path,
+    ) {
+        let tags: std::collections::BTreeSet<_> = data
+            .histories
+            .keys()
+            .chain(self.world.countries.keys())
+            .cloned()
+            .collect();
+        for tag in tags {
+            if let Some(c) = data.country(&tag, self.clock.date, root) {
+                self.research.countries.insert(tag, c);
+            } else {
+                let c = self.research.country_mut(&tag, 0, &data.rules);
+                c.context.tag = tag.clone();
+                c.context.original_tag = tag.clone();
+                eprintln!("[research] {tag}: история отсутствует, слоты не выдуманы");
+            }
+        }
+        self.research.global_flags = self
+            .research
+            .countries
+            .values()
+            .flat_map(|c| c.context.global_flags.iter().cloned())
+            .collect();
+        for c in self.research.countries.values_mut() {
+            c.context.global_flags = self.research.global_flags.clone();
+        }
+        self.research.refresh_sharing(&data.registry);
+        self.refresh_research_building_slots();
+    }
+    pub fn refresh_research_building_slots(&mut self) {
+        for (id, state) in &mut self.world.states {
+            let bonus = state
+                .owner
+                .as_deref()
+                .and_then(|tag| self.research.country(tag))
+                .map_or(0.0, |c| c.modifier("global_building_slots_factor"));
+            if let Some(base) = self.base_shared_slots.get(id) {
+                state.shared_building_slots = (*base as f64 * (1.0 + bonus).max(0.0))
+                    .floor()
+                    .clamp(0.0, u16::MAX as f64)
+                    as u16;
+            }
+        }
+    }
+    /// Research component only. A full campaign save is a separate, still missing subsystem.
+    pub fn save_research_snapshot(
+        &self,
+        path: &Path,
+        cat: &ResearchCatalogue,
+    ) -> Result<(), String> {
+        hoi4_mobile::research_import::save_snapshot(
+            path,
+            &self.research,
+            cat,
+            self.clock.date,
+            self.clock.hour,
+        )
+    }
+    pub fn restore_research_snapshot(
+        &mut self,
+        path: &Path,
+        cat: &ResearchCatalogue,
+    ) -> Result<(), String> {
+        let (research, date, hour) = hoi4_mobile::research_import::load_snapshot(path, cat)?;
+        if date != self.clock.date || hour != self.clock.hour {
+            return Err(
+                "Снимок компонента можно восстановить только на той же дате и часе кампании".into(),
+            );
+        }
+        self.research = research;
+        self.military.refresh_modifiers(&self.research);
+        self.refresh_research_building_slots();
+        Ok(())
+    }
+
+    pub fn refresh_research_contexts(&mut self) {
+        for (tag, c) in &mut self.research.countries {
+            let war = self.military.wars.iter().any(|(a, b)| a == tag || b == tag);
+            if c.context.date != Some(self.clock.date) || c.context.at_war != Some(war) {
+                c.context.date = Some(self.clock.date);
+                c.context.at_war = Some(war);
+                c.revision += 1;
+            }
+        }
+    }
     pub fn advance_frame(
         &mut self,
         delta_seconds: f32,
@@ -102,6 +197,7 @@ impl GameSession {
         catalogue: &ResearchCatalogue,
         research: &ResearchRules,
     ) -> SimulationAdvance {
+        self.refresh_research_contexts();
         let hours = self.clock.accumulate_hours(delta_seconds);
         let mut result = SimulationAdvance { hours, days: 0 };
         for _ in 0..hours {
@@ -144,8 +240,9 @@ impl GameSession {
             return false;
         };
         let tags: Vec<_> = self.world.countries.keys().cloned().collect();
+        self.research.refresh_sharing(catalogue);
         for tag in &tags {
-            self.research.country_mut(tag, 3, research);
+            self.research.country_mut(tag, 0, research);
             self.research
                 .tick_country(tag, catalogue, research, completed_day);
             if self.research.day_index % 7 == 0 && self.player_country.as_ref() != Some(tag) {
@@ -154,6 +251,8 @@ impl GameSession {
             }
         }
         self.research.day_index += 1;
+        self.refresh_research_contexts();
+        self.refresh_research_building_slots();
         self.military.refresh_modifiers(&self.research);
         // Every country's production sees factories present at day start.
         // Newly completed MIL participates only in the next daily production.
@@ -166,24 +265,27 @@ impl GameSession {
             .collect();
         for tag in &tags {
             if let Some(economy) = self.world.country_economy(tag) {
+                let effective = production.for_research(self.research.country(tag));
                 self.production.country_mut(tag).tick_with_models(
                     economy.military_factories,
-                    production,
+                    &effective,
                     &costs,
                 );
             }
         }
         self.military.replenish(&mut self.production);
         for tag in &tags {
+            let effective = buildings.for_research(self.research.country(tag), catalogue);
+            let modifiers = ConstructionModifiers::from_research(self.research.country(tag));
             let country = self.construction.entry(tag.clone()).or_default();
             construction::advance_day_by_order(
                 &mut self.world,
                 tag,
                 &mut self.construction_queues,
                 &mut country.order,
-                buildings,
+                &effective,
                 country.policy,
-                &ConstructionModifiers::default(),
+                &modifiers,
             );
         }
         true
@@ -442,5 +544,50 @@ mod tests {
         assert!(progress > 0.98 && progress < 1.0);
         assert_eq!(s.clock.date.year, 1938);
         assert_eq!(s.research.day_index, 1);
+    }
+}
+
+#[cfg(test)]
+mod research_integration_tests {
+    use super::*;
+    use crate::research::{CountryResearch, Technology, TechnologyEffect};
+    #[test]
+    fn technology_changes_real_factory_output_and_construction_speed_once() {
+        let rules = ResearchRules::default();
+        let mut c = CountryResearch::new(1, &rules);
+        let mut cat = ResearchCatalogue::default();
+        let mut t = Technology::sample("industry", 1936, 1.0);
+        t.modifiers
+            .insert("industrial_capacity_factory".into(), 0.25);
+        t.modifiers
+            .insert("production_speed_buildings_factor".into(), 0.20);
+        t.modifiers
+            .insert("production_factory_max_efficiency_factor".into(), 0.1);
+        cat.insert(t).unwrap();
+        c.grant("industry", &cat);
+        c.grant("industry", &cat);
+        let base = ProductionRules::default();
+        let applied = base.for_research(Some(&c));
+        assert!((applied.ic_per_factory() / base.ic_per_factory() - 1.25).abs() < 1e-10);
+        assert!((applied.efficiency_cap - 0.6).abs() < 1e-10);
+        let modifiers = ConstructionModifiers::from_research(Some(&c));
+        assert!((modifiers.national_bonus - 0.2).abs() < 1e-6);
+    }
+    #[test]
+    fn building_unlock_level_is_gated_until_technology_is_granted() {
+        let mut cat = ResearchCatalogue::default();
+        let mut t = Technology::sample("reactor", 1936, 1.0);
+        t.effects.push(TechnologyEffect::Building {
+            id: "nuclear_reactor".into(),
+            level: 2,
+        });
+        cat.insert(t).unwrap();
+        let rules = ResearchRules::default();
+        let mut c = CountryResearch::new(1, &rules);
+        let br = BuildingRules::default();
+        let b = crate::construction::BuildingType::NuclearReactor;
+        assert_eq!(br.for_research(Some(&c), &cat).max_state_level(b), 0);
+        c.grant("reactor", &cat);
+        assert_eq!(br.for_research(Some(&c), &cat).max_state_level(b), 2);
     }
 }

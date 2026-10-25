@@ -29,6 +29,19 @@ pub enum BuildingType {
 }
 
 impl BuildingType {
+    pub fn script_id(self) -> &'static str {
+        match self {
+            Self::Infrastructure => "infrastructure",
+            Self::CivilianFactory => "industrial_complex",
+            Self::MilitaryFactory => "arms_factory",
+            Self::Dockyard => "dockyard",
+            Self::SyntheticRefinery => "synthetic_refinery",
+            Self::FuelSilo => "fuel_silo",
+            Self::RocketSite => "rocket_site",
+            Self::NuclearReactor => "nuclear_reactor",
+        }
+    }
+
     pub const ALL: [Self; 8] = [
         Self::Infrastructure,
         Self::CivilianFactory, Self::MilitaryFactory, Self::Dockyard,
@@ -172,6 +185,28 @@ impl Default for BuildingRules {
 }
 
 impl BuildingRules {
+    pub fn for_research(
+        &self,
+        c: Option<&crate::research::CountryResearch>,
+        cat: &crate::research::ResearchCatalogue,
+    ) -> Self {
+        let mut r = self.clone();
+        for b in BuildingType::ALL {
+            let id = b.script_id();
+            let gated=cat.technologies.values().any(|t|t.effects.iter().any(|e|matches!(e,crate::research::TechnologyEffect::Building{id:target,..} if target==id)));
+            if gated {
+                r.state_level_caps.insert(
+                    b,
+                    c.and_then(|c| c.building_levels.get(id))
+                        .copied()
+                        .unwrap_or(0)
+                        .min(u16::MAX as u32) as u16,
+                );
+            }
+        }
+        r
+    }
+
     pub fn load(directory: impl AsRef<Path>) -> Self {
         let mut rules = Self::default();
         // Missing local building files must NOT skip loading the defines.
@@ -450,6 +485,20 @@ impl Default for ConstructionModifiers {
 }
 
 impl ConstructionModifiers {
+    pub fn from_research(c: Option<&crate::research::CountryResearch>) -> Self {
+        let mut m = Self::default();
+        if let Some(c) = c {
+            m.national_bonus = c.modifier("production_speed_buildings_factor") as f32;
+            for b in BuildingType::ALL {
+                let v = c.modifier(&format!("production_speed_{}_factor", b.script_id()));
+                if v != 0.0 {
+                    m.building_bonuses.insert(b, v as f32);
+                }
+            }
+        }
+        m
+    }
+
     pub fn speed_bonus(&self, state_id: u32, building: BuildingType) -> f32 {
         let bonus = self.national_bonus
             + self.building_bonuses.get(&building).copied().unwrap_or(0.0)

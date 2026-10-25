@@ -5,7 +5,7 @@ mod combat_rules;
 mod construction;
 mod construction_map;
 mod construction_ui;
-mod game;
+pub use hoi4_mobile::game;
 mod history_conditions;
 mod hoi_ui;
 mod land_combat;
@@ -18,8 +18,10 @@ mod military_history;
 mod military_model;
 mod production;
 mod production_ui;
-mod research;
-mod research_data;
+pub use hoi4_mobile::pdx;
+pub use hoi4_mobile::research;
+pub use hoi4_mobile::research_data;
+pub use hoi4_mobile::research_script;
 mod research_ui;
 mod scenario;
 mod session;
@@ -1563,7 +1565,7 @@ fn draw_loading(stage: &str, progress: f32) {
     );
 }
 
-fn draw_main_menu(map: Option<&ProvinceMap>, can_continue: bool) -> Screen {
+fn draw_main_menu(map: Option<&ProvinceMap>, can_continue: bool, date: game::GameDate) -> Screen {
     draw_background();
     let compact = screen_width() < 760.0;
     if let Some(map) = map {
@@ -1627,7 +1629,7 @@ fn draw_main_menu(map: Option<&ProvinceMap>, can_continue: bool) -> Screen {
     }
     hoi_ui::placeholder(Rect::new(x, y + 220.0, width, 45.0), "Загрузить сохранение");
     draw_ui_text(
-        "1936 · КАМПАНИЯ",
+        &format!("{} · КАМПАНИЯ", date.year),
         x,
         screen_height() - 54.0,
         16.0,
@@ -1700,6 +1702,8 @@ fn draw_country_select(
     map: Option<&ProvinceMap>,
     selected_country: &mut Option<String>,
     page: &mut usize,
+    date: &mut game::GameDate,
+    bookmarks: &[game::GameDate],
 ) -> Screen {
     draw_background();
     if let Some(map) = map {
@@ -1742,12 +1746,24 @@ fn draw_country_select(
     if !selected_country.as_ref().is_some_and(|t| tags.contains(t)) {
         *selected_country = tags.first().cloned();
     }
-    hoi_ui::section(
-        "СОБИРАЮЩАЯСЯ БУРЯ · 1 ЯНВАРЯ 1936",
-        24.0,
-        61.0,
-        width - 48.0,
-    );
+    hoi_ui::section("СЦЕНАРИЙ", 24.0, 61.0, width - 225.0);
+    let dates: Vec<_> = bookmarks
+        .iter()
+        .filter(|d| matches!(d.year, 1936 | 1939))
+        .copied()
+        .collect();
+    if hoi_ui::small_button(
+        &format!("{} ▸", date.display()),
+        Rect::new(width - 192.0, 58.0, 168.0, 28.0),
+        false,
+    ) && dates.len() > 1
+    {
+        let next = dates
+            .iter()
+            .position(|d| d == date)
+            .map_or(0, |i| (i + 1) % dates.len());
+        *date = dates[next];
+    }
     let grid_width = if compact { width - 32.0 } else { width - 390.0 };
     let cols = if compact { 2 } else { 3 };
     let rows = if compact { 3 } else { 4 };
@@ -2028,6 +2044,17 @@ fn draw_map_viewer(
     military: &mut warfare::Warfare,
     army_view: &mut army_ui::ArmyView,
 ) -> Screen {
+    let effective_building_rules = building_rules.for_research(
+        player_country.and_then(|t| research_world.country(t)),
+        research_catalogue,
+    );
+    let building_rules = &effective_building_rules;
+    let effective_production_rules =
+        production_rules.for_research(player_country.and_then(|t| research_world.country(t)));
+    let production_rules = &effective_production_rules;
+    let research_construction_modifiers = construction::ConstructionModifiers::from_research(
+        player_country.and_then(|t| research_world.country(t)),
+    );
     let compact = screen_width() < 760.0;
     let game_date = game.date;
     clear_background(Color::from_rgba(24, 36, 43, 255));
@@ -2483,6 +2510,7 @@ fn draw_map_viewer(
             construction_notice,
             construction_view,
             game_date,
+            &research_construction_modifiers,
         );
     }
     if production_view.open {
@@ -2688,60 +2716,72 @@ async fn main() {
     let production_rules = production::ProductionRules::default();
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
-    let (mut research_catalogue, research_origin) =
-        match research_data::load_catalogue(Path::new("data/hoi4/common/technologies")) {
-            Ok((tree, report)) => (
-                tree,
-                format!(
-                    "{} imported technologies from {} local files",
-                    report.imported_technologies, report.parsed_files,
-                ),
-            ),
-            Err(error) => (
-                research_data::builtin_demo(),
-                format!("Демонстрационное дерево: локальные технологии не загружены ({error})"),
-            ),
-        };
-    // Read translations from the user's local files. English is the fallback
-    // for untranslated Russian labels; no proprietary localisations are bundled.
-    for language in ["english", "russian"] {
-        let _ = research_data::load_localisation(
-            Path::new("data/hoi4/localisation"),
-            language,
-            &mut research_catalogue,
-        );
-    }
-    let mut research_rules = research::ResearchRules::default();
-    if let Ok(entries) = fs::read_dir("data/hoi4/common/defines") {
-        let mut paths: Vec<_> = entries
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().and_then(|x| x.to_str()) == Some("lua"))
-            .collect();
-        paths.sort();
-        for path in paths {
-            if let Ok(source) = fs::read_to_string(path) {
-                research_data::update_rules_from_defines(&source, &mut research_rules);
+    let research_dataset =
+        match hoi4_mobile::research_import::ResearchDataset::load(Path::new("data/hoi4"), true) {
+            Ok(data) => {
+                for diagnostic in &data.diagnostics {
+                    eprintln!("[research-import] {diagnostic}");
+                }
+                Some(data)
             }
-        }
-    }
+            Err(error) => {
+                eprintln!("[research-import] {error}");
+                None
+            }
+        };
+    let research_catalogue = research_dataset
+        .as_ref()
+        .map(|d| d.registry.clone())
+        .unwrap_or_default();
+    let research_rules = research_dataset
+        .as_ref()
+        .map(|d| d.rules)
+        .unwrap_or_default();
+    let research_origin = research_dataset.as_ref().map_or_else(
+        || "Нет локальных технологий. Запустите tools/Export-Hoi4Research.ps1".into(),
+        |d| {
+            format!(
+                "Локальные определения: {} технологий, {} историй стран{}",
+                d.registry.technologies.len(),
+                d.histories.len(),
+                if d.from_cache { " · кэш" } else { "" }
+            )
+        },
+    );
     let mut research_view = research_ui::ResearchView::default();
-    research_view.notice = research_origin;
-    let start_session = || -> Result<GameSession, String> {
+    research_view.notice = research_origin.clone();
+    let initial_start = research_dataset
+        .as_ref()
+        .map(|d| d.start_date())
+        .transpose()
+        .map(|d| d.unwrap_or(game::GameDate::START));
+    let mut scenario_choice = initial_start
+        .as_ref()
+        .copied()
+        .unwrap_or(game::GameDate::START);
+    let start_session = |start_date: game::GameDate| -> Result<GameSession, String> {
         let names = load_state_names(Path::new(STATE_DIRECTORY_PATH));
-        let loaded = scenario::load(Path::new("data/hoi4"), &names)?;
+        let loaded = scenario::load_at(Path::new("data/hoi4"), &names, start_date)?;
         for diagnostic in &loaded.diagnostics {
             eprintln!("[scenario] {diagnostic}");
         }
         let mut session = GameSession::new(loaded.world);
-        for diagnostic in session.initialize_research(
-            Path::new("data/hoi4/history/countries"),
-            &research_catalogue,
-            &research_rules,
-        ) {
-            eprintln!("[research] {diagnostic}");
+        session.clock.date = start_date;
+        if let Some(data) = &research_dataset {
+            session.initialize_research_dataset(data, Path::new("data/hoi4"));
+        } else {
+            for diagnostic in session.initialize_research(
+                Path::new("data/hoi4/history/countries"),
+                &research_catalogue,
+                &research_rules,
+            ) {
+                eprintln!("[research] {diagnostic}");
+            }
         }
         session.initialize_military(Path::new("data/hoi4"));
+        session
+            .military
+            .use_research_registry(&research_catalogue, &session.research);
         for diagnostic in &session.military.diagnostics {
             eprintln!("[military] {diagnostic}");
         }
@@ -2749,7 +2789,7 @@ async fn main() {
     };
     draw_loading("Импорт стран, карты и стартовых армий…", 0.4);
     next_frame().await;
-    let (mut session, mut load_error) = match start_session() {
+    let (mut session, mut load_error) = match initial_start.and_then(|date| start_session(date)) {
         Ok(session) => (session, String::new()),
         Err(error) => (GameSession::new(World::default()), error),
     };
@@ -2771,15 +2811,41 @@ async fn main() {
         hoi_ui::begin_frame();
         hoi_ui::block_input(false);
         let next_screen = match screen {
-            Screen::MainMenu => draw_main_menu(map.as_ref(), session.player_country.is_some()),
+            Screen::MainMenu => draw_main_menu(
+                map.as_ref(),
+                session.player_country.is_some(),
+                session.clock.date,
+            ),
             Screen::CountrySelect => {
+                let old_scenario = scenario_choice;
                 let next = draw_country_select(
                     &session.world,
                     &session.military,
                     map.as_ref(),
                     &mut country_choice,
                     &mut country_page,
+                    &mut scenario_choice,
+                    research_dataset
+                        .as_ref()
+                        .map_or(&[], |d| d.bookmarks.as_slice()),
                 );
+                if old_scenario != scenario_choice {
+                    match start_session(scenario_choice) {
+                        Ok(fresh) => {
+                            session = fresh;
+                            drop(map.take());
+                            match ProvinceMap::load(&session.world) {
+                                Ok(m) => {
+                                    map = Some(m);
+                                    load_error.clear();
+                                }
+                                Err(e) => load_error = e,
+                            }
+                            country_page = 0;
+                        }
+                        Err(e) => load_error = e,
+                    }
+                }
                 if !load_error.is_empty() {
                     draw_ui_text(
                         &load_error.chars().take(90).collect::<String>(),
@@ -2790,7 +2856,7 @@ async fn main() {
                     );
                 }
                 if next == Screen::MapViewer {
-                    match start_session() {
+                    match start_session(scenario_choice) {
                         Ok(mut fresh) => {
                             fresh.player_country = country_choice.clone();
                             session = fresh;
@@ -2811,8 +2877,10 @@ async fn main() {
                             production_view = production_ui::ProductionView::default();
                             army_view = army_ui::ArmyView::default();
                             hud = campaign_ui::Hud::default();
-                            research_view.selected = None;
-                            research_view.open = false;
+                            research_view = research_ui::ResearchView {
+                                notice: research_origin.clone(),
+                                ..Default::default()
+                            };
                             Screen::MapViewer
                         }
                         Err(error) => {
@@ -3002,6 +3070,7 @@ async fn main() {
                     production: production_state,
                     research: research_world,
                     military,
+                    ..
                 } = &mut session;
                 let country = country_construction
                     .entry(selected_country.clone().unwrap_or_default())
@@ -3418,7 +3487,7 @@ async fn main() {
             && matches!(next_screen, Screen::CountrySelect | Screen::MapViewer)
             && session.world.geography.width == 0
         {
-            match start_session() {
+            match start_session(scenario_choice) {
                 Ok(fresh) => {
                     session = fresh;
                     match ProvinceMap::load(&session.world) {

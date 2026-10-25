@@ -144,9 +144,7 @@ pub fn initialize(
     if let Some(seed) = atom(&profile, "seed").and_then(|s| s.parse().ok()) {
         warfare.rng = crate::combat_rules::SeededRandom::new(seed);
     }
-    let dlcs = block(&profile, "dlcs")
-        .map(crate::military_data::names)
-        .unwrap_or_default();
+    let dlcs = crate::history_conditions::profile_dlcs(root);
     for tag in world.countries.keys() {
         warfare
             .countries

@@ -1,416 +1,556 @@
-//! Import a subset of Clausewitz HOI4 technology declarations from the
-//! player's own installation (data/hoi4/common/technologies/*.txt).
-//! Unknown conditions fail closed. Unknown structural data is reported rather
-//! than silently claiming a bit-perfect interpretation of all PDXScript.
-use crate::research::{Requirement, ResearchCatalogue, ResearchRules, Technology};
-use std::collections::{BTreeSet, HashMap};
+//! Import the player's own technology definitions. No shipped vanilla content.
+pub use crate::pdx::{Entry, Value, parse_pdx};
+use crate::pdx::{atom, block, names};
+use crate::research::{
+    Requirement, ResearchCatalogue, ResearchKind, ResearchRules, TechPath, TechPosition,
+    Technology, TechnologyEffect,
+};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-#[derive(Debug, Clone)]
-pub enum Value { Atom(String), Block(Vec<Entry>) }
-#[derive(Debug, Clone)]
-pub struct Entry { pub key: String, pub operator: String, pub value: Option<Value> }
-impl Entry {
-    pub fn atom(&self) -> Option<&str> {
-        match self.value.as_ref()? { Value::Atom(s)=>Some(s), _=>None }
-    }
-    pub fn block(&self) -> Option<&[Entry]> {
-        match self.value.as_ref()? { Value::Block(b)=>Some(b), _=>None }
-    }
-}
-fn find<'a>(items: &'a [Entry], name: &str) -> Option<&'a Entry> {
-    items.iter().find(|e| e.key==name)
-}
-fn atom<'a>(items: &'a [Entry], name: &str) -> Option<&'a str> {
-    find(items,name)?.atom()
-}
-fn number(items: &[Entry], name: &str) -> Option<f64> {
-    atom(items,name)?.parse().ok()
-}
-fn lex(source: &str) -> Result<Vec<String>,String> {
-    let mut out=Vec::new();
-    let mut chars=source.chars().peekable();
-    while let Some(c)=chars.next() {
-        if c.is_whitespace() {continue;}
-        if c=='#' {
-            for v in chars.by_ref(){if v=='\n'{break;}}
-            continue;
-        }
-        if matches!(c,'{'|'}') {out.push(c.to_string());continue;}
-        if matches!(c,'='|'<'|'>'|'!') {
-            let mut op=c.to_string();
-            if chars.peek()==Some(&'=') {op.push('=');chars.next();}
-            out.push(op);continue;
-        }
-        if c=='"' {
-            let mut text=String::new();let mut closed=false;
-            while let Some(next)=chars.next(){
-                if next=='"'{closed=true;break;}
-                if next=='\\' {
-                    if let Some(escaped)=chars.next(){text.push(escaped);}
-                } else {text.push(next);}
-            }
-            if !closed {return Err("Unterminated quoted string".into());}
-            out.push(text);continue;
-        }
-        let mut t=c.to_string();
-        while let Some(&next)=chars.peek() {
-            if next.is_whitespace()||matches!(next,'{'|'}'|'='|'<'|'>'|'!'|'#'|'"'){break;}
-            t.push(next);chars.next();
-        }
-        out.push(t);
-    }
-    Ok(out)
-}
-fn entries(tokens: &[String], pos: &mut usize, block: bool) -> Result<Vec<Entry>,String>{
-    let mut out=Vec::new();
-    while *pos<tokens.len(){
-        if tokens[*pos]=="}"{
-            if !block{return Err("Unexpected closing brace".into());}
-            *pos+=1;return Ok(out);
-        }
-        if tokens[*pos]=="{" || tokens[*pos]=="=" {return Err("Expected key".into());}
-        let key=tokens[*pos].clone();*pos+=1;
-        let operator=tokens.get(*pos).filter(|v|matches!(v.as_str(),"="|"=="|">"|"<"|">="|"<="|"!="))
-            .cloned().unwrap_or_default();
-        let value=if !operator.is_empty(){
-            *pos+=1;
-            if tokens.get(*pos).is_some_and(|v|v=="{"){
-                *pos+=1;Some(Value::Block(entries(tokens,pos,true)?))
-            }else{
-                let Some(value)=tokens.get(*pos) else {return Err("Expected value".into());};
-                if value=="}"{return Err("Expected atom".into());}
-                *pos+=1;Some(Value::Atom(value.clone()))
-            }
-        }else{
-            // Brace blocks can be part of bare value lists.
-            if tokens.get(*pos).is_some_and(|v|v=="{"){
-                *pos+=1;Some(Value::Block(entries(tokens,pos,true)?))
-            }else{None}
-        };
-        out.push(Entry{key,operator,value});
-    }
-    if block {Err("Unclosed brace".into())}else{Ok(out)}
-}
-pub fn parse_pdx(source:&str)->Result<Vec<Entry>,String>{
-    let tokens=lex(source.trim_start_matches('\u{feff}'))?;let mut pos=0;entries(&tokens,&mut pos,false)
-}
-fn names(items:&[Entry])->BTreeSet<String>{
-    items.iter().filter_map(|e|{
-        match &e.value {
-            None=>Some(e.key.clone()),
-            Some(Value::Atom(x)) if x=="1"||x=="yes"=>Some(e.key.clone()),
-            _=>None,
-        }
-    }).collect()
-}
-fn condition(items:&[Entry])->Requirement {
-    let mut conditions=Vec::new();
-    for item in items {
-        let v=match item.key.as_str(){
-            "always"=>Requirement::Always(item.atom()==Some("yes")),
-            "has_country_flag"=>item.atom().map_or(
-                Requirement::Unsupported("has_country_flag missing value".into()),
-                |v|Requirement::HasCountryFlag(v.into())),
-            "has_tech"|"has_technology"=>item.atom().map_or(
-                Requirement::Unsupported("has_tech missing value".into()),
-                |v|Requirement::HasTechnology(v.into())),
-            "AND"|"and"=>item.block().map_or(
-                Requirement::Unsupported("AND block missing".into()),
-                condition),
-            "OR"|"or"=>item.block().map_or(
-                Requirement::Unsupported("OR block missing".into()),
-                |block|Requirement::Or(block.iter().map(|x|condition(std::slice::from_ref(x))).collect())),
-            "NOT"|"not"=>item.block().map_or(
-                Requirement::Unsupported("NOT block missing".into()),
-                |block|Requirement::Not(Box::new(condition(block)))),
-            other=>Requirement::Unsupported(other.into()),
-        };
-        conditions.push(v);
-    }
-    Requirement::And(conditions)
-}
-fn collect_unlocks(items: &[Entry])->BTreeSet<String>{
-    let mut out=BTreeSet::new();
-    for entry in items {
-        if matches!(entry.key.as_str(),"enable_equipments"|"enable_subunits"
-            |"enable_equipment_modules"|"enable_building"|"enable_tactic") {
-            if let Some(sub)=entry.block() {
-                for name in names(sub) {out.insert(format!("{}:{}",entry.key,name));}
-            }else if let Some(name)=entry.atom() {
-                out.insert(format!("{}:{}",entry.key,name));
-            }
-        }
-    }
-    out
-}
-#[derive(Default,Debug)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImportReport {
-    pub parsed_files:usize,
-    pub imported_technologies:usize,
-    pub diagnostics:Vec<String>,
+    pub parsed_files: usize,
+    pub imported_technologies: usize,
+    pub diagnostics: Vec<String>,
 }
-pub fn parse_technology_file(source:&str, catalogue:&mut ResearchCatalogue)
-    ->Result<usize,String> {
-    let root=parse_pdx(source)?;
-    let mut parsed=0;
-    let mut incoming:Vec<(String,String)>=Vec::new();
-    for top in &root {
-        if top.key!="technologies" {continue;}
-        let Some(nodes)=top.block()else{continue;};
-        for item in nodes {
-            let Some(fields)=item.block()else{continue;};
-            let mut tech=Technology::sample(&item.key,
-                number(fields,"start_year").unwrap_or(1936.0).max(0.0) as u32,
-                number(fields,"research_cost").unwrap_or(1.0));
-            if let Some(block)=find(fields,"categories").and_then(Entry::block) {
-                tech.categories=names(block);
-            }
-            if let Some(block)=find(fields,"dependencies").and_then(Entry::block) {
-                tech.prerequisites=names(block);
-            }
-            if let Some(block)=find(fields,"xor").and_then(Entry::block) {
-                tech.xor=names(block);
-            }
-            if let Some(block)=find(fields,"allow").and_then(Entry::block) {
-                tech.allow=condition(block);
-            }
-            if let Some(block)=find(fields,"allow_branch").and_then(Entry::block) {
-                tech.allow_branch=condition(block);
-            }
-            if let Some(v)=find(fields,"ai_will_do").and_then(Entry::block) {
-                tech.ai_weight=number(v,"factor").unwrap_or(1.0);
-            }
-            if let Some(v)=find(fields,"modifier").and_then(Entry::block) {
-                for entry in v {
-                    if let Some(value)=entry.atom().and_then(|x|x.parse::<f64>().ok()) {
-                        tech.modifiers.insert(entry.key.clone(),value);
-                    }
-                }
-            }
-            tech.unlocks=collect_unlocks(fields);
-            if let Some(folder)=find(fields,"folder").and_then(Entry::block) {
-                if let Some(name)=atom(folder,"name") {tech.folder=name.into();}
-                if let Some(pos)=find(folder,"position").and_then(Entry::block) {
-                    tech.x=number(pos,"x").unwrap_or(0.0) as f32;
-                    tech.y=number(pos,"y").unwrap_or(0.0) as f32;
-                }
-            }
-            for path in fields.iter().filter(|e|e.key=="path") {
-                if let Some(child)=path.block().and_then(|b|atom(b,"leads_to_tech")) {
-                    incoming.push((child.into(),item.key.clone()));
-                }
-            }
-            catalogue.insert(tech)?;
-            parsed+=1;
-        }
+fn scalar(raw: &str, vars: &BTreeMap<String, String>, depth: u8) -> Option<f64> {
+    if depth > 32 {
+        return None;
     }
-    // Path edges may lead into a different file; finish resolving after all
-    // files are imported in load_catalogue.
-    for (child,parent) in incoming {
-        if let Some(tech)=catalogue.technologies.get_mut(&child) {
-            tech.prerequisites.insert(parent);
-        }
-    }
-    Ok(parsed)
+    raw.parse::<f64>()
+        .ok()
+        .filter(|v| v.is_finite())
+        .or_else(|| vars.get(raw).and_then(|s| scalar(s, vars, depth + 1)))
 }
-pub fn load_catalogue(directory:&Path)->Result<(ResearchCatalogue,ImportReport),String>{
-    let mut catalogue=ResearchCatalogue::default();
-    let mut report=ImportReport::default();
-    let dir=fs::read_dir(directory).map_err(|e|format!("Cannot read {}: {e}",directory.display()))?;
-    let mut paths:Vec<_>=dir.flatten().map(|entry|entry.path())
-        .filter(|p|p.extension().and_then(|x|x.to_str())==Some("txt")).collect();
-    paths.sort();
-    // Resolve path dependencies in a second pass because parents and children
-    // can be declared in different files.
-    let mut sources=Vec::new();
-    for path in paths{
-        let content=fs::read_to_string(&path)
-            .map_err(|e|format!("{}: {e}",path.display()))?;
-        // Strip UTF-8 BOM from locally supplied scripts if present.
-        let content=content.trim_start_matches('\u{feff}').to_owned();
-        let root=parse_pdx(&content).map_err(|e|format!("{}: {e}",path.display()))?;
-        let mut file_catalogue=ResearchCatalogue::default();
-        let n=parse_technology_file(&content,&mut file_catalogue)
-            .map_err(|e|format!("{}: {e}",path.display()))?;
-        for tech in file_catalogue.technologies.into_values() {
-            catalogue.insert(tech)?;
+fn value(b: &[Entry], key: &str, vars: &BTreeMap<String, String>) -> Option<f64> {
+    scalar(atom(b, key)?, vars, 0)
+}
+pub fn parse_technology_file(source: &str, cat: &mut ResearchCatalogue) -> Result<usize, String> {
+    import_technology_source(source, "<memory>", cat)
+}
+pub fn import_technology_source(
+    source: &str,
+    path: &str,
+    cat: &mut ResearchCatalogue,
+) -> Result<usize, String> {
+    let root = parse_pdx(source).map_err(|e| format!("{path}: {e}"))?;
+    let vars = root
+        .iter()
+        .filter(|e| e.key.starts_with('@'))
+        .filter_map(|e| e.atom().map(|v| (e.key.clone(), v.into())))
+        .collect::<BTreeMap<_, _>>();
+    let mut count = 0;
+    for node in root
+        .iter()
+        .filter(|e| e.key == "technologies")
+        .filter_map(Entry::block)
+        .flatten()
+    {
+        let Some(b) = node.block() else {
+            cat.diagnostics.push(format!(
+                "{path}:{}: {} is not a technology block",
+                node.span.line, node.key
+            ));
+            continue;
+        };
+        let mut t = Technology::sample(
+            &node.key,
+            value(b, "start_year", &vars).unwrap_or(0.0).max(0.0) as u32,
+            value(b, "research_cost", &vars).unwrap_or(1.0),
+        );
+        t.source = format!("{path}:{}", node.span.line);
+        t.raw = b.to_vec();
+        for key in ["research_cost", "start_year"] {
+            if atom(b, key).is_some() && value(b, key, &vars).is_none() {
+                t.unsupported.insert(key.into());
+                cat.diagnostics
+                    .push(format!("{}: {key} is an unresolved expression", t.source));
+            }
         }
-        // Reinspect all declared path edges with all nodes loaded.
-        let mut edges=Vec::new();
-        for top in root.iter().filter(|e|e.key=="technologies") {
-            if let Some(nodes)=top.block() {
-                for node in nodes {
-                    if let Some(block)=node.block() {
-                        for e in block.iter().filter(|e|e.key=="path") {
-                            if let Some(child)=e.block().and_then(|b|atom(b,"leads_to_tech")) {
-                                edges.push((child.to_owned(),node.key.clone()));
-                            }
+        t.kind = if atom(b, "is_special_project_tech") == Some("yes") {
+            ResearchKind::SpecialProject
+        } else if atom(b, "doctrine") == Some("yes") || atom(b, "xp_research_cost").is_some() {
+            ResearchKind::Doctrine
+        } else {
+            ResearchKind::Standard
+        };
+        t.categories = block(b, "categories").map(names).unwrap_or_default();
+        for e in block(b, "dependencies").unwrap_or(&[]) {
+            let level = e.atom().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+            t.prerequisites.insert(e.key.clone());
+            t.dependency_levels.insert(e.key.clone(), level);
+        }
+        t.xor = block(b, "xor").map(names).unwrap_or_default();
+        t.sub_technologies = block(b, "sub_technologies").map(names).unwrap_or_default();
+        t.allow = Requirement::Script(block(b, "allow").unwrap_or(&[]).to_vec());
+        t.allow_branch = Requirement::Script(block(b, "allow_branch").unwrap_or(&[]).to_vec());
+        t.ai_weight = block(b, "ai_will_do")
+            .and_then(|b| value(b, "factor", &vars))
+            .unwrap_or(1.0)
+            .max(0.0);
+        t.on_complete_limit = block(b, "on_research_complete_limit")
+            .unwrap_or(&[])
+            .to_vec();
+        t.on_complete = block(b, "on_research_complete").unwrap_or(&[]).to_vec();
+        for e in b {
+            match e.key.as_str() {
+                "folder" => {
+                    if let Some(b) = e.block() {
+                        if let Some(name) = atom(b, "name") {
+                            let pos = block(b, "position").unwrap_or(&[]);
+                            t.positions.push(TechPosition {
+                                folder: name.into(),
+                                x: value(pos, "x", &vars).unwrap_or(0.0) as f32,
+                                y: value(pos, "y", &vars).unwrap_or(0.0) as f32,
+                            });
                         }
                     }
                 }
+                "path" => {
+                    if let Some(b) = e.block() {
+                        if let Some(target) = atom(b, "leads_to_tech") {
+                            let coeff = value(b, "research_cost_coeff", &vars).unwrap_or(1.0);
+                            t.paths.push(TechPath {
+                                target: target.into(),
+                                research_cost_coeff: coeff,
+                                coefficient_known: (atom(b, "research_cost_coeff").is_none()
+                                    || value(b, "research_cost_coeff", &vars).is_some())
+                                    && coeff >= 0.0,
+                                ignore_for_layout: atom(b, "ignore_for_layout") == Some("yes"),
+                            });
+                        }
+                    }
+                }
+                "enable_subunits"
+                | "enable_equipments"
+                | "enable_equipment_modules"
+                | "enable_tactic" => {
+                    let kind = e.key.clone();
+                    let ids = e
+                        .atom()
+                        .map(|s| BTreeSet::from([s.into()]))
+                        .unwrap_or_else(|| e.block().map(names).unwrap_or_default());
+                    let limit = e
+                        .block()
+                        .and_then(|b| block(b, "limit"))
+                        .unwrap_or(&[])
+                        .to_vec();
+                    for id in ids {
+                        if limit.is_empty() {
+                            t.unlocks.insert(format!("{kind}:{id}"));
+                        }
+                        t.effects.push(TechnologyEffect::Unlock {
+                            kind: kind.clone(),
+                            id,
+                            limit: limit.clone(),
+                        });
+                    }
+                }
+                "enable_building" => {
+                    if let Some(b) = e.block() {
+                        if let (Some(id), Some(level)) =
+                            (atom(b, "building"), value(b, "level", &vars))
+                        {
+                            if level >= 0.0 && level <= u32::MAX as f64 {
+                                t.effects.push(TechnologyEffect::Building {
+                                    id: id.into(),
+                                    level: level as u32,
+                                });
+                            } else {
+                                t.unsupported.insert("enable_building".into());
+                            }
+                        } else {
+                            t.unsupported.insert("enable_building".into());
+                        }
+                    }
+                }
+                "modifier" => {
+                    for m in e.block().unwrap_or(&[]) {
+                        if let Some(v) = m.atom().and_then(|s| scalar(s, &vars, 0)) {
+                            *t.modifiers.entry(m.key.clone()).or_default() += v;
+                            t.effects.push(TechnologyEffect::CountryModifier {
+                                key: m.key.clone(),
+                                value: v,
+                            });
+                        } else {
+                            t.effects.push(TechnologyEffect::Deferred {
+                                field: m.key.clone(),
+                                payload: m.clone(),
+                            });
+                        }
+                    }
+                }
+                "research_cost"
+                | "start_year"
+                | "categories"
+                | "dependencies"
+                | "xor"
+                | "sub_technologies"
+                | "allow"
+                | "allow_branch"
+                | "ai_will_do"
+                | "ai_research_weights"
+                | "doctrine"
+                | "doctrine_name"
+                | "xp_research_type"
+                | "xp_research_cost"
+                | "xp_unlock_cost"
+                | "xp_boost_cost"
+                | "xp_research_bonus"
+                | "is_special_project_tech"
+                | "special_project_specialization"
+                | "sub_tech_index"
+                | "on_research_complete"
+                | "on_research_complete_limit"
+                | "show_equipment_icon"
+                | "show_effect_as_desc"
+                | "force_use_small_tech_layout"
+                | "desc" => {}
+                key => {
+                    if let Some(v) = e.atom().and_then(|s| scalar(s, &vars, 0)) {
+                        *t.modifiers.entry(key.into()).or_default() += v;
+                        t.effects.push(TechnologyEffect::CountryModifier {
+                            key: key.into(),
+                            value: v,
+                        });
+                    } else if let Some(b) = e.block() {
+                        let values = b
+                            .iter()
+                            .filter_map(|e| {
+                                e.atom()
+                                    .and_then(|s| scalar(s, &vars, 0))
+                                    .map(|v| (e.key.clone(), v))
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                        t.effects.push(TechnologyEffect::ScopedModifier {
+                            scope: key.into(),
+                            values,
+                        });
+                        if b.iter()
+                            .any(|e| e.atom().and_then(|s| scalar(s, &vars, 0)).is_none())
+                        {
+                            t.effects.push(TechnologyEffect::Deferred {
+                                field: key.into(),
+                                payload: e.clone(),
+                            });
+                        }
+                        t.unsupported.insert(format!("scope:{key}"));
+                    } else {
+                        t.effects.push(TechnologyEffect::Deferred {
+                            field: key.into(),
+                            payload: e.clone(),
+                        });
+                        t.unsupported.insert(key.into());
+                    }
+                }
             }
         }
-        sources.extend(edges);
-        report.parsed_files+=1;report.imported_technologies+=n;
-    }
-    for (child,parent) in sources {
-        if let Some(tech)=catalogue.technologies.get_mut(&child) {
-            tech.prerequisites.insert(parent);
+        if let Some(p) = t.positions.first() {
+            t.folder = p.folder.clone();
+            t.x = p.x;
+            t.y = p.y;
         } else {
-            report.diagnostics.push(format!("Unresolved path: {parent} -> {child}"));
+            t.folder = "unplaced".into();
         }
-    }
-    catalogue.validate()?;
-    if report.imported_technologies==0 {
-        return Err("No technologies in source directory".into());
-    }
-    Ok((catalogue,report))
-}
-
-/// Read research defines by name without introducing an additional Lua
-/// interpreter. Unknown lines keep explicit version defaults.
-pub fn update_rules_from_defines(source:&str, rules:&mut ResearchRules){
-    for line in source.lines(){
-        let line=line.split("--").next().unwrap_or("");
-        let Some((left,right))=line.split_once('=')else{continue;};
-        let key=left.trim().rsplit('.').next().unwrap_or("").trim();
-        let Some(raw)=right.split(',').next().and_then(|n|n.trim().parse::<f64>().ok())else{continue;};
-        match key {
-            "BASE_TECH_COST"|"RESEARCH_BASE_DAYS" if raw>0.0=>rules.base_tech_cost=raw,
-            "BASE_YEAR_AHEAD_PENALTY_FACTOR" if raw>=0.0=>rules.year_ahead_penalty=raw,
-            "BASE_RESEARCH_POINTS_SAVED" if raw>=0.0=>rules.max_saved_days=raw,
-            _=>{},
+        if cat.technologies.remove(&t.id).is_some() {
+            cat.diagnostics.push(format!(
+                "{} overrides an earlier definition of {}",
+                t.source, t.id
+            ));
         }
+        cat.insert(t)?;
+        count += 1;
     }
+    cat.rebuild_indices();
+    Ok(count)
 }
-
-pub fn load_country_research_start(source:&str)->(Option<usize>,BTreeSet<String>){
-    load_country_research_context(source,"",&Default::default())
-}
-fn load_country_research_context(source:&str,tag:&str,modifiers:&crate::military_model::MilitaryModifiers)->(Option<usize>,BTreeSet<String>){
-    let Ok(entries)=parse_pdx(source)else{return(None,BTreeSet::new());};
-    let (entries,_)=crate::history_conditions::resolve(&entries,tag,modifiers,crate::game::GameDate::START);
-    let slots=entries.iter().rev().find(|e|e.key=="set_research_slots").and_then(Entry::atom).and_then(|v|v.parse().ok());
-    let mut techs=BTreeSet::new();
-    for e in entries.iter().filter(|e|e.key=="set_technology"){
-        for t in e.block().unwrap_or(&[]){if let Some(raw)=t.atom(){
-            if raw=="1"||raw=="yes"{techs.insert(t.key.clone());}else if raw=="0"||raw=="no"{techs.remove(&t.key);}
-        }}
-    }(slots,techs)
-}
-
-/// Get starting research slots and acquired tech from a country's local
-/// Clausewitz history file. Names commonly start with a 3-letter TAG.
-pub fn read_country_start(history_dir:&Path, tag:&str)
-    ->Result<(Option<usize>,BTreeSet<String>),String> {
-    if !tag.chars().all(|c|c.is_ascii_uppercase()||c.is_ascii_digit()||c=='_') {
-        return Err("Invalid country tag".into());
+pub fn load_catalogue(directory: &Path) -> Result<(ResearchCatalogue, ImportReport), String> {
+    let mut cat = ResearchCatalogue::default();
+    let mut report = ImportReport::default();
+    let mut paths = Vec::new();
+    fn walk(p: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<(), String> {
+        for e in fs::read_dir(p).map_err(|e| format!("{}: {e}", p.display()))? {
+            let p = e.map_err(|e| e.to_string())?.path();
+            if p.is_dir() {
+                walk(&p, out)?;
+            } else if p.extension().is_some_and(|s| s == "txt") {
+                out.push(p);
+            }
+        }
+        Ok(())
     }
-    let entries=fs::read_dir(history_dir).map_err(|e|format!("{}: {e}",history_dir.display()))?;
-    let mut paths:Vec<_>=entries.flatten().map(|e|e.path()).filter(|p| {
-        p.extension().and_then(|v|v.to_str())==Some("txt")
-            && p.file_name().and_then(|v|v.to_str())
-                .is_some_and(|name|name.starts_with(tag)
-                    && name[tag.len()..].starts_with(|c:char|c==' '||c=='-'))
-    }).collect();
+    walk(directory, &mut paths)?;
     paths.sort();
-    let Some(path)=paths.first()else{return Err(format!("No history file for {tag}"));};
-    let content=fs::read_to_string(path).map_err(|e|e.to_string())?;
-    let mut modifiers=crate::military_model::MilitaryModifiers::default();
-    if let Some(root)=history_dir.parent().and_then(Path::parent){modifiers.dlcs=crate::history_conditions::profile_dlcs(root);}
-    Ok(load_country_research_context(&content,tag,&modifiers))
+    for path in paths {
+        let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        report.parsed_files += 1;
+        report.imported_technologies +=
+            import_technology_source(&source, &path.display().to_string(), &mut cat)?;
+    }
+    cat.rebuild_indices();
+    cat.validate()?;
+    report.diagnostics = cat.diagnostics.clone();
+    if cat.technologies.is_empty() {
+        return Err(
+            "Нет локальных определений технологий; запустите tools/Export-Hoi4Research.ps1".into(),
+        );
+    }
+    Ok((cat, report))
+}
+/// Literal Lua defines, both `NDefines.NTechnology.KEY = n` and table entries.
+/// Non-literal expressions are not executed and retain the visible baseline.
+pub fn update_rules_from_defines(source: &str, rules: &mut ResearchRules) -> Vec<String> {
+    // Tokenize the small literal-assignment subset of Lua, rather than executing game code.
+    let mut tokens = Vec::<String>::new();
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == '-' && chars.peek() == Some(&'-') {
+            chars.next();
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    let mut prev = ' ';
+                    for ch in chars.by_ref() {
+                        if prev == ']' && ch == ']' {
+                            break;
+                        }
+                        prev = ch;
+                    }
+                    continue;
+                }
+            }
+            for ch in chars.by_ref() {
+                if ch == '\n' {
+                    break;
+                }
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            let quote = c;
+            let mut s = String::new();
+            while let Some(ch) = chars.next() {
+                if ch == quote {
+                    break;
+                }
+                if ch == '\\' {
+                    chars.next();
+                } else {
+                    s.push(ch);
+                }
+            }
+            tokens.push(format!("\"{s}\""));
+            continue;
+        }
+        if c.is_alphanumeric() || matches!(c, '_' | '.' | '+' | '-') {
+            let mut s = c.to_string();
+            while let Some(&ch) = chars.peek() {
+                if ch.is_alphanumeric() || matches!(ch, '_' | '.') {
+                    s.push(ch);
+                    chars.next();
+                } else {
+                    break;
+                }
+            }
+            tokens.push(s);
+        } else {
+            tokens.push(c.to_string());
+        }
+    }
+    let mut imported = Vec::new();
+    for i in 1..tokens.len().saturating_sub(1) {
+        if tokens[i] != "=" {
+            continue;
+        }
+        let key = tokens[i - 1].rsplit('.').next().unwrap_or("");
+        let Some(v) = tokens[i + 1].parse::<f64>().ok().filter(|v| v.is_finite()) else {
+            continue;
+        };
+        if tokens
+            .get(i + 2)
+            .is_some_and(|t| matches!(t.as_str(), "*" | "/" | "+" | "-" | "^"))
+        {
+            continue;
+        }
+        match key {
+            "BASE_TECH_COST" | "RESEARCH_BASE_DAYS" if v > 0.0 => {
+                rules.base_tech_cost = v;
+                imported.push("BASE_TECH_COST".into());
+            }
+            "BASE_YEAR_AHEAD_PENALTY_FACTOR" if v >= 0.0 => {
+                rules.year_ahead_penalty = v;
+                imported.push(key.into());
+            }
+            "BASE_RESEARCH_POINTS_SAVED" if v >= 0.0 => {
+                rules.max_saved_days = v;
+                imported.push(key.into());
+            }
+            "MIN_RESEARCH_SPEED" | "MIN_RESEARCH_SPEED_FACTOR" if v > 0.0 => {
+                rules.minimum_speed = v;
+                imported.push(key.into());
+            }
+            _ => {}
+        }
+    }
+    imported
+}
+
+pub fn load_country_research_start(source: &str) -> (Option<usize>, BTreeSet<String>) {
+    load_country_research_context(source, "", &Default::default())
+}
+fn load_country_research_context(
+    source: &str,
+    tag: &str,
+    ctx: &crate::research::ResearchContext,
+) -> (Option<usize>, BTreeSet<String>) {
+    let Ok(b) = parse_pdx(source) else {
+        return (None, BTreeSet::new());
+    };
+    let c = crate::research_import::initialize_country(
+        &b,
+        tag,
+        crate::game::GameDate::START,
+        &ResearchCatalogue::default(),
+        &ResearchRules::default(),
+        ctx,
+    );
+    (Some(c.slots.len()), c.researched)
+}
+pub fn read_country_start(
+    history_dir: &Path,
+    tag: &str,
+) -> Result<(Option<usize>, BTreeSet<String>), String> {
+    let mut files = fs::read_dir(history_dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                n.starts_with(&format!("{tag} ")) || n.starts_with(&format!("{tag}-"))
+            })
+        })
+        .collect::<Vec<_>>();
+    files.sort();
+    let path = files
+        .last()
+        .ok_or_else(|| format!("Нет истории страны {tag}"))?;
+    let root = history_dir
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or(history_dir);
+    let ctx = crate::research_import::profile_context(root);
+    Ok(load_country_research_context(
+        &fs::read_to_string(path).map_err(|e| e.to_string())?,
+        tag,
+        &ctx,
+    ))
 }
 
 /// Use localisation from the player's own game files, never embedded
 /// translations taken from the copyrighted vanilla data set.
 pub fn load_localisation(
-    root:&Path, language:&str, catalogue:&mut ResearchCatalogue,
-)->Result<usize,String>{
-    if !language.chars().all(|c|c.is_ascii_alphabetic()||c=='_') {
+    root: &Path,
+    language: &str,
+    catalogue: &mut ResearchCatalogue,
+) -> Result<usize, String> {
+    if !language
+        .chars()
+        .all(|c| c.is_ascii_alphabetic() || c == '_')
+    {
         return Err("Invalid language".into());
     }
-    let directory=root.join(language);
-    let mut folders=vec![directory.clone()];
-    let mut files=Vec::new();
-    while let Some(folder)=folders.pop(){
-        let entries=fs::read_dir(&folder)
-            .map_err(|e|format!("{}: {e}",folder.display()))?;
-        for entry in entries.flatten(){
-            let path=entry.path();
-            if path.is_dir(){folders.push(path);}
-            else if path.extension().and_then(|x|x.to_str())==Some("yml") {
+    let directory = root.join(language);
+    let mut folders = vec![directory.clone()];
+    let mut files = Vec::new();
+    while let Some(folder) = folders.pop() {
+        let entries = fs::read_dir(&folder).map_err(|e| format!("{}: {e}", folder.display()))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                folders.push(path);
+            } else if path.extension().and_then(|x| x.to_str()) == Some("yml") {
                 files.push(path);
             }
         }
     }
     files.sort();
-    let mut changed=0;
-    for path in files{
-        let source=fs::read_to_string(&path)
-            .map_err(|e|format!("{}: {e}",path.display()))?;
-        for line in source.lines(){
-            let raw=line.trim_start_matches('\u{feff}').trim();
-            if raw.starts_with('#')||raw.starts_with('l')&&raw.ends_with(':'){continue;}
-            let Some((key,value))=raw.split_once(':')else{continue;};
-            let key=key.trim();
-            let Some(quote_start)=value.find('"')else{continue;};
-            let tail=&value[quote_start+1..];
-            let mut output=String::new();let mut escaped=false;
-            for c in tail.chars(){
-                if escaped{output.push(c);escaped=false;continue;}
-                if c=='\\'{escaped=true;continue;}
-                if c=='"'{break;}
+    let mut changed = 0;
+    for path in files {
+        let source = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        for line in source.lines() {
+            let raw = line.trim_start_matches('\u{feff}').trim();
+            if raw.starts_with('#') || raw.starts_with('l') && raw.ends_with(':') {
+                continue;
+            }
+            let Some((key, value)) = raw.split_once(':') else {
+                continue;
+            };
+            let key = key.trim();
+            let Some(quote_start) = value.find('"') else {
+                continue;
+            };
+            let tail = &value[quote_start + 1..];
+            let mut output = String::new();
+            let mut escaped = false;
+            for c in tail.chars() {
+                if escaped {
+                    output.push(c);
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                    continue;
+                }
+                if c == '"' {
+                    break;
+                }
                 output.push(c);
             }
-            let changed_tech=if let Some(id)=key.strip_suffix("_desc"){
-                if let Some(tech)=catalogue.technologies.get_mut(id) {
-                    tech.description=output;true
-                }else{false}
-            }else if let Some(tech)=catalogue.technologies.get_mut(key){
-                tech.name=output;true
-            }else{false};
-            if changed_tech{changed+=1;}
+            let changed_tech = if let Some(id) = key.strip_suffix("_desc") {
+                if let Some(tech) = catalogue.technologies.get_mut(id) {
+                    tech.description = output;
+                    true
+                } else {
+                    false
+                }
+            } else if let Some(tech) = catalogue.technologies.get_mut(key) {
+                tech.name = output;
+                true
+            } else {
+                false
+            };
+            if changed_tech {
+                changed += 1;
+            }
         }
     }
     Ok(changed)
 }
 
-pub fn builtin_demo()->ResearchCatalogue {
-    let mut result=ResearchCatalogue::default();
-    // Standalone tutorial nodes only; never claim these are vanilla content.
-    for (id,year,cost,folder,x,y,parent) in [
-        ("basic_industry",1936,1.0,"industry",0.0,0.0,None),
-        ("production_tools_1",1937,1.25,"industry",0.0,1.0,Some("basic_industry")),
-        ("production_tools_2",1939,1.5,"industry",0.0,2.0,Some("production_tools_1")),
-        ("basic_radio",1936,1.0,"electronics",0.0,0.0,None),
-        ("signal_networks",1938,1.5,"electronics",0.0,1.0,Some("basic_radio")),
-        ("basic_aviation",1936,1.25,"air",0.0,0.0,None),
-        ("advanced_aviation",1939,1.5,"air",0.0,1.0,Some("basic_aviation")),
-        ("basic_land_vehicles",1936,1.0,"land",0.0,0.0,None),
-        ("motorisation",1938,1.5,"land",0.0,1.0,Some("basic_land_vehicles")),
-    ] {
-        let mut tech=Technology::sample(id,year,cost);
-        tech.folder=folder.into();tech.x=x;tech.y=y;
-        if let Some(parent)=parent{tech.prerequisites.insert(parent.into());}
-        result.insert(tech).unwrap();
-    }
-    result
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]fn starting_technology_reads_nested_legacy_else_and_profile_dlc_branch(){
-        let source="set_research_slots=3 if={limit={has_dlc=D} set_technology={modern=1} else={set_technology={legacy=1}}} 1939.1.1={set_technology={future=1}}";
-        let(slots,known)=load_country_research_start(source);assert_eq!(slots,Some(3));assert_eq!(known,BTreeSet::from(["legacy".into()]));
-        let mut m=crate::military_model::MilitaryModifiers::default();m.dlcs.insert("D".into());
-        let(_,known)=load_country_research_context(source,"GER",&m);assert_eq!(known,BTreeSet::from(["modern".into()]));
+    #[test]
+    fn starting_technology_reads_nested_legacy_else_and_profile_dlc_branch() {
+        let source = "set_research_slots=3 if={limit={has_dlc=D} set_technology={modern=1} else={set_technology={legacy=1}}} 1939.1.1={set_technology={future=1}}";
+        let (slots, known) = load_country_research_start(source);
+        assert_eq!(slots, Some(3));
+        assert_eq!(known, BTreeSet::from(["legacy".into()]));
+        let mut m = crate::research::ResearchContext::default();
+        m.dlcs.insert("D".into());
+        let (_, known) = load_country_research_context(source, "GER", &m);
+        assert_eq!(known, BTreeSet::from(["modern".into()]));
     }
     #[test]
-    fn imports_paths_dependencies_xor_and_restrictions(){
-        let raw=r#"
+    fn imports_paths_dependencies_xor_and_restrictions() {
+        let raw = r#"
             technologies = {
                 first = {
                     start_year = 1936
@@ -429,46 +569,81 @@ mod tests {
                 third = { start_year = 1940 research_cost = 1 }
             }
         "#;
-        let mut c=ResearchCatalogue::default();
-        assert_eq!(parse_technology_file(raw,&mut c).unwrap(),3);
+        let mut c = ResearchCatalogue::default();
+        assert_eq!(parse_technology_file(raw, &mut c).unwrap(), 3);
         c.validate().unwrap();
-        let second=&c.technologies["second"];
+        let second = &c.technologies["second"];
         assert!(second.prerequisites.contains("first"));
         assert!(second.xor.contains("third"));
-        assert_eq!(second.folder,"industry");
-        assert_eq!((second.x,second.y),(2.0,3.0));
-        assert_eq!(second.ai_weight,1.5);
-        assert_eq!(c.technologies["first"].categories.len(),2);
+        assert_eq!(second.folder, "industry");
+        assert_eq!((second.x, second.y), (2.0, 3.0));
+        assert_eq!(second.ai_weight, 1.5);
+        assert_eq!(c.technologies["first"].categories.len(), 2);
     }
     #[test]
-    fn focus_only_and_unsupported_triggers_fail_closed(){
-        let mut c=ResearchCatalogue::default();
+    fn focus_only_and_unsupported_triggers_fail_closed() {
+        let mut c = ResearchCatalogue::default();
         parse_technology_file("technologies = { special = { allow = { always = no } research_cost = 1 } mystery = { allow = { unknown_condition = yes } research_cost = 1 } }",&mut c).unwrap();
-        let player=crate::research::CountryResearch::new(1,&ResearchRules::default());
-        assert!(!c.visible("special",&player));
-        assert!(!c.visible("mystery",&player));
+        let player = crate::research::CountryResearch::new(1, &ResearchRules::default());
+        assert!(!c.visible("special", &player));
+        assert!(!c.visible("mystery", &player));
     }
     #[test]
-    fn loads_defines_and_country_start_settings(){
-        let mut rules=ResearchRules::default();
-        update_rules_from_defines("NDefines.NTechnology.BASE_TECH_COST = 115, -- note\nNDefines.NTechnology.BASE_YEAR_AHEAD_PENALTY_FACTOR = 3,\nNDefines.NTechnology.BASE_RESEARCH_POINTS_SAVED = 24,",&mut rules);
-        assert_eq!((rules.base_tech_cost,rules.year_ahead_penalty,rules.max_saved_days),(115.0,3.0,24.0));
-        let (slots,tech)=load_country_research_start("set_research_slots = 3 set_technology = { radio = 1 other = 0 }");
-        assert_eq!(slots,Some(3));assert!(tech.contains("radio"));assert!(!tech.contains("other"));
+    fn loads_defines_and_country_start_settings() {
+        let mut rules = ResearchRules::default();
+        update_rules_from_defines(
+            "NDefines.NTechnology.BASE_TECH_COST = 115, -- note\nNDefines.NTechnology.BASE_YEAR_AHEAD_PENALTY_FACTOR = 3,\nNDefines.NTechnology.BASE_RESEARCH_POINTS_SAVED = 24,",
+            &mut rules,
+        );
+        assert_eq!(
+            (
+                rules.base_tech_cost,
+                rules.year_ahead_penalty,
+                rules.max_saved_days
+            ),
+            (115.0, 3.0, 24.0)
+        );
+        let (slots, tech) = load_country_research_start(
+            "set_research_slots = 3 set_technology = { radio = 1 other = 0 }",
+        );
+        assert_eq!(slots, Some(3));
+        assert!(tech.contains("radio"));
+        assert!(!tech.contains("other"));
     }
     #[test]
     fn imported_localisation_keeps_local_labels_not_hardcoded_assets() {
-        let sample="\u{feff}l_russian:\n sample_tech:0 \"Локальное имя\"\n sample_tech_desc:0 \"Описание\"\n";
-        let mut catalogue=ResearchCatalogue::default();
-        catalogue.insert(Technology::sample("sample_tech",1936,1.0)).unwrap();
+        let sample = "\u{feff}l_russian:\n sample_tech:0 \"Локальное имя\"\n sample_tech_desc:0 \"Описание\"\n";
+        let mut catalogue = ResearchCatalogue::default();
+        catalogue
+            .insert(Technology::sample("sample_tech", 1936, 1.0))
+            .unwrap();
         // The parser's critical localisation fields can be validated directly:
         assert!(sample.contains("sample_tech:0"));
-        assert_eq!(catalogue.technologies["sample_tech"].name,"sample tech");
+        assert_eq!(catalogue.technologies["sample_tech"].name, "sample tech");
     }
 
     #[test]
-    fn handles_unclosed_braces_and_comments(){
+    fn handles_unclosed_braces_and_comments() {
         assert!(parse_pdx("technologies = { broken = {").is_err());
-        assert_eq!(parse_pdx("test = { #hello\n a = 1 }").unwrap().len(),1);
+        assert_eq!(parse_pdx("test = { #hello\n a = 1 }").unwrap().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod define_tests {
+    use super::*;
+    #[test]
+    fn literal_lua_tables_and_overrides_are_read_without_executing_expressions() {
+        let mut rules = ResearchRules::default();
+        let imported = update_rules_from_defines(
+            "-- BASE_TECH_COST=999\nNDefines.NTechnology={ BASE_TECH_COST=100, BASE_YEAR_AHEAD_PENALTY_FACTOR=2.5 }\n--[[ BASE_TECH_COST=777 ]]\nNDefines.NTechnology.BASE_RESEARCH_POINTS_SAVED=45",
+            &mut rules,
+        );
+        assert_eq!(rules.base_tech_cost, 100.0);
+        assert_eq!(rules.year_ahead_penalty, 2.5);
+        assert_eq!(rules.max_saved_days, 45.0);
+        assert_eq!(imported.len(), 3);
+        update_rules_from_defines("NDefines.NTechnology.BASE_TECH_COST=100*2", &mut rules);
+        assert_eq!(rules.base_tech_cost, 100.0);
     }
 }
