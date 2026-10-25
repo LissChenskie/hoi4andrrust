@@ -37,27 +37,27 @@ impl BuildingType {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Infrastructure => "Infrastructure",
-            Self::CivilianFactory => "Civilian factory",
-            Self::MilitaryFactory => "Military factory",
-            Self::Dockyard => "Dockyard",
-            Self::SyntheticRefinery => "Synthetic refinery",
-            Self::FuelSilo => "Fuel silo",
-            Self::RocketSite => "Rocket site",
-            Self::NuclearReactor => "Nuclear reactor",
+            Self::Infrastructure => "Инфраструктура",
+            Self::CivilianFactory => "Гражданская фабрика",
+            Self::MilitaryFactory => "Военный завод",
+            Self::Dockyard => "Верфь",
+            Self::SyntheticRefinery => "НПЗ",
+            Self::FuelSilo => "Топливное хранилище",
+            Self::RocketSite => "Ракетная площадка",
+            Self::NuclearReactor => "Ядерный реактор",
         }
     }
 
     pub fn short_label(self) -> &'static str {
         match self {
-            Self::Infrastructure => "Infra",
-            Self::CivilianFactory => "Civ",
-            Self::MilitaryFactory => "Mil",
-            Self::Dockyard => "Dock",
-            Self::SyntheticRefinery => "Synth",
-            Self::FuelSilo => "Fuel",
-            Self::RocketSite => "Rocket",
-            Self::NuclearReactor => "Nuke",
+            Self::Infrastructure => "Инфра",
+            Self::CivilianFactory => "Фабрика",
+            Self::MilitaryFactory => "Завод",
+            Self::Dockyard => "Верфь",
+            Self::SyntheticRefinery => "НПЗ",
+            Self::FuelSilo => "Топливо",
+            Self::RocketSite => "Ракеты",
+            Self::NuclearReactor => "Реактор",
         }
     }
 
@@ -483,9 +483,9 @@ impl EconomicLawPreset {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Unset => "Law: not imported",
-            Self::CivilianEconomy => "Civilian economy (35%)",
-            Self::PartialMobilization => "Partial mobilisation (20%)",
+            Self::Unset => "Экономика: не задана",
+            Self::CivilianEconomy => "Гражданская экономика (35%)",
+            Self::PartialMobilization => "Частичная мобилизация (20%)",
         }
     }
 

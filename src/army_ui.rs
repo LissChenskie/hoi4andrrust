@@ -26,6 +26,7 @@ pub struct ArmyView {
     pub strategic: bool,
     page: Page,
     scroll: usize,
+    selection_scroll: usize,
     template: usize,
     unit: usize,
     slot: (usize, usize),
@@ -39,6 +40,12 @@ pub struct ArmyView {
     trace: usize,
 }
 impl ArmyView {
+    pub fn show_template(&mut self, index: usize) {
+        self.open = true;
+        self.page = Page::Templates;
+        self.template = index;
+        self.draft = None;
+    }
     pub fn close(&mut self) {
         self.open = false;
         self.map_drag = None;
@@ -47,12 +54,7 @@ impl ArmyView {
     }
 }
 pub fn bounds(_view: &ArmyView) -> Rect {
-    Rect::new(
-        12.0,
-        109.0,
-        (screen_width() - 24.0).min(455.0).max(1.0),
-        (screen_height() - 109.0 - if screen_width() < 760.0 { 72.0 } else { 16.0 }).max(180.0),
-    )
+    crate::ui_layout::Layout::current().primary()
 }
 pub fn is_over_panel(point: Vec2, view: &ArmyView) -> bool {
     interactive_bounds(view).is_some_and(|r| r.contains(point))
@@ -66,12 +68,12 @@ fn label(text: &str, x: f32, y: f32, width: f32, size: f32, color: Color) {
 }
 fn order(d: &DivisionOrder) -> &'static str {
     match d {
-        DivisionOrder::Hold => "HOLD",
-        DivisionOrder::Move { .. } => "MOVE",
-        DivisionOrder::Attack { .. } => "ATTACK",
-        DivisionOrder::Retreat { .. } => "RETREAT",
-        DivisionOrder::StrategicRedeployment { .. } => "REDEPLOY",
-        DivisionOrder::Train { .. } => "TRAIN",
+        DivisionOrder::Hold => "ОБОРОНА",
+        DivisionOrder::Move { .. } => "ДВИЖЕНИЕ",
+        DivisionOrder::Attack { .. } => "АТАКА",
+        DivisionOrder::Retreat { .. } => "ОТСТУПЛЕНИЕ",
+        DivisionOrder::StrategicRedeployment { .. } => "ПЕРЕБРОСКА",
+        DivisionOrder::Train { .. } => "УЧЕНИЯ",
     }
 }
 fn result<T>(view: &mut ArmyView, value: Result<T, String>, ok: &str) {
@@ -86,10 +88,10 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
         Some(bounds(view))
     } else if !view.selected.is_empty() {
         Some(Rect::new(
-            12.0,
-            109.0,
-            (screen_width() - 24.0).min(242.0).max(1.0),
-            250.0f32.min((screen_height() - 190.0).max(120.0)),
+            0.0,
+            crate::ui_layout::Layout::current().top,
+            (screen_width() - 10.0).min(310.0).max(1.0),
+            (screen_height() - crate::ui_layout::Layout::current().top - 52.0).max(120.0),
         ))
     } else {
         None
@@ -130,70 +132,144 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
         return;
     };
     ui::panel(a.x, a.y, a.w, a.h);
-    let x = a.x + 9.0;
-    let width = a.w - 18.0;
+    ui::header(a.x + 3.0, a.y + 3.0, a.w - 6.0, "ВЫБОР ВОЙСК");
+    if ui::small_button(
+        "×",
+        Rect::new(a.right() - 33.0, a.y + 7.0, 25.0, 24.0),
+        false,
+    ) {
+        view.selected.clear();
+        return;
+    }
+    let x = a.x + 10.0;
+    let width = a.w - 20.0;
     let total = w
         .divisions
         .values()
         .filter(|d| d.country == tag && !d.destroyed)
         .count();
     label(
-        &format!("SELECTED {} / ARMY {total}", view.selected.len()),
+        &format!("Выбрано: {} / {total}", view.selected.len()),
         x,
-        a.y + 23.0,
-        width - 25.0,
+        a.y + 54.0,
+        width,
         13.0,
         ui::GOLD,
     );
-    if ui::small_button(
-        "X",
-        Rect::new(a.right() - 30.0, a.y + 6.0, 22.0, 22.0),
-        false,
-    ) {
-        view.selected.clear();
-        return;
-    }
-    label("RMB: move / attack", x, a.y + 47.0, width, 12.0, ui::TEXT);
+    let portrait = Rect::new(x, a.y + 66.0, 61.0, 72.0);
+    ui::row_bg(portrait, false, false);
+    crate::ui_icons::draw(
+        crate::ui_icons::Icon::Officer,
+        Rect::new(x + 8.0, a.y + 73.0, 45.0, 54.0),
+        ui::MUTED,
+    );
+    ui::placeholder(
+        Rect::new(x + 72.0, a.y + 69.0, width - 72.0, 29.0),
+        "Назначить командира",
+    );
     label(
-        "Shift+RMB: queue   H: stop",
-        x,
-        a.y + 65.0,
-        width,
+        "ПКМ: движение / атака",
+        x + 72.0,
+        a.y + 115.0,
+        width - 72.0,
+        11.0,
+        ui::TEXT,
+    );
+    label(
+        "Shift + ПКМ: маршрут",
+        x + 72.0,
+        a.y + 133.0,
+        width - 72.0,
         11.0,
         ui::MUTED,
     );
-    let mut y = a.y + 86.0;
-    for id in view.selected.iter().take(3) {
-        if let Some(d) = w.divisions.get(id) {
-            label(
-                &format!("{} / {}", d.name, order(&d.order)),
-                x,
-                y,
-                width,
-                11.0,
-                ui::TEXT,
-            );
-            ui::progress_bar(
-                Rect::new(x, y + 5.0, width * 0.47, 6.0),
-                d.strength() as f32,
-            );
-            ui::progress_bar(
-                Rect::new(x + width * 0.53, y + 5.0, width * 0.47, 6.0),
-                (d.organization / d.derived.stats.organization.max(1.0)) as f32,
-            );
-            y += 34.0;
+    let list = Rect::new(x, a.y + 151.0, width, (a.h - 252.0).max(45.0));
+    let ids: Vec<_> = view.selected.iter().copied().collect();
+    let rows = (list.h / 48.0).max(1.0) as usize;
+    let max = ids.len().saturating_sub(rows);
+    view.selection_scroll = view.selection_scroll.min(max);
+    if ui::inside(list) {
+        let (_, dy) = mouse_wheel();
+        if dy > 0.0 {
+            view.selection_scroll = view.selection_scroll.saturating_sub(2);
+        } else if dy < 0.0 {
+            view.selection_scroll = (view.selection_scroll + 2).min(max);
         }
     }
-    label(&view.notice, x, a.bottom() - 13.0, width, 10.0, ui::GOLD);
-    if ui::small_button("STOP", Rect::new(x, a.bottom() - 61.0, 68.0, 26.0), false) {
+    ui::scrollbar(list, &mut view.selection_scroll, max, rows);
+    for (i, id) in ids
+        .iter()
+        .skip(view.selection_scroll)
+        .take(rows)
+        .enumerate()
+    {
+        let d = &w.divisions[id];
+        let r = Rect::new(x, list.y + i as f32 * 48.0, width, 44.0);
+        ui::row_bg(r, false, i % 2 == 1);
+        crate::ui_icons::draw(
+            crate::ui_icons::Icon::Army,
+            Rect::new(r.x + 5.0, r.y + 10.0, 22.0, 22.0),
+            ui::GOLD,
+        );
+        label(&d.name, r.x + 36.0, r.y + 16.0, r.w - 44.0, 12.0, ui::TEXT);
+        label(
+            order(&d.order),
+            r.x + 36.0,
+            r.y + 30.0,
+            r.w - 44.0,
+            9.0,
+            ui::MUTED,
+        );
+        ui::progress_bar(
+            Rect::new(r.x + 36.0, r.bottom() - 7.0, (r.w - 48.0) * 0.48, 4.0),
+            d.strength() as f32,
+        );
+        ui::progress_bar(
+            Rect::new(
+                r.x + 36.0 + (r.w - 48.0) * 0.53,
+                r.bottom() - 7.0,
+                (r.w - 48.0) * 0.47,
+                4.0,
+            ),
+            (d.organization / d.derived.stats.organization.max(1.0)) as f32,
+        );
+        ui::tooltip(
+            r,
+            &d.name,
+            &format!(
+                "Провинция {} · Организация {:.1} · Сила {:.0}%",
+                d.province,
+                d.organization,
+                d.strength() * 100.0
+            ),
+        );
+        if ui::inside(r) && is_mouse_button_pressed(MouseButton::Left) {
+            view.selected.clear();
+            view.selected.insert(*id);
+        }
+    }
+    label(&view.notice, x, a.bottom() - 89.0, width, 10.0, ui::GOLD);
+    if ui::small_button(
+        "Стоп · H",
+        Rect::new(x, a.bottom() - 76.0, 95.0, 29.0),
+        false,
+    ) {
         view.notice = crate::army_controls::stop_selection(w, world, tag, &view.selected).message();
     }
     if ui::small_button(
-        "REDEPLOY",
-        Rect::new(x + 74.0, a.bottom() - 61.0, width - 74.0, 26.0),
+        "Переброска",
+        Rect::new(x + 101.0, a.bottom() - 76.0, width - 101.0, 29.0),
         view.strategic,
     ) {
         view.strategic = !view.strategic;
+    }
+    if ui::small_button(
+        "Управление дивизиями",
+        Rect::new(x, a.bottom() - 39.0, width, 29.0),
+        false,
+    ) {
+        view.open = true;
+        view.page = Page::Divisions;
     }
 }
 
@@ -211,7 +287,7 @@ pub fn draw(
     }
     let a = bounds(view);
     ui::panel(a.x, a.y, a.w, a.h);
-    ui::header(a.x + 4.0, a.y + 4.0, a.w - 8.0, "LAND ARMY");
+    ui::header(a.x + 4.0, a.y + 4.0, a.w - 8.0, "СУХОПУТНЫЕ ВОЙСКА");
     if ui::small_button(
         "X",
         Rect::new(a.x + a.w - 36.0, a.y + 7.0, 26.0, 24.0),
@@ -235,11 +311,11 @@ pub fn draw(
     let mut y = a.y + 51.0;
     let tabw = width / 5.0;
     for (i, (p, title)) in [
-        (Page::Divisions, "UNITS"),
-        (Page::Templates, "DESIGN"),
-        (Page::Equipment, "GEAR"),
-        (Page::Battles, "BATTLES"),
-        (Page::Data, "DATA"),
+        (Page::Divisions, "ДИВИЗИИ"),
+        (Page::Templates, "ШАБЛОНЫ"),
+        (Page::Equipment, "ТЕХНИКА"),
+        (Page::Battles, "БОИ"),
+        (Page::Data, "ДАННЫЕ"),
     ]
     .into_iter()
     .enumerate()
@@ -261,7 +337,7 @@ pub fn draw(
         .unwrap_or_default();
     label(
         &format!(
-            "Manpower {men}   Army XP {xp:.1}   Selected {}",
+            "Резерв {men} · Опыт {xp:.1} · Выбрано {}",
             view.selected.len()
         ),
         x,
@@ -281,7 +357,7 @@ pub fn draw(
                 .count();
             let expected = w.countries.get(tag).map_or(0, |a| a.history_expected);
             label(
-                &format!("Divisions {count} / starting OOB {expected}   RMB: order"),
+                &format!("Дивизии {count} / стартовый состав {expected} · ПКМ: приказ"),
                 x,
                 y + 12.0,
                 width,
@@ -290,39 +366,39 @@ pub fn draw(
             );
             y += 22.0;
             let bw = (width - 9.0) / 4.0;
-            if ui::small_button("CLEAR", Rect::new(x, y, bw, 28.0), false) {
+            if ui::small_button("СНЯТЬ", Rect::new(x, y, bw, 28.0), false) {
                 view.selected.clear();
             }
-            if ui::small_button("STOP", Rect::new(x + bw + 3.0, y, bw, 28.0), false) {
+            if ui::small_button("СТОП", Rect::new(x + bw + 3.0, y, bw, 28.0), false) {
                 let ids: Vec<_> = view.selected.iter().copied().collect();
                 for id in ids {
                     let r = w.stop(tag, id, world);
-                    result(view, r, "Orders stopped");
+                    result(view, r, "Приказы остановлены");
                 }
             }
             if ui::small_button(
-                "REDEPLOY",
+                "ПЕРЕБРОСКА",
                 Rect::new(x + (bw + 3.0) * 2.0, y, bw, 28.0),
                 view.strategic,
             ) {
                 view.strategic = !view.strategic;
             }
             if ui::small_button(
-                "DISBAND",
+                "РАСФОРМ.",
                 Rect::new(x + (bw + 3.0) * 3.0, y, bw, 28.0),
                 false,
             ) {
                 let ids: Vec<_> = view.selected.iter().copied().collect();
                 for id in ids {
                     let r = w.disband(tag, id, production);
-                    result(view, r, "Division disbanded");
+                    result(view, r, "Дивизия расформирована");
                 }
             }
             y += 36.0;
             if let Some(province) = selected_province {
                 let controller = world.controller_of_province(province).unwrap_or("---");
                 label(
-                    &format!("Province {province} / {controller}"),
+                    &format!("Провинция {province} · Контроль {controller}"),
                     x,
                     y + 16.0,
                     (width - 119.0).max(1.0),
@@ -332,13 +408,13 @@ pub fn draw(
                 if controller != tag
                     && !w.at_war(tag, controller)
                     && ui::small_button(
-                        "DECLARE WAR",
+                        "ВОЙНА",
                         Rect::new(x + width - 116.0, y, 116.0, 25.0),
                         false,
                     )
                 {
                     let r = w.declare_war(tag, controller, world);
-                    result(view, r, "War declared");
+                    result(view, r, "Война объявлена");
                 }
                 y += 33.0;
             }
@@ -352,7 +428,7 @@ pub fn draw(
             view.scroll = view.scroll.min(ids.len().saturating_sub(rows.max(1)));
             if ids.is_empty() {
                 label(
-                    "No imported armies. See DATA for missing files.",
+                    "Дивизии не загружены. Подробности во вкладке «ДАННЫЕ».",
                     x,
                     y + 18.0,
                     width,
@@ -413,10 +489,10 @@ pub fn draw(
                 }
             }
             let py = bottom - 22.0;
-            if ui::small_button("PREV", Rect::new(x, py, 65.0, 24.0), false) {
+            if ui::small_button("НАЗАД", Rect::new(x, py, 65.0, 24.0), false) {
                 view.scroll = view.scroll.saturating_sub(rows.max(1));
             }
-            if ui::small_button("NEXT", Rect::new(x + 70.0, py, 65.0, 24.0), false) {
+            if ui::small_button("ДАЛЕЕ", Rect::new(x + 70.0, py, 65.0, 24.0), false) {
                 view.scroll =
                     (view.scroll + rows.max(1)).min(ids.len().saturating_sub(rows.max(1)));
             }
@@ -435,7 +511,7 @@ pub fn draw(
                 .collect();
             if models.is_empty() {
                 label(
-                    "No unlocked equipment models imported.",
+                    "Доступные модели снаряжения не загружены.",
                     x,
                     y,
                     width,
@@ -460,7 +536,7 @@ pub fn draw(
                     .copied()
                     .unwrap_or(0);
                 label(
-                    &format!("Stockpile {count}  Cost {:.2} IC", e.cost),
+                    &format!("Склад {count} · Стоимость {:.2} ПМ", e.cost),
                     x,
                     y,
                     width,
@@ -469,7 +545,7 @@ pub fn draw(
                 );
                 y += 14.0;
                 if ui::small_button(
-                    "ADD PRODUCTION LINE",
+                    "СОЗДАТЬ ЛИНИЮ ВЫПУСКА",
                     Rect::new(x, y, 190.0f32.min(width), 30.0),
                     false,
                 ) {
@@ -477,13 +553,13 @@ pub fn draw(
                     result(
                         view,
                         r,
-                        "Model production added; assign factories in PRODUCTION",
+                        "Линия создана. Назначьте заводы в разделе «Производство».",
                     );
                 }
                 y += 57.0;
             }
             label(
-                "Reinforcements draw from this national stockpile daily.",
+                "Пополнения получают снаряжение с этого склада ежедневно.",
                 x,
                 y,
                 width,
@@ -507,7 +583,7 @@ pub fn draw(
             let battles: Vec<_> = w.battles.keys().copied().collect();
             if battles.is_empty() {
                 label(
-                    "No battles yet. Declare war and issue an order.",
+                    "Боёв ещё нет. Объявите войну и прикажите атаковать.",
                     x,
                     y,
                     width,
@@ -527,7 +603,10 @@ pub fn draw(
                 let b = w.battles.get_mut(&battles[view.battle]).unwrap();
                 b.trace_enabled = true;
                 label(
-                    &format!("Battle {} / P{} / {}h", b.id, b.province, b.elapsed_hours),
+                    &format!(
+                        "Бой {} · Провинция {} · {} ч",
+                        b.id, b.province, b.elapsed_hours
+                    ),
                     x + 36.0,
                     y + 18.0,
                     width - 75.0,
@@ -537,7 +616,7 @@ pub fn draw(
                 y += 46.0;
                 label(
                     &format!(
-                        "Attack: {} active + {} reserve",
+                        "Атака: {} в бою + {} в резерве",
                         b.attackers.active.len(),
                         b.attackers.reserves.len()
                     ),
@@ -550,7 +629,7 @@ pub fn draw(
                 y += 21.0;
                 label(
                     &format!(
-                        "Defense: {} active + {} reserve",
+                        "Оборона: {} в бою + {} в резерве",
                         b.defenders.active.len(),
                         b.defenders.reserves.len()
                     ),
@@ -584,7 +663,7 @@ pub fn draw(
                     );
                     y += 21.0;
                     label(
-                        &format!("Tactics: {} / {}", t.attacker_tactic, t.defender_tactic),
+                        &format!("Тактики: {} / {}", t.attacker_tactic, t.defender_tactic),
                         x,
                         y,
                         width,
@@ -594,7 +673,7 @@ pub fn draw(
                     y += 21.0;
                     label(
                         &format!(
-                            "Last hour losses: {} men, {} equipment",
+                            "Потери за час: {} чел., {} ед. техники",
                             t.manpower_losses, t.equipment_losses
                         ),
                         x,
@@ -606,10 +685,11 @@ pub fn draw(
                     y += 30.0;
                     if !t.attacks.is_empty() {
                         view.trace %= t.attacks.len();
-                        if ui::small_button("PREV HIT", Rect::new(x, y, 92.0, 23.0), false) {
+                        if ui::small_button("НАЗАД", Rect::new(x, y, 92.0, 23.0), false) {
                             view.trace = (view.trace + t.attacks.len() - 1) % t.attacks.len();
                         }
-                        if ui::small_button("NEXT HIT", Rect::new(x + 98.0, y, 92.0, 23.0), false) {
+                        if ui::small_button("ДАЛЕЕ", Rect::new(x + 98.0, y, 92.0, 23.0), false)
+                        {
                             view.trace = (view.trace + 1) % t.attacks.len();
                         }
                         y += 40.0;
@@ -758,11 +838,11 @@ pub fn draw(
                 );
                 y += 35.0;
             }
-            if ui::small_button("PREV", Rect::new(x, bottom - 22.0, 65.0, 24.0), false) {
+            if ui::small_button("НАЗАД", Rect::new(x, bottom - 22.0, 65.0, 24.0), false) {
                 view.scroll = view.scroll.saturating_sub(rows.max(1));
             }
             if ui::small_button(
-                "NEXT",
+                "ДАЛЕЕ",
                 Rect::new(x + 70.0, bottom - 22.0, 65.0, 24.0),
                 false,
             ) {
@@ -792,7 +872,7 @@ fn draw_templates(
     let names: Vec<_> = army.templates.keys().cloned().collect();
     if names.is_empty() {
         label(
-            "Import division_template entries from history/units.",
+            "Шаблоны дивизий не загружены.",
             x,
             y,
             width,
@@ -822,7 +902,7 @@ fn draw_templates(
     let grid_height = cell * 5.0;
     if y + grid_height + 145.0 > bottom {
         label(
-            "Increase window height to edit the full 5x5 template.",
+            "Увеличьте высоту окна для редактора шаблонов.",
             x,
             y + 20.0,
             width,
@@ -885,7 +965,7 @@ fn draw_templates(
     }
     y += grid_height + 8.0;
     if ui::small_button(
-        "REGIMENTAL SUPPORT",
+        "ПОЛКОВАЯ ПОДДЕРЖКА",
         Rect::new(x, y, width, 25.0),
         view.regimental,
     ) {
@@ -928,8 +1008,12 @@ fn draw_templates(
             view.unit = (view.unit + 1) % options.len();
         }
         let mut changed = t.clone();
-        let apply = ui::small_button("SET", Rect::new(x + width - 106.0, y, 48.0, 25.0), false);
-        let remove = ui::small_button("DEL", Rect::new(x + width - 53.0, y, 48.0, 25.0), false);
+        let apply = ui::small_button(
+            "ВЫБРАТЬ",
+            Rect::new(x + width - 106.0, y, 48.0, 25.0),
+            false,
+        );
+        let remove = ui::small_button("УБРАТЬ", Rect::new(x + width - 53.0, y, 48.0, 25.0), false);
         if apply || remove {
             if view.support {
                 let regiment = view.regimental.then_some(view.slot.0);
@@ -984,7 +1068,10 @@ fn draw_templates(
         .catalogue
         .edit_cost(&army.templates[&name], view.draft.as_ref().unwrap());
     if ui::small_button(
-        &format!("SAVE {:.0} XP", cost.as_ref().copied().unwrap_or(0.0)),
+        &format!(
+            "СОХРАНИТЬ · {:.0} ОПЫТА",
+            cost.as_ref().copied().unwrap_or(0.0)
+        ),
         Rect::new(x, y, width / 2.0 - 4.0, 28.0),
         false,
     ) {
@@ -993,18 +1080,18 @@ fn draw_templates(
             view.editing.as_deref(),
             view.draft.as_ref().unwrap().clone(),
         );
-        result(view, r, "Template saved");
+        result(view, r, "Шаблон сохранён");
     }
     if ui::small_button(
-        "RECRUIT",
+        "РАЗВЕРНУТЬ",
         Rect::new(x + width / 2.0 + 4.0, y, width / 2.0 - 4.0, 28.0),
         false,
     ) {
         if let Some(province) = province {
             let r = w.recruit(tag, &name, province, world, production);
-            result(view, r, "Recruitment started");
+            result(view, r, "Дивизия развёрнута");
         } else {
-            view.notice = "Choose an own province on the map first".into();
+            view.notice = "Сначала выберите свою провинцию на карте".into();
         }
     }
 }
@@ -1016,6 +1103,7 @@ pub fn draw_counters(
     view: &ArmyView,
     source: Rect,
     area: Rect,
+    pointer_blocked: bool,
 ) {
     let project = |p| crate::army_controls::project(world, p, source, area);
     for d in w
@@ -1099,23 +1187,23 @@ pub fn draw_counters(
         if battle {
             draw_circle(r.right(), r.y, 4.0, RED);
         }
-        if r.contains(mouse) {
+        if r.contains(mouse) && !pointer_blocked {
             let selected_id = c
                 .ids
                 .iter()
                 .find(|id| view.selected.contains(id))
                 .unwrap_or(&c.ids[0]);
             let title = format!(
-                "{} [{}]  |  {} division(s)",
+                "{} [{}] · Дивизий: {}",
                 w.divisions[selected_id].name,
                 c.country,
                 c.ids.len()
             );
-            let width = crate::measure_ui_text(&title, 12).width.min(area.w - 8.0) + 8.0;
-            let x = r.x.min(area.right() - width).max(area.x);
-            let y = (r.y - 25.0).max(area.y);
-            draw_rectangle(x, y, width, 20.0, ui::BASE);
-            label(&title, x + 4.0, y + 15.0, width - 8.0, 12.0, ui::TEXT);
+            ui::tooltip(
+                r,
+                &title,
+                "ЛКМ: выбрать дивизию. Ctrl + ЛКМ: выбрать весь стек. ПКМ: движение или атака.",
+            );
         }
     }
 }

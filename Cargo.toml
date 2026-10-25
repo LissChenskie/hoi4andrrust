@@ -7,7 +7,7 @@ license = "MIT"
 
 [dependencies]
 macroquad = "0.4"
-image = { version = "0.25", default-features = false, features = ["bmp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "tga"] }
 
 [profile.dev]
 opt-level = 1

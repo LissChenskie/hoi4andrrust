@@ -24,20 +24,20 @@ impl Equipment {
     ];
     pub fn label(self) -> &'static str {
         match self {
-            Self::InfantryKit => "Infantry equipment",
-            Self::SupportKit => "Support equipment",
-            Self::Truck => "Trucks",
-            Self::FieldEquipment => "Field equipment",
-            Self::Aircraft => "Aircraft",
+            Self::InfantryKit => "Пехотное снаряжение",
+            Self::SupportKit => "Доп. оснащение",
+            Self::Truck => "Грузовики",
+            Self::FieldEquipment => "Артиллерия",
+            Self::Aircraft => "Авиация",
         }
     }
     pub fn short_label(self) -> &'static str {
         match self {
-            Self::InfantryKit => "INF",
-            Self::SupportKit => "SUP",
-            Self::Truck => "TRK",
-            Self::FieldEquipment => "FLD",
-            Self::Aircraft => "AIR",
+            Self::InfantryKit => "ПЕХ",
+            Self::SupportKit => "ДОП",
+            Self::Truck => "АВТО",
+            Self::FieldEquipment => "АРТ",
+            Self::Aircraft => "АВИА",
         }
     }
     /// Deliberately provisional IC costs for an original prototype.

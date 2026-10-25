@@ -14,10 +14,10 @@ pub struct OrderReport {
 impl OrderReport {
     pub fn message(&self) -> String {
         if self.errors.is_empty() {
-            format!("Orders accepted: {}", self.accepted)
+            format!("Приказов принято: {}", self.accepted)
         } else {
             format!(
-                "{} ordered; {} blocked: {}",
+                "Приказов принято: {}; недоступно: {} · {}",
                 self.accepted,
                 self.errors.len(),
                 self.errors[0]
