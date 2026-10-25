@@ -11,6 +11,29 @@ pub const BASE: Color = Color::new(0.075, 0.088, 0.092, 1.0);
 pub const FACE: Color = Color::new(0.19, 0.21, 0.22, 1.0);
 pub const EDGE: Color = Color::new(0.36, 0.39, 0.38, 1.0);
 
+/// Research content is clipped by the renderer, including partially visible
+/// cards and connectors. Scissors use physical framebuffer pixels on HiDPI.
+pub struct ClipGuard;
+pub fn clip(rect: Rect) -> ClipGuard {
+    let dpi = macroquad::window::screen_dpi_scale();
+    unsafe {
+        macroquad::window::get_internal_gl().quad_gl.scissor(Some((
+            (rect.x * dpi).round() as i32,
+            (rect.y * dpi).round() as i32,
+            (rect.w * dpi).round().max(0.0) as i32,
+            (rect.h * dpi).round().max(0.0) as i32,
+        )));
+    }
+    ClipGuard
+}
+impl Drop for ClipGuard {
+    fn drop(&mut self) {
+        unsafe {
+            macroquad::window::get_internal_gl().quad_gl.scissor(None);
+        }
+    }
+}
+
 pub fn panel(x: f32, y: f32, w: f32, h: f32) {
     if w <= 1.0 || h <= 1.0 {
         return;

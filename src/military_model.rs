@@ -738,6 +738,8 @@ pub struct CountryArmy {
     pub base_modifiers: StatBlock,
     pub history_expected: usize,
     pub history_imported: usize,
+    pub history_source: Option<String>,
+    pub history_oobs: Vec<String>,
     pub history_errors: Vec<String>,
 }
 

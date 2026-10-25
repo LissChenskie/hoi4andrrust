@@ -22,6 +22,7 @@ pub use hoi4_mobile::pdx;
 pub use hoi4_mobile::research;
 pub use hoi4_mobile::research_data;
 pub use hoi4_mobile::research_script;
+mod research_layout;
 mod research_ui;
 mod scenario;
 mod session;
@@ -1879,11 +1880,38 @@ fn draw_country_select(
         .count();
     hoi_ui::flag(tag, Rect::new(info.x + 14.0, info.y + 51.0, 63.0, 40.0));
     hoi_ui::label(
-        &format!("Дивизии: {n} · Регионы: {}", economy.states),
+        &format!(
+            "Дивизии: {} · Регионы: {}",
+            if n == 0
+                && military
+                    .countries
+                    .get(tag)
+                    .is_some_and(|a| !a.history_errors.is_empty())
+            {
+                "ошибка загрузки".into()
+            } else {
+                n.to_string()
+            },
+            economy.states
+        ),
         Rect::new(info.x + 92.0, info.y + 56.0, info.w - 103.0, 30.0),
         13.0,
         hoi_ui::GOLD,
     );
+    if let Some(army) = military
+        .countries
+        .get(tag)
+        .filter(|a| !a.history_errors.is_empty())
+    {
+        hoi_ui::tooltip(
+            Rect::new(info.x + 92.0, info.y + 56.0, info.w - 103.0, 30.0),
+            "Ошибка загрузки армии",
+            &format!(
+                "{}\nПодробности: data/hoi4/military-import-report.json",
+                army.history_errors.join("\n")
+            ),
+        );
+    }
     hoi_ui::label(
         &format!(
             "Фабрики {}   Заводы {}   Верфи {}",
@@ -2823,6 +2851,15 @@ async fn main() {
         session
             .military
             .use_research_registry(&research_catalogue, &session.research);
+        let report = military_history::import_report(&session.military, start_date);
+        match serde_json::to_vec_pretty(&report)
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| {
+                fs::write("data/hoi4/military-import-report.json", bytes).map_err(|e| e.to_string())
+            }) {
+            Ok(()) => {}
+            Err(error) => eprintln!("[military-report] {error}"),
+        }
         for diagnostic in &session.military.diagnostics {
             eprintln!("[military] {diagnostic}");
         }

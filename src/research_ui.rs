@@ -13,6 +13,8 @@ pub struct ResearchView {
     pub slot_scroll: usize,
     pub tree_pan: Vec2,
     pub tree_zoom: f32,
+    pub layout_key: String,
+    pub layout: crate::research_layout::TreeLayout,
     pub pinch_last: Option<(f32, Vec2)>,
     pub estimate_key: String,
     pub estimates: Vec<Option<u32>>,
@@ -219,7 +221,14 @@ fn draw_slots(
     refresh_estimates(view, country, catalogue, rules, date, tag);
     let active = country.slots.iter().filter(|s| s.active.is_some()).count();
     ui::label(
-        &format!("Занято ячеек: {active} / {}", if country.research_slots_known { country.slots.len().to_string() } else { "?".into() }),
+        &format!(
+            "Занято ячеек: {active} / {}",
+            if country.research_slots_known {
+                country.slots.len().to_string()
+            } else {
+                "?".into()
+            }
+        ),
         Rect::new(r.x + 12.0, r.y + 47.0, r.w - 24.0, 22.0),
         14.0,
         ui::GOLD,
@@ -423,17 +432,7 @@ pub fn draw(
     }
     let tabs_y = r.y + 45.0;
     let tabs = Rect::new(r.x + 12.0, tabs_y, r.w - 24.0, 39.0);
-    let mut folders: Vec<String> = catalogue
-        .folder_order
-        .iter()
-        .filter(|f| catalogue.folders.contains(*f))
-        .cloned()
-        .collect();
-    for f in &catalogue.folders {
-        if !folders.contains(f) {
-            folders.push(f.clone());
-        }
-    }
+    let folders = crate::research_layout::folders(catalogue);
     if folders.is_empty() {
         draw_ui_text(
             "Технологии не загружены",
@@ -521,90 +520,114 @@ pub fn draw(
         .into_iter()
         .flatten()
         .filter_map(|id| catalogue.technologies.get(id))
-        .filter(|t| catalogue.displayed(&t.id, country))
+        .filter(|t| {
+            t.kind == crate::research::ResearchKind::Standard && catalogue.displayed(&t.id, country)
+        })
         .collect();
+    let layout_key = format!("{}:{folder}", catalogue.fingerprint);
+    if view.layout_key != layout_key {
+        view.layout = crate::research_layout::build(catalogue, folder);
+        view.layout_key = layout_key;
+        view.selected = None;
+        selected = None;
+        view.drag_last = None;
+        view.pinch_last = None;
+    }
+    let content_scale = zoom * if compact { 0.8 } else { 1.0 };
     let position = |t: &crate::research::Technology| {
-        if folder == "unplaced" && t.positions.is_empty() {
-            return (
-                0.0,
-                nodes.iter().position(|node| node.id == t.id).unwrap_or(0) as f32,
-            );
-        }
-        t.positions
-            .iter()
-            .find(|p| p.folder == *folder)
-            .map_or((t.x, t.y), |p| (p.x, p.y))
+        view.layout
+            .positions
+            .get(&t.id)
+            .copied()
+            .unwrap_or_default()
+            * content_scale
     };
-    let min_x = nodes.iter().map(|t| position(t).0).fold(0.0_f32, f32::min);
-    let min_y = nodes.iter().map(|t| position(t).1).fold(0.0_f32, f32::min);
-    let max_row = nodes
-        .iter()
-        .map(|t| (position(t).1 - min_y).ceil().max(0.0) as usize)
-        .max()
-        .unwrap_or(0);
-    let max_col = nodes
-        .iter()
-        .map(|t| (position(t).0 - min_x).ceil().max(0.0) as usize)
-        .max()
-        .unwrap_or(0);
-    let rows_visible = (tree_h / row_step).ceil().max(1.0) as usize;
+    let extent = view
+        .layout
+        .positions
+        .values()
+        .copied()
+        .fold(Vec2::ZERO, |a, b| a.max(b))
+        * content_scale
+        + vec2(node_w + 24.0, node_h + 48.0);
     let col_step = node_w + 12.0 * zoom;
-    let cols_visible = (tree_rect.w / col_step).floor().max(1.0) as usize;
-    view.scroll_rows = view
-        .scroll_rows
-        .min(max_row.saturating_sub(rows_visible.saturating_sub(1)));
-    view.scroll_columns = view
-        .scroll_columns
-        .min(max_col.saturating_sub(cols_visible.saturating_sub(1)));
+    let max_row = ((extent.y - tree_rect.h).max(0.0) / row_step).ceil() as usize;
+    let max_col = ((extent.x - tree_rect.w).max(0.0) / col_step).ceil() as usize;
+    view.scroll_rows = view.scroll_rows.min(max_row);
+    view.scroll_columns = view.scroll_columns.min(max_col);
     let pan = view.tree_pan;
-    let coords = |x: f32, y: f32| -> Vec2 {
-        vec2(
-            tree_rect.x + 12.0 + pan.x + (x - min_x - view.scroll_columns as f32) * col_step,
-            tree_rect.y + 34.0 + pan.y + (y - min_y - view.scroll_rows as f32) * row_step,
-        )
+    let coords = |pos: Vec2| -> Vec2 {
+        // Pixel snapping keeps thin borders and text on a stable pixel grid.
+        (vec2(tree_rect.x + 12.0, tree_rect.y + 34.0) + pan + pos
+            - vec2(
+                view.scroll_columns as f32 * col_step,
+                view.scroll_rows as f32 * row_step,
+            ))
+        .round()
     };
-    // Parent links are rendered before nodes. Arrow color follows completion.
+    let clip = ui::clip(tree_rect);
+    // Parent links are drawn once, beneath cards. Clipping is shared with the
+    // cards, so crossing a viewport edge never removes an entire connection.
     for tech in &nodes {
-        let dest = coords(position(tech).0, position(tech).1);
-        for parent in tech.prerequisites.iter().chain(&tech.incoming_paths) {
+        let dest = coords(position(tech));
+        let parents: std::collections::BTreeSet<_> = tech
+            .prerequisites
+            .iter()
+            .chain(&tech.incoming_paths)
+            .collect();
+        for parent in parents {
             if let Some(p) = catalogue.technologies.get(parent).filter(|p| {
-                p.positions.iter().any(|pos| pos.folder == *folder) || p.folder == *folder
+                view.layout.positions.contains_key(&p.id) && catalogue.displayed(&p.id, country)
             }) {
-                let start = coords(position(p).0, position(p).1);
-                if start.y + node_h >= tree_rect.y
-                    && dest.y <= tree_rect.y + tree_h
-                    && start.x >= tree_rect.x
-                    && start.x + node_w <= tree_rect.x + tree_rect.w
-                    && dest.x >= tree_rect.x
-                    && dest.x + node_w <= tree_rect.x + tree_rect.w
-                {
-                    draw_line(
-                        start.x + node_w * 0.5,
-                        start.y + node_h,
-                        dest.x + node_w * 0.5,
-                        dest.y,
-                        2.0,
-                        if country.researched.contains(parent) {
-                            ui::GREEN
-                        } else {
-                            ui::EDGE
-                        },
-                    );
+                let start = coords(position(p));
+                let horizontal = view.layout.horizontal.contains(&tech.id);
+                let (from, to) = if horizontal {
+                    (
+                        start + vec2(node_w, node_h * 0.5),
+                        dest + vec2(0.0, node_h * 0.5),
+                    )
+                } else {
+                    (
+                        start + vec2(node_w * 0.5, node_h),
+                        dest + vec2(node_w * 0.5, 0.0),
+                    )
+                };
+                let color = if country.researched.contains(parent) {
+                    ui::GREEN
+                } else {
+                    ui::EDGE
+                };
+                let elbow = if horizontal {
+                    vec2((from.x + to.x) * 0.5, from.y)
+                } else {
+                    vec2(from.x, (from.y + to.y) * 0.5)
+                };
+                let elbow2 = if horizontal {
+                    vec2(elbow.x, to.y)
+                } else {
+                    vec2(to.x, elbow.y)
+                };
+                for (a, b) in [(from, elbow), (elbow, elbow2), (elbow2, to)] {
+                    if a.distance_squared(b) > 0.01 {
+                        draw_line(a.x, a.y, b.x, b.y, 2.0, color);
+                    }
                 }
             }
         }
     }
     let mut node_hit = false;
     for tech in &nodes {
-        let pos = coords(position(tech).0, position(tech).1);
-        if pos.y < tree_rect.y
-            || pos.y + node_h > tree_rect.y + tree_rect.h
-            || pos.x < tree_rect.x
-            || pos.x + node_w > tree_rect.x + tree_rect.w
-        {
+        let pos = coords(position(tech));
+        let area = Rect::new(pos.x, pos.y, node_w, node_h);
+        if !area.overlaps(&tree_rect) {
             continue;
         }
-        let area = Rect::new(pos.x, pos.y, node_w.min(tree_rect.w - 20.0), node_h);
+        let hit_area = Rect::new(
+            area.x.max(tree_rect.x),
+            area.y.max(tree_rect.y),
+            area.right().min(tree_rect.right()) - area.x.max(tree_rect.x),
+            area.bottom().min(tree_rect.bottom()) - area.y.max(tree_rect.y),
+        );
         let done = country.researched.contains(&tech.id);
         let active = country
             .slots
@@ -653,7 +676,7 @@ pub fn draw(
             label_color(&tech.id, country, &view.available),
         );
         ui::tooltip(
-            area,
+            hit_area,
             &tech.name,
             &format!(
                 "{}\nID: {} · {}\n{}\nИконка: визуальная заглушка",
@@ -663,13 +686,14 @@ pub fn draw(
                 effect_summary(tech)
             ),
         );
-        if ui::inside(area) {
+        if ui::inside(hit_area) {
             node_hit = true;
         }
-        if ui::inside(area) && is_mouse_button_pressed(MouseButton::Left) {
+        if ui::inside(hit_area) && is_mouse_button_pressed(MouseButton::Left) {
             selected = Some(tech.id.clone());
         }
     }
+    drop(clip);
     let mouse = vec2(mouse_position().0, mouse_position().1);
     let inside_tree = ui::inside(tree_rect);
     if inside_tree

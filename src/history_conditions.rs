@@ -43,10 +43,9 @@ pub fn resolve(
     today: GameDate,
 ) -> (Vec<Entry>, Vec<String>) {
     fn alternatives<'a>(b: &'a [Entry], out: &mut Vec<(&'a str, &'a [Entry])>) {
-        for e in b
-            .iter()
-            .filter(|e| (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")))
-        {
+        for e in b.iter().filter(|e| {
+            (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+        }) {
             if let Some(b) = e.block() {
                 out.push((&e.key, b));
                 alternatives(b, out);
@@ -78,7 +77,10 @@ pub fn resolve(
                 };
                 let mut chain = vec![("if", b)];
                 alternatives(b, &mut chain);
-                while i < entries.len() && (entries[i].key.eq_ignore_ascii_case("else") || entries[i].key.eq_ignore_ascii_case("else_if")) {
+                while i < entries.len()
+                    && (entries[i].key.eq_ignore_ascii_case("else")
+                        || entries[i].key.eq_ignore_ascii_case("else_if"))
+                {
                     let e = &entries[i];
                     i += 1;
                     if let Some(b) = e.block() {
@@ -108,7 +110,11 @@ pub fn resolve(
                         Some(true) => {
                             let body: Vec<_> = b
                                 .iter()
-                                .filter(|e| !(e.key.eq_ignore_ascii_case("limit") || e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")))
+                                .filter(|e| {
+                                    !(e.key.eq_ignore_ascii_case("limit")
+                                        || e.key.eq_ignore_ascii_case("else")
+                                        || e.key.eq_ignore_ascii_case("else_if"))
+                                })
                                 .cloned()
                                 .collect();
                             walk(&body, tag, m, today, out, diagnostics);
@@ -134,6 +140,23 @@ pub fn resolve(
                 continue;
             }
             match e.key.as_str() {
+                "units" => {
+                    // Country/OOB conditions also occur inside the units
+                    // container. Resolve them in the same ordered context.
+                    let mut body = Vec::new();
+                    walk(
+                        e.block().unwrap_or(&[]),
+                        tag,
+                        m,
+                        today,
+                        &mut body,
+                        diagnostics,
+                    );
+                    let mut container = e.clone();
+                    container.value = Some(crate::pdx::Value::Block(body));
+                    out.push(container);
+                    continue;
+                }
                 "set_country_flag" => {
                     if let Some(id) = e.atom() {
                         m.flags.insert(id.into());
@@ -176,12 +199,32 @@ mod tests {
     #[test]
     fn uppercase_country_history_selects_the_correct_oob_and_keeps_ids() {
         let raw=crate::pdx::parse_pdx("IF={LIMIT={has_dlc=D} set_oob=ModernCase set_technology={CaSeD=1}} ELSE_IF={LIMIT={always=no} set_oob=Wrong} ELSE={set_oob=LegacyCase}").unwrap();
-        let mut modifiers=crate::military_model::MilitaryModifiers::default();modifiers.dlcs.insert("D".into());
-        let (selected,diagnostics)=super::resolve(&raw,"AAA",&modifiers,crate::game::GameDate::START);
-        assert!(diagnostics.is_empty());assert!(selected.iter().any(|e|e.key=="set_oob"&&e.atom()==Some("ModernCase")));
-        assert!(!selected.iter().any(|e|e.atom()==Some("LegacyCase")||e.atom()==Some("Wrong")));
-        let (selected,_)=super::resolve(&raw,"AAA",&Default::default(),crate::game::GameDate::START);
-        assert!(selected.iter().any(|e|e.key=="set_oob"&&e.atom()==Some("LegacyCase")));
+        let mut modifiers = crate::military_model::MilitaryModifiers::default();
+        modifiers.dlcs.insert("D".into());
+        let (selected, diagnostics) =
+            super::resolve(&raw, "AAA", &modifiers, crate::game::GameDate::START);
+        assert!(diagnostics.is_empty());
+        assert!(
+            selected
+                .iter()
+                .any(|e| e.key == "set_oob" && e.atom() == Some("ModernCase"))
+        );
+        assert!(
+            !selected
+                .iter()
+                .any(|e| e.atom() == Some("LegacyCase") || e.atom() == Some("Wrong"))
+        );
+        let (selected, _) = super::resolve(
+            &raw,
+            "AAA",
+            &Default::default(),
+            crate::game::GameDate::START,
+        );
+        assert!(
+            selected
+                .iter()
+                .any(|e| e.key == "set_oob" && e.atom() == Some("LegacyCase"))
+        );
     }
     use super::*;
     #[test]

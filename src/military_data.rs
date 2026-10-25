@@ -698,6 +698,7 @@ pub struct OrderOfBattle {
     pub templates: Vec<DivisionTemplate>,
     pub divisions: Vec<StartingDivision>,
     pub diagnostics: Vec<String>,
+    pub warnings: Vec<String>,
     pub declared_divisions: usize,
 }
 pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
@@ -714,10 +715,22 @@ pub fn parse_oob_for_country(
     modifiers: &MilitaryModifiers,
     today: crate::game::GameDate,
 ) -> Result<OrderOfBattle, String> {
-    let root = parse_pdx(source)?;
-    let (root, diagnostics) = crate::history_conditions::resolve(&root, tag, modifiers, today);
+    let parsed = crate::pdx::parse_pdx_compatible(source)?;
+    let (root, diagnostics) =
+        crate::history_conditions::resolve(&parsed.entries, tag, modifiers, today);
+    let warnings = parsed
+        .eof_terminated_blocks
+        .into_iter()
+        .map(|span| {
+            format!(
+                "{tag}: OOB outer block at {}:{} ends at EOF",
+                span.line, span.column
+            )
+        })
+        .collect();
     let mut result = OrderOfBattle {
         diagnostics,
+        warnings,
         ..Default::default()
     };
     let default_equipment = number(&root, "start_equipment_factor", 1.0).clamp(0.0, 1.0);

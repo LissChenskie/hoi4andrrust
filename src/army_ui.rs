@@ -357,7 +357,15 @@ pub fn draw(
                 .count();
             let expected = w.countries.get(tag).map_or(0, |a| a.history_expected);
             label(
-                &format!("Дивизии {count} / стартовый состав {expected} · ПКМ: приказ"),
+                &if count == 0
+                    && w.countries
+                        .get(tag)
+                        .is_some_and(|a| !a.history_errors.is_empty())
+                {
+                    "Ошибка загрузки армии · см. вкладку «Данные»".into()
+                } else {
+                    format!("Дивизии {count} / стартовый состав {expected} · ПКМ: приказ")
+                },
                 x,
                 y + 12.0,
                 width,

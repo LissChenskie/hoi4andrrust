@@ -32,9 +32,16 @@ fn effects(
     oobs: &mut Vec<String>,
     ideas: &mut BTreeSet<String>,
     today: GameDate,
-) {
+) -> bool {
     let initial = warfare.countries[tag].modifiers.clone();
     let (resolved, diagnostics) = crate::history_conditions::resolve(entries, tag, &initial, today);
+    let resolved_all = diagnostics.is_empty();
+    warfare
+        .countries
+        .get_mut(tag)
+        .unwrap()
+        .history_errors
+        .extend(diagnostics.iter().cloned());
     warfare.diagnostics.extend(diagnostics);
     for entry in &resolved {
         let army = warfare.countries.get_mut(tag).unwrap();
@@ -53,6 +60,11 @@ fn effects(
             "set_country_flag" => {
                 if let Some(flag) = entry.atom() {
                     army.modifiers.flags.insert(flag.into());
+                }
+            }
+            "clr_country_flag" => {
+                if let Some(flag) = entry.atom() {
+                    army.modifiers.flags.remove(flag);
                 }
             }
             "add_manpower" => {
@@ -119,6 +131,7 @@ fn effects(
             _ => {}
         }
     }
+    resolved_all
 }
 
 pub fn initialize(
@@ -209,6 +222,7 @@ pub fn initialize(
     let tags: Vec<_> = world.countries.keys().cloned().collect();
     for tag in tags {
         let mut oobs = Vec::new();
+        let mut oob_history_known = true;
         let mut ideas = BTreeSet::new();
         let path = histories.iter().find(|p| {
             p.file_name()
@@ -216,20 +230,40 @@ pub fn initialize(
                 .is_some_and(|s| s.starts_with(&format!("{tag} -")) || s == format!("{tag}.txt"))
         });
         if let Some(path) = path {
+            warfare.countries.get_mut(&tag).unwrap().history_source =
+                Some(path.display().to_string());
             match fs::read_to_string(path)
                 .map_err(|e| e.to_string())
-                .and_then(|s| parse_pdx(&s))
+                .and_then(|s| crate::pdx::parse_pdx_compatible(&s))
             {
-                Ok(entries) => effects(
-                    &entries,
-                    &tag,
-                    &mut warfare,
-                    production,
-                    &mut oobs,
-                    &mut ideas,
-                    today,
-                ),
-                Err(e) => warfare.diagnostics.push(format!("{tag}: {e}")),
+                Ok(parsed) => {
+                    for span in &parsed.eof_terminated_blocks {
+                        warfare.diagnostics.push(format!(
+                            "{tag}: country history outer block at {}:{} ends at EOF",
+                            span.line, span.column
+                        ));
+                    }
+                    oob_history_known = effects(
+                        &parsed.entries,
+                        &tag,
+                        &mut warfare,
+                        production,
+                        &mut oobs,
+                        &mut ideas,
+                        today,
+                    );
+                }
+                Err(e) => {
+                    oob_history_known = false;
+                    let error = format!("{}: {e}", path.display());
+                    warfare
+                        .countries
+                        .get_mut(&tag)
+                        .unwrap()
+                        .history_errors
+                        .push(error.clone());
+                    warfare.diagnostics.push(error);
+                }
             }
         }
         for id in ideas {
@@ -248,6 +282,7 @@ pub fn initialize(
         // A deterministic known filename is allowed only when country history
         // supplies no OOB. Never import every bookmark into the same campaign.
         if oobs.is_empty()
+            && oob_history_known
             && unit_files
                 .iter()
                 .any(|p| p.file_stem().and_then(|s| s.to_str()) == Some(&format!("{tag}_1936")))
@@ -259,6 +294,7 @@ pub fn initialize(
         }
         let mut loaded = BTreeSet::new();
         let mut pending = Vec::new();
+        warfare.countries.get_mut(&tag).unwrap().history_oobs = oobs.clone();
         for oob in oobs {
             if !loaded.insert(oob.clone()) {
                 continue;
@@ -268,16 +304,18 @@ pub fn initialize(
                 .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str()));
             let result = file
                 .ok_or_else(|| format!("{tag}: missing OOB {oob}"))
-                .and_then(|p| fs::read_to_string(p).map_err(|e| e.to_string()))
+                .and_then(|p| fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())))
                 .and_then(|s| {
                     parse_oob_for_country(&s, &tag, &warfare.countries[&tag].modifiers, today)
-                });
+                })
+                .map_err(|e| format!("{tag}: history/units/{oob}.txt: {e}"));
             match result {
                 Ok(oob) => {
                     let army = warfare.countries.get_mut(&tag).unwrap();
                     army.history_expected += oob.declared_divisions;
                     army.history_errors.extend(oob.diagnostics.iter().cloned());
                     warfare.diagnostics.extend(oob.diagnostics);
+                    warfare.diagnostics.extend(oob.warnings);
                     for t in oob.templates {
                         warfare
                             .countries
@@ -478,9 +516,127 @@ pub fn initialize(
     warfare
 }
 
+/// Local diagnostics retain the selected OOB and the exact failure instead of
+/// reporting a failed import as a country that historically had no divisions.
+pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
+    let countries: BTreeMap<_, _> = warfare
+        .countries
+        .iter()
+        .map(|(tag, army)| {
+            (
+                tag,
+                serde_json::json!({
+                    "history_source": army.history_source,
+                    "selected_oobs": army.history_oobs,
+                    "declared_divisions": army.history_expected,
+                    "imported_divisions": army.history_imported,
+                    "templates": army.templates.keys().collect::<Vec<_>>(),
+                    "errors": army.history_errors,
+                }),
+            )
+        })
+        .collect();
+    serde_json::json!({"scenario": date.display(), "countries": countries, "diagnostics": warfare.diagnostics})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn conditional_bookmarks_load_the_selected_army_and_report_missing_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-oob-selection-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let put = |path: &str, text: &str| {
+            let p = root.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, text).unwrap();
+        };
+        put(
+            "common/units/infantry.txt",
+            "sub_units={infantry={group=infantry active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 maximum_speed=4}}",
+        );
+        put("military_profile.txt", "dlcs={expansion}");
+        // Authored fixture: country A, not an asserted historical French count.
+        put(
+            "history/countries/A - Test.txt",
+            "if={limit={has_dlc=expansion} set_oob=A_dlc else={set_oob=A_legacy}} 1939.1.1={set_oob=A_late}",
+        );
+        let template = "division_template={name=Infantry regiments={infantry={x=0 y=0}}} ";
+        put(
+            "history/units/A_dlc.txt",
+            &format!(
+                "{template} set_country_flag=deployed units={{IF={{LIMIT={{has_country_flag=deployed has_dlc=expansion}} division={{name=Existing division_template=Infantry location=1}} ELSE={{division={{name=Wrong division_template=Infantry location=1}}}}}}"
+            ),
+        );
+        put(
+            "history/units/A_late.txt",
+            &format!(
+                "{template} units={{division={{name=Later division_template=Infantry location=1}}}}"
+            ),
+        );
+        let world = crate::warfare::tests::world();
+        let run = |date| {
+            initialize(
+                &root,
+                &world,
+                &Default::default(),
+                &mut Default::default(),
+                date,
+            )
+        };
+        let early = run(GameDate::START);
+        assert_eq!(early.countries["A"].history_oobs, vec!["A_dlc"]);
+        assert_eq!(early.countries["A"].history_imported, 1);
+        assert_eq!(early.divisions.values().next().unwrap().name, "Existing");
+        assert!(early.countries["A"].history_errors.is_empty());
+        assert!(
+            early
+                .diagnostics
+                .iter()
+                .any(|s| s.contains("OOB outer block") && s.contains("ends at EOF"))
+        );
+        let late = run(GameDate {
+            year: 1939,
+            month: 8,
+            day: 14,
+        });
+        assert_eq!(late.countries["A"].history_oobs, vec!["A_late"]);
+        assert_eq!(late.countries["A"].history_imported, 1);
+        assert_eq!(late.divisions.values().next().unwrap().name, "Later");
+        fs::remove_file(root.join("history/units/A_dlc.txt")).unwrap();
+        let failed = run(GameDate::START);
+        let report = import_report(&failed, GameDate::START);
+        assert_eq!(report["countries"]["A"]["selected_oobs"][0], "A_dlc");
+        assert!(
+            report["countries"]["A"]["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("history/units/A_dlc.txt")
+        );
+        assert_eq!(failed.countries["A"].history_imported, 0);
+        put(
+            "history/units/A_1936.txt",
+            &format!(
+                "{template} units={{division={{name=WrongFallback division_template=Infantry location=1}}}}"
+            ),
+        );
+        put(
+            "history/countries/A - Test.txt",
+            "if={limit={unknown_predicate=yes} set_oob=A_dlc else={set_oob=A_1936}}",
+        );
+        let unknown = run(GameDate::START);
+        assert!(unknown.countries["A"].history_oobs.is_empty());
+        assert!(!unknown.countries["A"].history_errors.is_empty());
+        assert_eq!(unknown.countries["A"].history_imported, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn real_support_grid_defines_do_not_discard_armies_with_several_companies() {
         let root = std::env::temp_dir().join(format!(
