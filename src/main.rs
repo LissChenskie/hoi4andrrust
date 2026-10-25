@@ -23,6 +23,8 @@ mod military_data;
 mod warfare;
 mod military_history;
 mod army_ui;
+mod history_conditions;
+mod army_controls;
 
 use game::GameState;
 use world::World;
@@ -169,9 +171,7 @@ struct ProvinceMap {
     /// World-space pixel kept under the given screen pixel while zoom eases.
     zoom_anchor: Option<(Vec2, Vec2)>,
     pinch_tracker: map_camera::PinchTracker,
-    last_mouse: Vec2,
-    dragging: bool,
-    drag_moved: bool,
+
     map_mode: MapMode,
 }
 
@@ -292,9 +292,7 @@ impl ProvinceMap {
             pan: Vec2::ZERO,
             zoom_anchor: None,
             pinch_tracker: map_camera::PinchTracker::default(),
-            last_mouse: Vec2::ZERO,
-            dragging: false,
-            drag_moved: false,
+
             map_mode: MapMode::Political,
         })
     }
@@ -1461,7 +1459,7 @@ fn map_view_rect(map: &ProvinceMap, placing: bool) -> Rect {
         else if compact { 210.0 } else { 154.0 };
     let available_w = (screen_width() - left - 22.0).max(1.0);
     let bottom_reserve = if placing { if compact { 72.0 } else { 74.0 } }
-        else if compact { 270.0 } else { 260.0 };
+        else if compact { 72.0 } else { 18.0 };
     let available_h = (screen_height() - top - bottom_reserve).max(1.0);
     let scale = (available_w / map.width as f32).min(available_h / map.height as f32);
     let width = map.width as f32 * scale;
@@ -1472,6 +1470,12 @@ fn map_view_rect(map: &ProvinceMap, placing: bool) -> Rect {
         width,
         height,
     )
+}
+
+fn province_inspector_bounds(selected:bool,construction:bool,production:bool,research:bool,army:&army_ui::ArmyView)->Option<Rect>{
+    if !selected||construction||production||research||army.open||!army.selected.is_empty(){return None;}
+    let compact=screen_width()<760.0;let x=if compact{12.0}else{270.0};let h=if compact{242.0}else{232.0};
+    Some(Rect::new(x,screen_height()-h-14.0,screen_width()-x-22.0,h))
 }
 
 fn draw_map_viewer(
@@ -1522,6 +1526,8 @@ fn draw_map_viewer(
                 hoi_ui::stat(362.0, 7.0, 95.0, "MIL FACTORIES", &total.military_factories.to_string());
                 hoi_ui::stat(464.0, 7.0, 88.0, "DOCKYARDS", &total.dockyards.to_string());
                 hoi_ui::stat(559.0, 7.0, 88.0, "STATES", &total.states.to_string());
+                let divisions=military.divisions.values().filter(|d|d.country==tag&&!d.destroyed).count();
+                hoi_ui::stat(656.0,7.0,94.0,"DIVISIONS",&divisions.to_string());
             }
         }
     }
@@ -1620,7 +1626,8 @@ fn draw_map_viewer(
             && !construction_ui::is_over_panel(mouse, construction_view)
             && !production_ui::is_over_panel(mouse, production_view)
             && !research_ui::is_over_panel(mouse, research_view)
-            && !army_ui::is_over_panel(mouse, army_view) {
+            && !army_ui::is_over_panel(mouse, army_view)
+            && !province_inspector_bounds(selected.is_some(),construction_view.open,production_view.open,research_view.open,army_view).is_some_and(|r|r.contains(mouse)) {
             let wheel_step = wheel_y.clamp(-3.0, 3.0);
             // Small exponential steps: each wheel notch changes scale by only a few percent.
             map.set_zoom_at((wheel_step * 0.035).exp(), mouse, view);
@@ -1929,7 +1936,7 @@ fn draw_map_viewer(
                     format!("BUILD {}  |  green: free  ->  blue: full  |  {:.1}x",
                         construction_view.selected_building.short_label(), map.zoom)
                 } else {
-                    format!("{} mode  |  zoom {:.1}x  |  drag to pan  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom)
+                    format!("{} mode  |  zoom {:.1}x  |  MMB: pan / LMB: select / RMB: order  |  wheel to zoom at cursor", map.map_mode.label(), map.zoom)
                 },
                 rect.x,
                 rect.y + rect.h - 8.0,
@@ -1965,8 +1972,8 @@ fn draw_map_viewer(
         }
     }
 
-    // The construction view owns the center/left presentation while open.
-    if !construction_view.open && !production_view.open && !research_view.open && !army_view.open {
+    // Unit selection uses its own compact panel; province details are an overlay.
+    if !construction_view.open && !production_view.open && !research_view.open && !army_view.open && army_view.selected.is_empty() {
     if let (Some(map), Some((province_id, _, _, _))) = (map.as_deref_mut(), *selected) {
         let panel_x = if compact { 12.0 } else { 270.0 };
         let panel_w = screen_width() - panel_x - 22.0;
@@ -2231,6 +2238,7 @@ fn draw_map_viewer(
             research_catalogue, research_rules, game_date, research_view);
     }
     army_ui::draw(world,player_country,military,production_state,production_rules,selected.map(|p|p.0),army_view);
+    if !construction_view.open&&!production_view.open&&!research_view.open{army_ui::draw_selection(world,player_country,military,army_view);}
     Screen::MapViewer
 }
 
@@ -2404,7 +2412,7 @@ async fn main() {
                     if army_view.open {construction_view.close();production_view.close();research_view.open=false;}
                 }
                 if is_key_pressed(KeyCode::Escape) {
-                    army_view.close();army_view.targeting=false;
+                    army_view.close();army_view.selected.clear();
                     construction_view.close();
                     production_view.close();
                     research_view.open = false;
@@ -2423,6 +2431,12 @@ async fn main() {
                         session.clock.set_speed(speed);
                     }
                 }
+                if is_key_pressed(KeyCode::H)&&!construction_view.open&&!production_view.open&&!research_view.open{
+                    if let Some(tag)=session.player_country.as_deref(){
+                        army_view.notice=army_controls::stop_selection(&mut session.military,&session.world,tag,&army_view.selected).message();
+                    }
+                }
+                if is_key_pressed(KeyCode::B)&&(is_key_down(KeyCode::LeftControl)||is_key_down(KeyCode::RightControl)){army_view.strategic=!army_view.strategic;}
                 session.advance_frame(get_frame_time(), &building_rules, &production_rules,
                     &research_catalogue, &research_rules);
                 let GameSession { world, clock: game, player_country: selected_country,
@@ -2441,8 +2455,8 @@ async fn main() {
                 // that click must never leak through and place the building.
                 let placement_before_ui = construction_view.open && construction_view.map_placement;
                 let research_before_ui = research_view.open;
-                let army_before_ui = army_view.open;
-                let army_panel_before = army_ui::bounds(&army_view);
+                let army_before_ui = army_ui::interactive_bounds(&army_view);
+                let inspector_before_ui=province_inspector_bounds(selected.is_some(),construction_view.open,production_view.open,research_view.open,&army_view);
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(), world, &load_error, &mut selected, selected_country.as_deref(),
                     construction_queue, construction_priority, construction_order, &mut construction_menu,
@@ -2475,7 +2489,9 @@ async fn main() {
                         && !production_ui::is_over_panel(mouse, &production_view)
                         && !research_ui::is_over_panel(mouse, &research_view)
                         && !army_ui::is_over_panel(mouse, &army_view)
-                        && !(army_before_ui && army_panel_before.contains(mouse))
+                        && !army_before_ui.is_some_and(|r|r.contains(mouse))
+                        && !inspector_before_ui.is_some_and(|r|r.contains(mouse))
+                        && !province_inspector_bounds(selected.is_some(),construction_view.open,production_view.open,research_view.open,&army_view).is_some_and(|r|r.contains(mouse))
                         && !research_before_ui && !research_view.open
                         && (!construction_view.open || placement_before_ui);
 
@@ -2490,8 +2506,7 @@ async fn main() {
                         .collect();
                     let multitouch = contact_points.len() >= 2;
                     if multitouch {
-                        current_map.dragging = false;
-                        current_map.drag_moved = true;
+                        army_view.map_drag=None;army_view.right_down=None;army_view.pan_last=None;
                     }
                     let pinch_blocked = research_before_ui || research_view.open
                         || contact_points.iter().any(|point| {
@@ -2499,6 +2514,7 @@ async fn main() {
                                 || production_ui::is_over_panel(point.position, &production_view)
                                 || research_ui::is_over_panel(point.position, &research_view)
                                 || army_ui::is_over_panel(point.position, &army_view)
+                                || inspector_before_ui.is_some_and(|r|r.contains(point.position))
                         })
                         || (screen_width() >= 760.0 && contact_points.iter().any(|point| {
                             point.position.x >= screen_width() - 405.0
@@ -2510,18 +2526,40 @@ async fn main() {
                         current_map.zoom_pinch(gesture, rect);
                     }
 
-                    if !multitouch && is_mouse_button_pressed(MouseButton::Left) && inside_map {
-                        current_map.dragging = true;
-                        current_map.drag_moved = false;
-                        current_map.last_mouse = mouse;
+                    let military_mode = !construction_view.open
+                        && !production_view.open
+                        && !research_view.open
+                        && !research_before_ui;
+                    let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+                    let control = is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
+                    let touch_input = !touches().is_empty();
+                    if !multitouch && is_mouse_button_pressed(MouseButton::Middle) && inside_map {
+                        army_view.pan_last = Some(mouse);
                     }
-
-                    if !multitouch && is_mouse_button_down(MouseButton::Left) && current_map.dragging {
-                        let delta = mouse - current_map.last_mouse;
-                        if delta.length() > 1.5 {
-                            current_map.drag_moved = true;
+                    if let Some(last) = army_view.pan_last {
+                        if is_mouse_button_down(MouseButton::Middle) {
+                            let delta = mouse - last;
+                            let source = current_map.source_rect();
+                            current_map.zoom_anchor = None;
+                            current_map.pan.x -= delta.x / rect.w * source.w;
+                            current_map.pan.y -= delta.y / rect.h * source.h;
+                            current_map.clamp_pan();
+                            army_view.pan_last = Some(mouse);
+                        } else {
+                            army_view.pan_last = None;
                         }
-                        if current_map.drag_moved {
+                    }
+                    if !multitouch && is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                        army_view.map_drag = Some(army_controls::Drag::new(
+                            mouse,
+                            touch_input,
+                            shift,
+                            military_mode && !touch_input,
+                        ));
+                    }
+                    if let Some(drag) = army_view.map_drag.as_mut() {
+                        let delta = drag.update(mouse);
+                        if is_mouse_button_down(MouseButton::Left) && drag.moved() && !drag.box_select {
                             let source = current_map.source_rect();
                             current_map.zoom_anchor = None;
                             current_map.pan.x -= delta.x / rect.w * source.w;
@@ -2529,65 +2567,183 @@ async fn main() {
                             current_map.clamp_pan();
                         }
                     }
-
-                    if !multitouch && is_mouse_button_released(MouseButton::Left) && current_map.dragging {
-                        if !current_map.drag_moved && inside_map {
-                            let source = current_map.source_rect();
-                            let pixel_x = (source.x + ((mouse_x - rect.x) / rect.w) * source.w)
-                                .floor() as u32;
-                            let pixel_y = (source.y + ((mouse_y - rect.y) / rect.h) * source.h)
-                                .floor() as u32;
-                            selected = current_map
-                                .province_at(
-                                    pixel_x.min(current_map.width - 1),
-                                    pixel_y.min(current_map.height - 1),
-                                )
-                                .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
-                            if let Some((tag,province))=selected_country.as_deref().zip(selected.map(|p|p.0)) {
-                                army_ui::map_click(&mut army_view,military,world,tag,province);
+                    let mut click = None;
+                    if !multitouch && is_mouse_button_released(MouseButton::Left) {
+                        if let Some(drag) = army_view.map_drag.take() {
+                            if drag.moved() && drag.box_select && military_mode {
+                                if let Some(tag) = selected_country.as_deref() {
+                                    let counters =
+                                        army_controls::counters(world, military, current_map.source_rect(), rect);
+                                    let blocked = army_ui::interactive_bounds(&army_view)
+                                        .into_iter()
+                                        .collect::<Vec<_>>();
+                                    army_controls::select_box(
+                                        &mut army_view.selected,
+                                        &counters,
+                                        tag,
+                                        army_controls::selection_rect(drag.start, mouse),
+                                        drag.add,
+                                        &blocked,
+                                    );
+                                }
+                            } else if !drag.moved() && inside_map {
+                                click = Some(drag);
                             }
-                            let selected_state_id = selected.and_then(|(province_id, _, _, _)| current_map.state_by_province.get(&province_id).copied());
-                            if construction_view.open {
-                                construction_view.focused_state = selected_state_id;
-                                if construction_view.map_placement {
-                                    if let Some((tag, state_id)) = selected_country.as_deref().zip(selected_state_id) {
-                                        match construction::enqueue_project(
-                                            world, tag, state_id, construction_queue,
-                                            &building_rules, construction_view.selected_building,
-                                        ) {
-                                            Ok(()) => {
-                                                if !construction_priority.contains(&state_id) {
-                                                    construction_priority.push(state_id);
-                                                }
-                                                construction_order.sync(
-                                                    world, tag, &construction_queue,
-                                                );
-                                                let state_name = world.states.get(&state_id)
-                                                    .and_then(|s| s.name.as_deref()).unwrap_or("State");
-                                                construction_notice = format!(
-                                                    "{}: {} queued", state_name, construction_view.selected_building.label(),
-                                                );
+                        }
+                    }
+                    if let Some(drag) = click {
+                        let source = current_map.source_rect();
+                        let pixel = map_camera::screen_to_world(source, rect, mouse);
+                        let pixel_x = pixel
+                            .x
+                            .floor()
+                            .clamp(0.0, current_map.width.saturating_sub(1) as f32) as u32;
+                        let pixel_y = pixel
+                            .y
+                            .floor()
+                            .clamp(0.0, current_map.height.saturating_sub(1) as f32) as u32;
+                        selected = current_map
+                            .province_at(pixel_x, pixel_y)
+                            .map(|(id, rgb)| (id, rgb, pixel_x, pixel_y));
+                        if military_mode {
+                            if let Some(tag) = selected_country.as_deref() {
+                                let counters = army_controls::counters(world, military, source, rect);
+                                if let Some(counter) = army_controls::hit(&counters, tag, mouse) {
+                                    if let Some(g) = world.geography.provinces.get(&counter.province) {
+                                        selected = Some((counter.province, g.definition.rgb, pixel_x, pixel_y));
+                                    }
+                                    army_controls::select_counter(
+                                        &mut army_view.selected,
+                                        counter,
+                                        drag.add,
+                                        control,
+                                    );
+                                } else if drag.touch && !army_view.selected.is_empty() {
+                                    if let Some((province, _, _, _)) = selected {
+                                        army_ui::issue_order(
+                                            &mut army_view,
+                                            military,
+                                            world,
+                                            tag,
+                                            province,
+                                            drag.add,
+                                        );
+                                    }
+                                } else if !drag.add {
+                                    army_view.selected.clear();
+                                }
+                            }
+                        }
+                        let selected_state_id = selected.and_then(|(province_id, _, _, _)| {
+                            current_map.state_by_province.get(&province_id).copied()
+                        });
+                        if construction_view.open {
+                            construction_view.focused_state = selected_state_id;
+                            if construction_view.map_placement {
+                                if let Some((tag, state_id)) = selected_country.as_deref().zip(selected_state_id) {
+                                    match construction::enqueue_project(
+                                        world,
+                                        tag,
+                                        state_id,
+                                        construction_queue,
+                                        &building_rules,
+                                        construction_view.selected_building,
+                                    ) {
+                                        Ok(()) => {
+                                            if !construction_priority.contains(&state_id) {
+                                                construction_priority.push(state_id);
                                             }
-                                            Err(reason) => construction_notice = reason.to_owned(),
+                                            construction_order.sync(world, tag, &construction_queue);
+                                            let state_name = world
+                                                .states
+                                                .get(&state_id)
+                                                .and_then(|s| s.name.as_deref())
+                                                .unwrap_or("State");
+                                            construction_notice = format!(
+                                                "{}: {} queued",
+                                                state_name,
+                                                construction_view.selected_building.label(),
+                                            );
                                         }
+                                        Err(reason) => construction_notice = reason.to_owned(),
                                     }
                                 }
                             }
-                            current_map.highlighted_state_texture = selected_state_id
-                                .and_then(|state_id| current_map.state_bounds.get(&state_id).copied()
-                                    .map(|bounds| {
-                                        let texture = build_highlighted_state_texture(
-                                            current_map.width, current_map.height,
-                                            &current_map.state_ids_by_pixel, state_id, bounds,
-                                        );
-                                        (state_id, bounds, texture)
-                                    }));
                         }
-                        current_map.dragging = false;
+                        current_map.highlighted_state_texture = selected_state_id.and_then(|state_id| {
+                            current_map
+                                .state_bounds
+                                .get(&state_id)
+                                .copied()
+                                .map(|bounds| {
+                                    let texture = build_highlighted_state_texture(
+                                        current_map.width,
+                                        current_map.height,
+                                        &current_map.state_ids_by_pixel,
+                                        state_id,
+                                        bounds,
+                                    );
+                                    (state_id, bounds, texture)
+                                })
+                        });
                     }
-
-                    if current_map.dragging {
-                        current_map.last_mouse = mouse;
+                    if !multitouch && military_mode && is_mouse_button_pressed(MouseButton::Right) && inside_map {
+                        army_view.right_down = Some(mouse);
+                    }
+                    if !multitouch && is_mouse_button_released(MouseButton::Right) {
+                        if army_view
+                            .right_down
+                            .take()
+                            .is_some_and(|start| start.distance_squared(mouse) < 16.0)
+                            && inside_map
+                            && military_mode
+                            && !army_view.selected.is_empty()
+                        {
+                            let pixel = map_camera::screen_to_world(current_map.source_rect(), rect, mouse);
+                            let counters =
+                                army_controls::counters(world, military, current_map.source_rect(), rect);
+                            let province = army_controls::target(&counters, mouse).or_else(|| {
+                                current_map
+                                    .province_at(
+                                        pixel
+                                            .x
+                                            .floor()
+                                            .clamp(0.0, current_map.width.saturating_sub(1) as f32)
+                                            as u32,
+                                        pixel
+                                            .y
+                                            .floor()
+                                            .clamp(0.0, current_map.height.saturating_sub(1) as f32)
+                                            as u32,
+                                    )
+                                    .map(|p| p.0)
+                            });
+                            if let Some((tag, province)) = selected_country.as_deref().zip(province) {
+                                army_ui::issue_order(&mut army_view, military, world, tag, province, shift);
+                            }
+                        }
+                    }
+                    if let Some(drag) = army_view.map_drag.filter(|d| d.box_select && d.moved()) {
+                        let end = vec2(
+                            mouse.x.clamp(rect.x, rect.right()),
+                            mouse.y.clamp(rect.y, rect.bottom()),
+                        );
+                        let box_rect = army_controls::selection_rect(drag.start, end);
+                        draw_rectangle(
+                            box_rect.x,
+                            box_rect.y,
+                            box_rect.w,
+                            box_rect.h,
+                            Color::new(0.8, 0.7, 0.4, 0.1),
+                        );
+                        draw_rectangle_lines(
+                            box_rect.x,
+                            box_rect.y,
+                            box_rect.w,
+                            box_rect.h,
+                            1.0,
+                            hoi_ui::GOLD,
+                        );
                     }
 
                     current_map.update_zoom(get_frame_time(), rect);

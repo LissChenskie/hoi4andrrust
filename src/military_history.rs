@@ -4,8 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::game::GameDate;
-use crate::land_combat::{TacticContext, evaluate_conditions};
-use crate::military_data::{atom, block, layered_files, number, parse_oob, stats};
+use crate::military_data::{atom, block, layered_files, number, parse_oob_for_country, stats};
 use crate::military_model::{CountryArmy, StatBlock};
 use crate::production::ProductionState;
 use crate::research::ResearchWorld;
@@ -34,18 +33,19 @@ fn effects(
     ideas: &mut BTreeSet<String>,
     today: GameDate,
 ) {
-    let mut previous_if = None;
-    let mut dated = Vec::new();
-    for entry in entries {
-        if let Some(at) = date(&entry.key) {
-            if at <= today {
-                dated.push((at, entry));
-            }
-            continue;
-        }
+    let initial = warfare.countries[tag].modifiers.clone();
+    let (resolved, diagnostics) = crate::history_conditions::resolve(entries, tag, &initial, today);
+    warfare.diagnostics.extend(diagnostics);
+    for entry in &resolved {
         let army = warfare.countries.get_mut(tag).unwrap();
         match entry.key.as_str() {
-            "oob" | "load_oob" => {
+            "oob" | "set_oob" => {
+                if let Some(id) = entry.atom() {
+                    oobs.clear();
+                    oobs.push(id.into());
+                }
+            }
+            "load_oob" => {
                 if let Some(id) = entry.atom() {
                     oobs.push(id.into());
                 }
@@ -113,55 +113,11 @@ fn effects(
                     }
                 }
             }
-            "if" | "else_if" | "else" => {
-                if let Some(b) = entry.block() {
-                    if entry.key == "else_if" && previous_if != Some(false) {
-                        continue;
-                    }
-                    let ctx = TacticContext {
-                        country: tag,
-                        attacker: false,
-                        phase: None,
-                        modifiers: &army.modifiers,
-                        numbers: BTreeMap::new(),
-                    };
-                    let allowed = if entry.key == "else" {
-                        previous_if.map(|v| !v)
-                    } else {
-                        evaluate_conditions(block(b, "limit").unwrap_or(&[]), &ctx)
-                    };
-                    if allowed == Some(true) {
-                        let body: Vec<_> = b.iter().filter(|e| e.key != "limit").cloned().collect();
-                        effects(&body, tag, warfare, production, oobs, ideas, today);
-                    } else if allowed.is_none() {
-                        warfare
-                            .diagnostics
-                            .push(format!("{tag}: unsupported conditional history block"));
-                    }
-                    previous_if = if previous_if == Some(true) && entry.key != "if" {
-                        Some(true)
-                    } else {
-                        allowed
-                    };
-                }
-            }
             "create_equipment_variant" => warfare.diagnostics.push(format!(
                 "{tag}: custom equipment variant needs design import; no substitute is fabricated"
             )),
             _ => {}
         }
-    }
-    dated.sort_by_key(|(at, _)| *at);
-    for (_, entry) in dated {
-        effects(
-            entry.block().unwrap_or(&[]),
-            tag,
-            warfare,
-            production,
-            oobs,
-            ideas,
-            today,
-        );
     }
 }
 
@@ -315,9 +271,14 @@ pub fn initialize(
             let result = file
                 .ok_or_else(|| format!("{tag}: missing OOB {oob}"))
                 .and_then(|p| fs::read_to_string(p).map_err(|e| e.to_string()))
-                .and_then(|s| parse_oob(&s));
+                .and_then(|s| {
+                    parse_oob_for_country(&s, &tag, &warfare.countries[&tag].modifiers, today)
+                });
             match result {
                 Ok(oob) => {
+                    let army = warfare.countries.get_mut(&tag).unwrap();
+                    army.history_expected += oob.declared_divisions;
+                    army.history_errors.extend(oob.diagnostics.iter().cloned());
                     warfare.diagnostics.extend(oob.diagnostics);
                     for t in oob.templates {
                         warfare
@@ -329,7 +290,15 @@ pub fn initialize(
                     }
                     pending.extend(oob.divisions);
                 }
-                Err(e) => warfare.diagnostics.push(e),
+                Err(e) => {
+                    warfare
+                        .countries
+                        .get_mut(&tag)
+                        .unwrap()
+                        .history_errors
+                        .push(e.clone());
+                    warfare.diagnostics.push(e);
+                }
             }
         }
         warfare.refresh_modifiers(research);
@@ -344,7 +313,16 @@ pub fn initialize(
                 d.experience,
                 world,
             ) {
-                warfare.diagnostics.push(format!("{tag} / {}: {e}", d.name));
+                let error = format!("{tag} / {}: {e}", d.name);
+                warfare
+                    .countries
+                    .get_mut(&tag)
+                    .unwrap()
+                    .history_errors
+                    .push(error.clone());
+                warfare.diagnostics.push(error);
+            } else {
+                warfare.countries.get_mut(&tag).unwrap().history_imported += 1;
             }
         }
         let army = warfare.countries.get_mut(&tag).unwrap();
@@ -505,6 +483,63 @@ pub fn initialize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn army_with_engineer_families_imports_every_formation_and_ordered_name() {
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-army-count-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fn put(root: &Path, path: &str, s: &str) {
+            let p = root.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, s).unwrap();
+        }
+        put(
+            &root,
+            "common/units/parts.txt",
+            "sub_units={infantry={group=infantry active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 maximum_speed=4 need={rifles=100}} engineer={group=support active=yes same_support_type=engineer max_strength=2 max_organisation=20 manpower=300 need={rifles=10}}}",
+        );
+        put(
+            &root,
+            "common/units/equipment/rifles.txt",
+            "equipments={rifles={is_archetype=yes active=yes soft_attack=10 build_cost_ic=1} rifle_1={archetype=rifles year=1936}}",
+        );
+        put(
+            &root,
+            "history/countries/A - Test.txt",
+            "if={limit={has_dlc=D} set_oob=wrong else={set_oob=A_1936}} ",
+        );
+        let mut oob = String::from(
+            "division_template={name=Infantry regiments={infantry={x=0 y=0}} support={engineer={x=0 y=0}}} division_template={name=Mountain regiments={infantry={x=0 y=0}}} units={",
+        );
+        for i in 1..32 {
+            oob.push_str(&format!("division={{division_name={{is_name_ordered=yes name_order={i}}} division_template=Infantry location=1}}"));
+        }
+        oob.push_str("division={name=Independent division_template=Mountain location=1}}");
+        put(&root, "history/units/A_1936.txt", &oob);
+        let world = crate::warfare::tests::world();
+        let w = initialize(
+            &root,
+            &world,
+            &Default::default(),
+            &mut Default::default(),
+            GameDate::START,
+        );
+        assert_eq!(w.countries["A"].history_expected, 32);
+        assert_eq!(w.countries["A"].history_imported, 32);
+        assert_eq!(
+            w.divisions.values().filter(|d| d.country == "A").count(),
+            32
+        );
+        assert!(w.countries["A"].history_errors.is_empty());
+        assert_eq!(w.divisions[&1].name, "1. Infantry");
+        assert_eq!(w.divisions[&31].name, "31. Infantry");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn complete_starting_army_import_uses_history_laws_models_and_dated_wars() {
         let dir = std::env::temp_dir().join(format!(

@@ -5,7 +5,7 @@ use crate::warfare::Warfare;
 use crate::world::World;
 use crate::{draw_ui_text, hoi_ui as ui};
 use macroquad::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Page {
@@ -20,7 +20,9 @@ enum Page {
 pub struct ArmyView {
     pub open: bool,
     pub selected: BTreeSet<u64>,
-    pub targeting: bool,
+    pub map_drag: Option<crate::army_controls::Drag>,
+    pub pan_last: Option<Vec2>,
+    pub right_down: Option<Vec2>,
     pub strategic: bool,
     page: Page,
     scroll: usize,
@@ -39,23 +41,21 @@ pub struct ArmyView {
 impl ArmyView {
     pub fn close(&mut self) {
         self.open = false;
-        self.targeting = false;
+        self.map_drag = None;
+        self.pan_last = None;
+        self.right_down = None;
     }
 }
-pub fn bounds(view: &ArmyView) -> Rect {
+pub fn bounds(_view: &ArmyView) -> Rect {
     Rect::new(
         12.0,
         109.0,
         (screen_width() - 24.0).min(455.0).max(1.0),
-        if view.targeting {
-            126.0
-        } else {
-            (screen_height() - 109.0 - if screen_width() < 760.0 { 72.0 } else { 16.0 }).max(180.0)
-        },
+        (screen_height() - 109.0 - if screen_width() < 760.0 { 72.0 } else { 16.0 }).max(180.0),
     )
 }
 pub fn is_over_panel(point: Vec2, view: &ArmyView) -> bool {
-    view.open && bounds(view).contains(point)
+    interactive_bounds(view).is_some_and(|r| r.contains(point))
 }
 fn label(text: &str, x: f32, y: f32, width: f32, size: f32, color: Color) {
     let mut s = text.to_owned();
@@ -81,28 +81,120 @@ fn result<T>(view: &mut ArmyView, value: Result<T, String>, ok: &str) {
     };
 }
 
-pub fn map_click(view: &mut ArmyView, w: &mut Warfare, world: &World, tag: &str, province: u32) {
-    if !view.open {
+pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
+    if view.open {
+        Some(bounds(view))
+    } else if !view.selected.is_empty() {
+        Some(Rect::new(
+            12.0,
+            109.0,
+            (screen_width() - 24.0).min(242.0).max(1.0),
+            250.0f32.min((screen_height() - 190.0).max(120.0)),
+        ))
+    } else {
+        None
+    }
+}
+pub fn issue_order(
+    view: &mut ArmyView,
+    w: &mut Warfare,
+    world: &World,
+    tag: &str,
+    province: u32,
+    append: bool,
+) {
+    let report = crate::army_controls::order_selection(
+        w,
+        world,
+        tag,
+        &view.selected,
+        province,
+        view.strategic,
+        append,
+    );
+    view.notice = report.message();
+}
+pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &mut ArmyView) {
+    if view.open || view.selected.is_empty() {
         return;
     }
-    if view.targeting {
-        let ids: Vec<_> = view.selected.iter().copied().collect();
-        let r = w.move_to(tag, &ids, province, world, view.strategic);
-        view.targeting = false;
-        result(view, r, "Order accepted");
+    let Some(tag) = tag else {
         return;
-    }
-    let ids: Vec<_> = w
+    };
+    view.selected.retain(|id| {
+        w.divisions
+            .get(id)
+            .is_some_and(|d| d.country == tag && !d.destroyed)
+    });
+    let Some(a) = interactive_bounds(view) else {
+        return;
+    };
+    ui::panel(a.x, a.y, a.w, a.h);
+    let x = a.x + 9.0;
+    let width = a.w - 18.0;
+    let total = w
         .divisions
         .values()
-        .filter(|d| d.country == tag && d.province == province && !d.destroyed)
-        .map(|d| d.id)
-        .collect();
-    if !is_key_down(KeyCode::LeftShift) {
+        .filter(|d| d.country == tag && !d.destroyed)
+        .count();
+    label(
+        &format!("SELECTED {} / ARMY {total}", view.selected.len()),
+        x,
+        a.y + 23.0,
+        width - 25.0,
+        13.0,
+        ui::GOLD,
+    );
+    if ui::small_button(
+        "X",
+        Rect::new(a.right() - 30.0, a.y + 6.0, 22.0, 22.0),
+        false,
+    ) {
         view.selected.clear();
+        return;
     }
-    view.selected.extend(ids);
-    view.page = Page::Divisions;
+    label("RMB: move / attack", x, a.y + 47.0, width, 12.0, ui::TEXT);
+    label(
+        "Shift+RMB: queue   H: stop",
+        x,
+        a.y + 65.0,
+        width,
+        11.0,
+        ui::MUTED,
+    );
+    let mut y = a.y + 86.0;
+    for id in view.selected.iter().take(3) {
+        if let Some(d) = w.divisions.get(id) {
+            label(
+                &format!("{} / {}", d.name, order(&d.order)),
+                x,
+                y,
+                width,
+                11.0,
+                ui::TEXT,
+            );
+            ui::progress_bar(
+                Rect::new(x, y + 5.0, width * 0.47, 6.0),
+                d.strength() as f32,
+            );
+            ui::progress_bar(
+                Rect::new(x + width * 0.53, y + 5.0, width * 0.47, 6.0),
+                (d.organization / d.derived.stats.organization.max(1.0)) as f32,
+            );
+            y += 34.0;
+        }
+    }
+    label(&view.notice, x, a.bottom() - 13.0, width, 10.0, ui::GOLD);
+    if ui::small_button("STOP", Rect::new(x, a.bottom() - 61.0, 68.0, 26.0), false) {
+        view.notice = crate::army_controls::stop_selection(w, world, tag, &view.selected).message();
+    }
+    if ui::small_button(
+        "REDEPLOY",
+        Rect::new(x + 74.0, a.bottom() - 61.0, width - 74.0, 26.0),
+        view.strategic,
+    ) {
+        view.strategic = !view.strategic;
+    }
 }
 
 pub fn draw(
@@ -126,7 +218,8 @@ pub fn draw(
         false,
     ) {
         view.open = false;
-        view.targeting = false;
+        view.map_drag = None;
+        view.right_down = None;
         return;
     }
     let Some(tag) = tag else {
@@ -140,21 +233,6 @@ pub fn draw(
     let x = a.x + 10.0;
     let width = a.w - 20.0;
     let mut y = a.y + 51.0;
-    if view.targeting {
-        label("Choose a province on the map", x, y, width, 15.0, ui::GOLD);
-        label(
-            "Hostile adjacent province: attack; friendly: move.",
-            x,
-            y + 21.0,
-            width,
-            12.0,
-            ui::TEXT,
-        );
-        if ui::small_button("CANCEL", Rect::new(x, y + 34.0, 100.0, 27.0), false) {
-            view.targeting = false;
-        }
-        return;
-    }
     let tabw = width / 5.0;
     for (i, (p, title)) in [
         (Page::Divisions, "UNITS"),
@@ -196,13 +274,24 @@ pub fn draw(
     let bottom = a.y + a.h - 47.0;
     match view.page {
         Page::Divisions => {
+            let count = w
+                .divisions
+                .values()
+                .filter(|d| d.country == tag && !d.destroyed)
+                .count();
+            let expected = w.countries.get(tag).map_or(0, |a| a.history_expected);
+            label(
+                &format!("Divisions {count} / starting OOB {expected}   RMB: order"),
+                x,
+                y + 12.0,
+                width,
+                11.0,
+                ui::TEXT,
+            );
+            y += 22.0;
             let bw = (width - 9.0) / 4.0;
-            if ui::small_button("ORDER", Rect::new(x, y, bw, 28.0), false) {
-                if view.selected.is_empty() {
-                    view.notice = "Select divisions in the list or on the map".into();
-                } else {
-                    view.targeting = true;
-                }
+            if ui::small_button("CLEAR", Rect::new(x, y, bw, 28.0), false) {
+                view.selected.clear();
             }
             if ui::small_button("STOP", Rect::new(x + bw + 3.0, y, bw, 28.0), false) {
                 let ids: Vec<_> = view.selected.iter().copied().collect();
@@ -313,9 +402,12 @@ pub fn draw(
                     ui::MUTED,
                 );
                 if ui::inside(r) && is_mouse_button_pressed(MouseButton::Left) {
-                    if active {
-                        view.selected.remove(id);
+                    if is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift) {
+                        if !view.selected.insert(*id) {
+                            view.selected.remove(id);
+                        }
                     } else {
+                        view.selected.clear();
                         view.selected.insert(*id);
                     }
                 }
@@ -614,11 +706,38 @@ pub fn draw(
                 ui::TEXT,
             );
             y += 24.0;
+            let history = w.countries.get(tag);
+            label(
+                &format!(
+                    "{tag}: imported {} / {} starting divisions",
+                    history.map_or(0, |a| a.history_imported),
+                    history.map_or(0, |a| a.history_expected)
+                ),
+                x,
+                y,
+                width,
+                12.0,
+                ui::GOLD,
+            );
+            y += 24.0;
+            let country_errors = history.map(|a| a.history_errors.as_slice()).unwrap_or(&[]);
+            let diagnostics: Vec<_> =
+                country_errors
+                    .iter()
+                    .chain(
+                        w.diagnostics
+                            .iter()
+                            .filter(|s| s.starts_with(&format!("{tag} /"))),
+                    )
+                    .chain(w.diagnostics.iter().filter(|s| {
+                        !s.contains(": no starting land templates") && !s.contains(" / ")
+                    }))
+                    .collect();
             let rows = ((bottom - y - 30.0) / 35.0).max(0.0) as usize;
             view.scroll = view
                 .scroll
-                .min(w.diagnostics.len().saturating_sub(rows.max(1)));
-            for diagnostic in w.diagnostics.iter().skip(view.scroll).take(rows) {
+                .min(diagnostics.len().saturating_sub(rows.max(1)));
+            for diagnostic in diagnostics.iter().skip(view.scroll).take(rows) {
                 let chars: Vec<char> = diagnostic.chars().collect();
                 let cut = (width / 6.0).max(1.0) as usize;
                 label(
@@ -647,8 +766,8 @@ pub fn draw(
                 Rect::new(x + 70.0, bottom - 22.0, 65.0, 24.0),
                 false,
             ) {
-                view.scroll = (view.scroll + rows.max(1))
-                    .min(w.diagnostics.len().saturating_sub(rows.max(1)));
+                view.scroll =
+                    (view.scroll + rows.max(1)).min(diagnostics.len().saturating_sub(rows.max(1)));
             }
         }
     }
@@ -898,66 +1017,105 @@ pub fn draw_counters(
     source: Rect,
     area: Rect,
 ) {
-    let project = |p: u32| {
-        world
-            .geography
-            .provinces
-            .get(&p)
-            .and_then(|p| p.center)
-            .map(|p| {
-                vec2(
-                    area.x + (p.x as f32 - source.x) / source.w * area.w,
-                    area.y + (p.y as f32 - source.y) / source.h * area.h,
-                )
-            })
-    };
-    let mut stacks = BTreeMap::<(u32, &str), (usize, bool, bool)>::new();
-    for d in w.divisions.values().filter(|d| !d.destroyed) {
-        let entry = stacks.entry((d.province, &d.country)).or_default();
-        entry.0 += 1;
-        entry.1 |= view.selected.contains(&d.id);
-        entry.2 |= d.battle.is_some();
-        if view.selected.contains(&d.id) {
-            let target = match &d.order {
-                DivisionOrder::Move { path, .. }
-                | DivisionOrder::StrategicRedeployment { path, .. } => path.first().copied(),
-                DivisionOrder::Attack { province } => Some(*province),
-                DivisionOrder::Retreat { destination, .. } => Some(*destination),
-                _ => None,
-            };
-            if let Some((from, to)) = project(d.province).zip(target.and_then(project)) {
-                if area.contains(from) && area.contains(to) {
-                    draw_line(from.x, from.y, to.x, to.y, 2.0, ui::GOLD);
-                    draw_circle(to.x, to.y, 3.0, ui::GOLD);
-                }
+    let project = |p| crate::army_controls::project(world, p, source, area);
+    for d in w
+        .divisions
+        .values()
+        .filter(|d| !d.destroyed && view.selected.contains(&d.id))
+    {
+        let mut path = match &d.order {
+            DivisionOrder::Move { path, .. }
+            | DivisionOrder::StrategicRedeployment { path, .. } => path.clone(),
+            DivisionOrder::Attack { province } => vec![*province],
+            DivisionOrder::Retreat { destination, .. } => vec![*destination],
+            _ => Vec::new(),
+        };
+        if let Some(o) = d.destination {
+            if path.last() != Some(&o.province) {
+                path.push(o.province);
             }
         }
-    }
-    for ((province, country), (count, selected, battle)) in stacks {
-        let Some(p) = project(province).filter(|p| area.contains(*p)) else {
-            continue;
-        };
-        if p.x < area.x + 15.0
-            || p.x > area.right() - 15.0
-            || p.y < area.y + 10.0
-            || p.y > area.bottom() - 10.0
-        {
-            continue;
+        path.extend(d.waypoints.iter().map(|o| o.province));
+        let mut from = project(d.province);
+        for province in path {
+            let to = project(province);
+            if let Some((a, b)) = from.zip(to) {
+                if area.contains(a) && area.contains(b) {
+                    draw_line(a.x, a.y, b.x, b.y, 2.0, ui::GOLD);
+                    draw_circle(b.x, b.y, 3.0, ui::GOLD);
+                }
+            }
+            from = to;
         }
+    }
+    let mouse = vec2(mouse_position().0, mouse_position().1);
+    for c in crate::army_controls::counters(world, w, source, area) {
+        let selected = c.ids.iter().any(|id| view.selected.contains(id));
+        let battle = c.ids.iter().any(|id| w.divisions[id].battle.is_some());
         let color = if selected {
             ui::GOLD
-        } else if Some(country) == tag {
-            Color::from_rgba(89, 135, 75, 255)
-        } else if tag.is_some_and(|t| w.at_war(t, country)) {
-            Color::from_rgba(170, 66, 58, 255)
+        } else if Some(c.country.as_str()) == tag {
+            Color::from_rgba(89, 155, 75, 255)
+        } else if tag.is_some_and(|t| w.at_war(t, &c.country)) {
+            Color::from_rgba(190, 66, 58, 255)
         } else {
-            Color::from_rgba(100, 120, 145, 255)
+            Color::from_rgba(110, 130, 165, 255)
         };
-        draw_rectangle(p.x - 14.0, p.y - 9.0, 28.0, 18.0, ui::BASE);
-        draw_rectangle_lines(p.x - 14.0, p.y - 9.0, 28.0, 18.0, 1.5, color);
-        draw_ui_text(&count.to_string(), p.x - 5.0, p.y + 5.0, 13.0, color);
+        let r = c.rect;
+        draw_rectangle(r.x, r.y, r.w, r.h, ui::BASE);
+        draw_rectangle_lines(r.x, r.y, r.w, r.h, if selected { 2.0 } else { 1.0 }, color);
+        draw_line(r.x + 5.0, r.y + 6.0, r.x + 15.0, r.y + 15.0, 1.3, color);
+        draw_line(r.x + 15.0, r.y + 6.0, r.x + 5.0, r.y + 15.0, 1.3, color);
+        draw_ui_text(
+            &c.ids.len().to_string(),
+            r.x + 23.0,
+            r.y + 16.0,
+            13.0,
+            color,
+        );
+        let hp = c
+            .ids
+            .iter()
+            .map(|id| w.divisions[id].strength())
+            .sum::<f64>()
+            / c.ids.len() as f64;
+        let org = c
+            .ids
+            .iter()
+            .map(|id| {
+                let d = &w.divisions[id];
+                d.organization / d.derived.stats.organization.max(1.0)
+            })
+            .sum::<f64>()
+            / c.ids.len() as f64;
+        draw_rectangle(r.x + 2.0, r.y + 20.0, (r.w - 4.0) * hp as f32, 2.0, GREEN);
+        draw_rectangle(
+            r.x + 2.0,
+            r.y + 23.0,
+            (r.w - 4.0) * org as f32,
+            2.0,
+            SKYBLUE,
+        );
         if battle {
-            draw_circle(p.x + 14.0, p.y - 10.0, 5.0, RED);
+            draw_circle(r.right(), r.y, 4.0, RED);
+        }
+        if r.contains(mouse) {
+            let selected_id = c
+                .ids
+                .iter()
+                .find(|id| view.selected.contains(id))
+                .unwrap_or(&c.ids[0]);
+            let title = format!(
+                "{} [{}]  |  {} division(s)",
+                w.divisions[selected_id].name,
+                c.country,
+                c.ids.len()
+            );
+            let width = crate::measure_ui_text(&title, 12).width.min(area.w - 8.0) + 8.0;
+            let x = r.x.min(area.right() - width).max(area.x);
+            let y = (r.y - 25.0).max(area.y);
+            draw_rectangle(x, y, width, 20.0, ui::BASE);
+            label(&title, x + 4.0, y + 15.0, width - 8.0, 12.0, ui::TEXT);
         }
     }
 }

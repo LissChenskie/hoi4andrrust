@@ -81,9 +81,12 @@ impl GameSession {
             };
             let country = self.research.country_mut(tag, slots.unwrap_or(3), rules);
             for tech in known {
-                if !country.grant(&tech, catalogue) {
+                if !country.researched.contains(&tech) && !country.grant(&tech, catalogue) {
+                    // Known history remains authoritative even when the UI
+                    // technology catalogue cannot represent this node yet.
+                    country.researched.insert(tech.clone());
                     diagnostics.push(format!(
-                        "{tag}: starting technology {tech} was not imported"
+                        "{tag}: starting technology {tech} retained; UI definition unavailable"
                     ));
                 }
             }

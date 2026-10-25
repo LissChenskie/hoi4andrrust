@@ -184,7 +184,11 @@ impl Warfare {
             .templates
             .get(template)
             .ok_or_else(|| format!("Unknown template {template}"))?;
-        let derived = self.catalogue.aggregate(t, &army.modifiers, None)?;
+        // Missing equipment is an under-equipped historical formation, not a
+        // reason to erase the entire division from its order of battle.
+        let mut derived = self
+            .catalogue
+            .aggregate(t, &army.modifiers, Some(&BTreeMap::new()))?;
         if derived.stats.hp <= 0.0
             || derived.stats.organization <= 0.0
             || derived.stats.width <= 0.0
@@ -192,16 +196,20 @@ impl Warfare {
             return Err("Incomplete combat stats in the imported template".into());
         }
         let mut equipment = BTreeMap::new();
+        let mut missing = Vec::new();
         for (archetype, quantity) in &derived.equipment {
-            let model = self
-                .catalogue
-                .best_equipment(archetype, &army.modifiers)
-                .ok_or_else(|| format!("Missing {archetype}"))?;
+            let Some(model) = self.catalogue.best_equipment(archetype, &army.modifiers) else {
+                missing.push(archetype.clone());
+                continue;
+            };
             equipment.insert(
                 model.id.clone(),
                 (quantity * equipment_factor.clamp(0.0, 1.0)).floor() as u32,
             );
         }
+        derived = self
+            .catalogue
+            .aggregate(t, &army.modifiers, Some(&equipment))?;
         let manpower = (derived.stats.manpower * manpower_factor.clamp(0.0, 1.0)).floor() as u32;
         let id = self.next_division_id;
         self.next_division_id += 1;
@@ -248,12 +256,20 @@ impl Warfare {
                 reinforce_bonus: 0.0,
                 coordination: 0.0,
                 order: DivisionOrder::Hold,
+                destination: None,
+                waypoints: VecDeque::new(),
                 attack_delay: 0,
                 battle: None,
                 destroyed: false,
                 recent_losses: 0,
             },
         );
+        if !missing.is_empty() {
+            self.diagnostics.push(format!(
+                "{country} / {name}: retained without unresolved equipment: {}",
+                missing.join(", ")
+            ));
+        }
         Ok(id)
     }
     pub fn save_template(
@@ -542,6 +558,16 @@ impl Warfare {
         to: u32,
         world: &World,
     ) -> Result<Vec<u32>, String> {
+        self.route_for_order(country, from, to, world, false)
+    }
+    fn route_for_order(
+        &self,
+        country: &str,
+        from: u32,
+        to: u32,
+        world: &World,
+        hostile: bool,
+    ) -> Result<Vec<u32>, String> {
         if from == to {
             return Ok(Vec::new());
         }
@@ -565,10 +591,9 @@ impl Warfare {
                 if !self.edge_allowed(country, province, edge.to, world) {
                     continue;
                 }
-                if !world
-                    .controller_of_province(edge.to)
-                    .is_some_and(|c| self.friendly(country, c))
-                {
+                if !world.controller_of_province(edge.to).is_some_and(|c| {
+                    self.friendly(country, c) || (hostile && self.at_war(country, c))
+                }) {
                     continue;
                 }
                 let terrain = &world.geography.provinces[&edge.to].definition.terrain;
@@ -608,6 +633,9 @@ impl Warfare {
             .get(&id)
             .filter(|d| d.country == country && !d.destroyed)
             .ok_or("Unknown own division")?;
+        if matches!(d.order, DivisionOrder::Retreat { .. }) {
+            return Err("A forced retreat cannot be cancelled".into());
+        }
         let battle = d.battle.and_then(|id| self.battles.get(&id)).cloned();
         if let Some(b) = &battle {
             self.battles
@@ -622,6 +650,8 @@ impl Warfare {
         let d = self.divisions.get_mut(&id).unwrap();
         d.battle = None;
         d.order = DivisionOrder::Hold;
+        d.destination = None;
+        d.waypoints.clear();
         if battle.is_some() {
             d.attack_delay = self.catalogue.rules.attack_delay;
         }
@@ -635,42 +665,137 @@ impl Warfare {
         world: &World,
         strategic: bool,
     ) -> Result<(), String> {
-        if !world
-            .controller_of_province(target)
-            .is_some_and(|c| self.friendly(country, c))
-        {
-            return self.attack(country, ids, target, world).map(|_| ());
-        }
+        self.issue_move(country, ids, target, world, strategic, false)
+    }
+    pub fn issue_move(
+        &mut self,
+        country: &str,
+        ids: &[u64],
+        target: u32,
+        world: &World,
+        strategic: bool,
+        append: bool,
+    ) -> Result<(), String> {
         if ids.is_empty() {
-            return Err("Select at least one division".into());
+            return Err("Select a division first".into());
         }
         if strategic && self.catalogue.rules.strategic_speed.is_none() {
-            return Err("Strategic redeployment requires imported STRATEGIC_SPEED_BASE".into());
+            return Err("Strategic redeployment requires STRATEGIC_SPEED_BASE".into());
         }
-        let mut orders = Vec::new();
-        for id in ids {
+        let controller = world
+            .controller_of_province(target)
+            .ok_or("Choose a controlled land province")?;
+        if !self.friendly(country, controller) && !self.at_war(country, controller) {
+            return Err(format!(
+                "No military access to {controller}; declare war before attacking"
+            ));
+        }
+        let objective = MoveObjective {
+            province: target,
+            strategic,
+        };
+        let mut staged = Vec::new();
+        let mut routes = BTreeMap::<u32, Vec<u32>>::new();
+        for &id in ids {
             let d = self
                 .divisions
-                .get(id)
+                .get(&id)
                 .filter(|d| d.country == country && !d.destroyed)
                 .ok_or("Unknown own division")?;
-            if d.battle.is_some()
-                || matches!(
-                    d.order,
-                    DivisionOrder::Train { .. } | DivisionOrder::Retreat { .. }
-                )
-            {
-                return Err("Division is fighting, training or retreating".into());
+            if matches!(d.order, DivisionOrder::Retreat { .. }) {
+                return Err("This division is retreating".into());
             }
             if d.derived.stats.speed <= 0.0 {
-                return Err("Division has no imported movement speed".into());
+                return Err(format!("{} has no imported movement speed", d.name));
             }
-            orders.push((*id, self.route(country, d.province, target, world)?));
+            if append && d.waypoints.len() >= 128 {
+                return Err("Maximum 128 queued waypoints".into());
+            }
+            if d.battle.is_some() && !append {
+                let b = &self.battles[&d.battle.unwrap()];
+                if b.elapsed_hours < self.catalogue.rules.minimum_hours {
+                    return Err(format!(
+                        "Cannot withdraw before {} combat hours",
+                        self.catalogue.rules.minimum_hours
+                    ));
+                }
+            }
+            let from = if append {
+                d.waypoints
+                    .back()
+                    .copied()
+                    .or(d.destination)
+                    .map_or(d.province, |o| o.province)
+            } else {
+                d.province
+            };
+            let path = if let Some(path) = routes.get(&from) {
+                path.clone()
+            } else {
+                let path = self.route_for_order(country, from, target, world, !strategic)?;
+                routes.insert(from, path.clone());
+                path
+            };
+            if !append {
+                if let Some(b) = d
+                    .battle
+                    .and_then(|id| self.battles.get(&id))
+                    .filter(|b| !b.origins.contains_key(&id))
+                {
+                    let _ = b;
+                    if !path.first().is_some_and(|p| {
+                        world
+                            .controller_of_province(*p)
+                            .is_some_and(|c| self.friendly(country, c))
+                    }) {
+                        return Err(
+                            "Choose a friendly retreat destination outside this province".into(),
+                        );
+                    }
+                }
+            }
+            staged.push((id, path));
         }
-        for (id, path) in orders {
+        for (id, path) in staged {
+            if append && path.is_empty() {
+                continue;
+            }
+            if append
+                && (self.divisions[&id].destination.is_some()
+                    || self.divisions[&id].battle.is_some())
+            {
+                self.divisions
+                    .get_mut(&id)
+                    .unwrap()
+                    .waypoints
+                    .push_back(objective);
+                continue;
+            }
+            let defending = self.divisions[&id]
+                .battle
+                .and_then(|b| self.battles.get(&b))
+                .is_some_and(|b| !b.origins.contains_key(&id));
+            if self.divisions[&id].battle.is_some() {
+                self.stop(country, id, world)?;
+            }
             let d = self.divisions.get_mut(&id).unwrap();
+            if !append {
+                d.waypoints.clear();
+            }
+            d.destination = if path.is_empty() {
+                None
+            } else {
+                Some(objective)
+            };
             d.entrenchment = 0.0;
-            d.order = if strategic {
+            d.order = if defending {
+                DivisionOrder::Retreat {
+                    destination: path[0],
+                    progress_km: 0.0,
+                }
+            } else if path.is_empty() {
+                DivisionOrder::Hold
+            } else if strategic {
                 DivisionOrder::StrategicRedeployment {
                     path,
                     progress_km: 0.0,
@@ -683,6 +808,46 @@ impl Warfare {
             };
         }
         Ok(())
+    }
+    fn resume_movement(&mut self, id: u64, world: &World) {
+        let Some(d) = self.divisions.get_mut(&id).filter(|d| {
+            !d.destroyed && d.battle.is_none() && matches!(d.order, DivisionOrder::Hold)
+        }) else {
+            return;
+        };
+        if d.destination.is_some_and(|o| o.province == d.province) {
+            d.destination = None;
+        }
+        if d.destination.is_none() {
+            d.destination = d.waypoints.pop_front();
+        }
+        let Some(objective) = d.destination else {
+            return;
+        };
+        let from = d.province;
+        let tag = d.country.clone();
+        match self.route_for_order(&tag, from, objective.province, world, !objective.strategic) {
+            Ok(path) => {
+                let d = self.divisions.get_mut(&id).unwrap();
+                d.order = if objective.strategic {
+                    DivisionOrder::StrategicRedeployment {
+                        path,
+                        progress_km: 0.0,
+                    }
+                } else {
+                    DivisionOrder::Move {
+                        path,
+                        progress_km: 0.0,
+                    }
+                };
+            }
+            Err(e) => {
+                let d = self.divisions.get_mut(&id).unwrap();
+                d.destination = None;
+                d.waypoints.clear();
+                self.notice(format!("Division {id}: {e}"));
+            }
+        }
     }
     fn environment(&self, battle: &LandBattle, world: &World, hour: u8) -> BattleEnvironment {
         let conditions = self
@@ -927,6 +1092,8 @@ impl Warfare {
         d.battle = None;
         d.entrenchment = 0.0;
         d.attack_delay = self.catalogue.rules.attack_delay;
+        d.destination = None;
+        d.waypoints.clear();
         if let Some(destination) = destination {
             d.order = DivisionOrder::Retreat {
                 destination,
@@ -970,6 +1137,8 @@ impl Warfare {
                 };
             } else {
                 d.order = DivisionOrder::Hold;
+                d.destination = None;
+                d.waypoints.clear();
             }
         }
         self.notice(format!("Battle {} ended: {:?}", battle.id, outcome));
@@ -985,6 +1154,7 @@ impl Warfare {
             // Preserve the unused fraction of the hour across short provinces.
             // A route is finite; this bound also protects against zero-length edges.
             for _ in 0..256 {
+                self.resume_movement(id, world);
                 let Some(d) = self
                     .divisions
                     .get(&id)
@@ -1024,6 +1194,9 @@ impl Warfare {
                         && !matches!(enemy.order, DivisionOrder::Retreat { .. })
                 });
                 if hostile && blocked {
+                    if d.attack_delay > 0 {
+                        break;
+                    }
                     if !retreat {
                         let tag = d.country.clone();
                         self.divisions.get_mut(&id).unwrap().order = DivisionOrder::Hold;
@@ -1249,6 +1422,8 @@ impl Warfare {
                     } else if let Some(d) = self.divisions.get_mut(&unit) {
                         d.battle = None;
                         d.order = DivisionOrder::Hold;
+                        d.destination = None;
+                        d.waypoints.clear();
                         d.attack_delay = self.catalogue.rules.attack_delay;
                     }
                 }
@@ -1311,6 +1486,87 @@ pub(crate) mod tests {
         let mut w = Warfare::new(c);
         w.ai_enabled = false;
         w
+    }
+    #[test]
+    fn replacing_a_move_cancels_the_previous_waypoints_and_stop_clears_intent() {
+        let mut world = world();
+        world.set_province_controller(2, Some("A"));
+        world.set_province_controller(3, Some("A"));
+        let mut w = army();
+        w.divisions.insert(1, division(1, "A", 1));
+        w.issue_move("A", &[1], 2, &world, false, false).unwrap();
+        w.issue_move("A", &[1], 3, &world, false, true).unwrap();
+        assert_eq!(w.divisions[&1].waypoints.len(), 1);
+        w.issue_move("A", &[1], 3, &world, false, false).unwrap();
+        assert!(w.divisions[&1].waypoints.is_empty());
+        w.stop("A", 1, &world).unwrap();
+        assert!(w.divisions[&1].destination.is_none());
+        assert!(matches!(w.divisions[&1].order, DivisionOrder::Hold));
+    }
+    #[test]
+    fn map_orders_accept_a_distant_enemy_goal_and_shift_queue_continues_after_capture() {
+        let mut world = world();
+        let mut w = army();
+        w.divisions.insert(1, division(1, "A", 1));
+        w.declare_war("A", "B", &world).unwrap();
+        w.issue_move("A", &[1], 3, &world, false, false).unwrap();
+        assert!(matches!(&w.divisions[&1].order,DivisionOrder::Move{path,..} if path==&vec![2,3]));
+        w.issue_move("A", &[1], 1, &world, false, true).unwrap();
+        assert_eq!(w.divisions[&1].waypoints.len(), 1);
+        for _ in 0..3 {
+            w.movement_step(&mut world);
+        }
+        assert_eq!(world.controller_of_province(2), Some("A"));
+        assert_eq!(world.controller_of_province(3), Some("A"));
+        assert_eq!(w.divisions[&1].province, 1);
+        assert!(w.divisions[&1].waypoints.is_empty());
+    }
+    #[test]
+    fn queued_orders_survive_a_battle_without_requiring_another_click() {
+        let mut world = world();
+        let mut w = army();
+        w.catalogue = std::sync::Arc::new({
+            let mut c = (*w.catalogue).clone();
+            c.rules.minimum_hours = 1;
+            c.rules.attack_delay = 0;
+            c
+        });
+        w.declare_war("A", "B", &world).unwrap();
+        let mut a = division(1, "A", 1);
+        a.derived.stats.soft_attack = 100000.0;
+        w.divisions.insert(1, a);
+        w.divisions.insert(2, division(2, "B", 2));
+        w.issue_move("A", &[1], 3, &world, false, false).unwrap();
+        for hour in 1..10 {
+            w.tick_hour(&mut world, GameDate::START, 12, hour, Some("A"));
+        }
+        assert_eq!(w.divisions[&1].province, 3);
+        assert_eq!(world.controller_of_province(3), Some("A"));
+    }
+    #[test]
+    fn a_missing_model_does_not_erase_a_historical_division() {
+        let world = world();
+        let mut c = catalogue();
+        c.units
+            .get_mut("infantry")
+            .unwrap()
+            .need
+            .insert("unknown_equipment".into(), 10.0);
+        let mut w = Warfare::new(c);
+        let mut a = CountryArmy::default();
+        a.templates.insert("test".into(), template());
+        w.countries.insert("A".into(), a);
+        let id = w
+            .spawn_history("A", "test", 1, "Existing formation", 1.0, 1.0, 0.3, &world)
+            .unwrap();
+        assert!(w.divisions.contains_key(&id));
+        assert_eq!(w.divisions[&id].manpower, 1000);
+        assert!(w.divisions[&id].equipment.is_empty());
+        assert!(
+            w.diagnostics
+                .iter()
+                .any(|s| s.contains("unknown_equipment"))
+        );
     }
     #[test]
     fn adding_a_battalion_spends_xp_without_creating_people_equipment_or_hp() {

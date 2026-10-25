@@ -698,15 +698,36 @@ pub struct OrderOfBattle {
     pub templates: Vec<DivisionTemplate>,
     pub divisions: Vec<StartingDivision>,
     pub diagnostics: Vec<String>,
+    pub declared_divisions: usize,
 }
 pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
+    parse_oob_for_country(
+        source,
+        "",
+        &Default::default(),
+        crate::game::GameDate::START,
+    )
+}
+pub fn parse_oob_for_country(
+    source: &str,
+    tag: &str,
+    modifiers: &MilitaryModifiers,
+    today: crate::game::GameDate,
+) -> Result<OrderOfBattle, String> {
     let root = parse_pdx(source)?;
-    let mut result = OrderOfBattle::default();
+    let (root, diagnostics) = crate::history_conditions::resolve(&root, tag, modifiers, today);
+    let mut result = OrderOfBattle {
+        diagnostics,
+        ..Default::default()
+    };
     let default_equipment = number(&root, "start_equipment_factor", 1.0).clamp(0.0, 1.0);
     for entry in &root {
         if entry.key == "division_template" {
             if let Some(b) = entry.block() {
-                result.templates.push(parse_template(b)?);
+                match parse_template(b) {
+                    Ok(t) => result.templates.push(t),
+                    Err(e) => result.diagnostics.push(e),
+                }
             }
         }
         if entry.key == "units" {
@@ -716,6 +737,7 @@ pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
                 .iter()
                 .filter(|e| e.key == "division")
             {
+                result.declared_divisions += 1;
                 let Some(b) = unit.block() else {
                     continue;
                 };
@@ -725,11 +747,25 @@ pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
                             .into(),
                     );
                 }
+                let Some(template) = atom(b, "division_template") else {
+                    result
+                        .diagnostics
+                        .push("Division has no template; remaining OOB records retained".into());
+                    continue;
+                };
+                let name = atom(b, "name")
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        block(b, "division_name").and_then(|n| {
+                            atom(n, "name").map(str::to_owned).or_else(|| {
+                                atom(n, "name_order").map(|order| format!("{order}. {template}"))
+                            })
+                        })
+                    })
+                    .unwrap_or_else(|| format!("{template} #{}", result.divisions.len() + 1));
                 result.divisions.push(StartingDivision {
-                    name: atom(b, "name").unwrap_or("Historical division").into(),
-                    template: atom(b, "division_template")
-                        .ok_or("Division has no template")?
-                        .into(),
+                    name,
+                    template: template.into(),
                     province: number(b, "location", 0.0).max(0.0) as u32,
                     experience: number(b, "start_experience_factor", 0.1).clamp(0.0, 1.0),
                     equipment_factor: number(b, "start_equipment_factor", default_equipment)

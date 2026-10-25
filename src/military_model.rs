@@ -1,7 +1,7 @@
 //! Units, equipment, templates and runtime divisions. Independent from graphics.
 use crate::combat_rules::CombatRules;
 use crate::research_data::Entry;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type DivisionId = u64;
 pub type StatBlock = BTreeMap<String, f64>;
@@ -341,7 +341,7 @@ impl MilitaryCatalogue {
         }
         let mut normal = 0;
         let mut regiments = BTreeSet::new();
-        let mut support_types = BTreeSet::new();
+        let mut support_types: Vec<(Option<usize>, &BattalionDefinition)> = Vec::new();
         let mut normal_rows = BTreeSet::new();
         for slot in &t.support {
             let u = self
@@ -369,24 +369,18 @@ impl MilitaryCatalogue {
                     return Err("Division support slots exceeded".into());
                 }
             }
-            if !support_types.insert((slot.regiment, u.id.clone()))
-                || u.same_support_type
-                    .iter()
-                    .any(|id| support_types.contains(&(slot.regiment, id.clone())))
-            {
+            // same_support_type labels a family (often the unit's own ID).
+            // Compare different slots; never reject a company against itself.
+            if support_types.iter().any(|(scope, other)| {
+                *scope == slot.regiment
+                    && (other.id == u.id
+                        || other.same_support_type.contains(&u.id)
+                        || u.same_support_type.contains(&other.id)
+                        || !u.same_support_type.is_disjoint(&other.same_support_type))
+            }) {
                 return Err("Duplicate/incompatible support type".into());
             }
-            for other in &t.support {
-                if other.regiment == slot.regiment
-                    && other.unit != u.id
-                    && self
-                        .units
-                        .get(&other.unit)
-                        .is_some_and(|v| v.same_support_type.contains(&u.id))
-                {
-                    return Err("Incompatible support companies".into());
-                }
-            }
+            support_types.push((slot.regiment, u));
             if check_unlocks && !u.active && !m.unlocked_units.contains(&u.id) {
                 return Err(format!("{} requires a technology", u.id));
             }
@@ -654,6 +648,12 @@ pub enum DivisionOrder {
     Train { hours: f64 },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MoveObjective {
+    pub province: u32,
+    pub strategic: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Division {
     pub id: DivisionId,
@@ -678,6 +678,8 @@ pub struct Division {
     pub reinforce_bonus: f64,
     pub coordination: f64,
     pub order: DivisionOrder,
+    pub destination: Option<MoveObjective>,
+    pub waypoints: VecDeque<MoveObjective>,
     pub attack_delay: u32,
     pub battle: Option<u64>,
     pub destroyed: bool,
@@ -734,11 +736,59 @@ pub struct CountryArmy {
     pub army_xp: f64,
     pub modifiers: MilitaryModifiers,
     pub base_modifiers: StatBlock,
+    pub history_expected: usize,
+    pub history_imported: usize,
+    pub history_errors: Vec<String>,
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    #[test]
+    fn support_family_does_not_conflict_with_itself_but_rejects_another_member() {
+        let mut c = catalogue();
+        c.units
+            .get_mut("engineer")
+            .unwrap()
+            .same_support_type
+            .insert("engineer".into());
+        let mut t = template();
+        t.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        assert!(c.validate_template(&t, &Default::default(), false).is_ok());
+        let mut second = c.units["engineer"].clone();
+        second.id = "engineer_variant".into();
+        c.units.insert(second.id.clone(), second);
+        t.support.push(SupportSlot {
+            unit: "engineer_variant".into(),
+            regiment: None,
+            row: 1,
+        });
+        assert!(c.validate_template(&t, &Default::default(), false).is_err());
+        let mut a = c.units["engineer"].clone();
+        a.id = "mot_recon".into();
+        a.same_support_type = BTreeSet::from(["recon".into()]);
+        let mut b = a.clone();
+        b.id = "armored_recon".into();
+        c.units.insert(a.id.clone(), a);
+        c.units.insert(b.id.clone(), b);
+        t.support = vec![
+            SupportSlot {
+                unit: "mot_recon".into(),
+                regiment: None,
+                row: 0,
+            },
+            SupportSlot {
+                unit: "armored_recon".into(),
+                regiment: None,
+                row: 1,
+            },
+        ];
+        assert!(c.validate_template(&t, &Default::default(), false).is_err());
+    }
     #[test]
     fn support_replacement_costs_one_edit_and_duplicate_slots_are_rejected() {
         let mut c = catalogue();
@@ -877,6 +927,8 @@ pub(crate) mod tests {
             reinforce_bonus: 0.0,
             coordination: 0.0,
             order: DivisionOrder::Hold,
+            destination: None,
+            waypoints: VecDeque::new(),
             attack_delay: 0,
             battle: None,
             destroyed: false,

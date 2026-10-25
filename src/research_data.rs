@@ -287,17 +287,18 @@ pub fn update_rules_from_defines(source:&str, rules:&mut ResearchRules){
 }
 
 pub fn load_country_research_start(source:&str)->(Option<usize>,BTreeSet<String>){
+    load_country_research_context(source,"",&Default::default())
+}
+fn load_country_research_context(source:&str,tag:&str,modifiers:&crate::military_model::MilitaryModifiers)->(Option<usize>,BTreeSet<String>){
     let Ok(entries)=parse_pdx(source)else{return(None,BTreeSet::new());};
-    let slots=atom(&entries,"set_research_slots").and_then(|v|v.parse().ok());
+    let (entries,_)=crate::history_conditions::resolve(&entries,tag,modifiers,crate::game::GameDate::START);
+    let slots=entries.iter().rev().find(|e|e.key=="set_research_slots").and_then(Entry::atom).and_then(|v|v.parse().ok());
     let mut techs=BTreeSet::new();
     for e in entries.iter().filter(|e|e.key=="set_technology"){
-        if let Some(block)=e.block(){
-            for (key,raw) in block.iter().filter_map(|t|t.atom().map(|raw|(t.key.as_str(),raw))) {
-                if raw=="1"||raw=="yes"{techs.insert(key.into());}
-            }
-        }
-    }
-    (slots,techs)
+        for t in e.block().unwrap_or(&[]){if let Some(raw)=t.atom(){
+            if raw=="1"||raw=="yes"{techs.insert(t.key.clone());}else if raw=="0"||raw=="no"{techs.remove(&t.key);}
+        }}
+    }(slots,techs)
 }
 
 /// Get starting research slots and acquired tech from a country's local
@@ -317,7 +318,9 @@ pub fn read_country_start(history_dir:&Path, tag:&str)
     paths.sort();
     let Some(path)=paths.first()else{return Err(format!("No history file for {tag}"));};
     let content=fs::read_to_string(path).map_err(|e|e.to_string())?;
-    Ok(load_country_research_start(&content))
+    let mut modifiers=crate::military_model::MilitaryModifiers::default();
+    if let Some(root)=history_dir.parent().and_then(Path::parent){modifiers.dlcs=crate::history_conditions::profile_dlcs(root);}
+    Ok(load_country_research_context(&content,tag,&modifiers))
 }
 
 /// Use localisation from the player's own game files, never embedded
@@ -399,6 +402,12 @@ pub fn builtin_demo()->ResearchCatalogue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]fn starting_technology_reads_nested_legacy_else_and_profile_dlc_branch(){
+        let source="set_research_slots=3 if={limit={has_dlc=D} set_technology={modern=1} else={set_technology={legacy=1}}} 1939.1.1={set_technology={future=1}}";
+        let(slots,known)=load_country_research_start(source);assert_eq!(slots,Some(3));assert_eq!(known,BTreeSet::from(["legacy".into()]));
+        let mut m=crate::military_model::MilitaryModifiers::default();m.dlcs.insert("D".into());
+        let(_,known)=load_country_research_context(source,"GER",&m);assert_eq!(known,BTreeSet::from(["modern".into()]));
+    }
     #[test]
     fn imports_paths_dependencies_xor_and_restrictions(){
         let raw=r#"
