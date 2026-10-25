@@ -1704,6 +1704,8 @@ fn draw_country_select(
     page: &mut usize,
     date: &mut game::GameDate,
     bookmarks: &[game::GameDate],
+    load_error: &str,
+    retry_requested: &mut bool,
 ) -> Screen {
     draw_background();
     if let Some(map) = map {
@@ -1732,20 +1734,6 @@ fn draw_country_select(
     if button("Назад", width - 108.0, 15.0, 86.0, 31.0) || is_key_pressed(KeyCode::Escape) {
         return Screen::MainMenu;
     }
-    let tags = ordered_country_tags(world);
-    if tags.is_empty() {
-        draw_ui_text(
-            "Страны не загружены. Проверьте локальные данные карты.",
-            24.0,
-            110.0,
-            15.0,
-            hoi_ui::TEXT,
-        );
-        return Screen::CountrySelect;
-    }
-    if !selected_country.as_ref().is_some_and(|t| tags.contains(t)) {
-        *selected_country = tags.first().cloned();
-    }
     hoi_ui::section("СЦЕНАРИЙ", 24.0, 61.0, width - 225.0);
     let dates: Vec<_> = bookmarks
         .iter()
@@ -1763,6 +1751,58 @@ fn draw_country_select(
             .position(|d| d == date)
             .map_or(0, |i| (i + 1) % dates.len());
         *date = dates[next];
+    }
+    let tags = ordered_country_tags(world);
+    if tags.is_empty() || !load_error.is_empty() {
+        let card_width = (width - 32.0).min(800.0);
+        let card = Rect::new(
+            (width - card_width) * 0.5,
+            106.0,
+            card_width,
+            (height - 132.0).clamp(150.0, 300.0),
+        );
+        hoi_ui::panel(card.x, card.y, card.w, card.h);
+        hoi_ui::label(
+            if load_error.is_empty() {
+                "Страны не найдены"
+            } else {
+                "Не удалось загрузить карту"
+            },
+            Rect::new(card.x + 16.0, card.y + 15.0, card.w - 32.0, 30.0),
+            if card.w < 420.0 { 18.0 } else { 20.0 },
+            hoi_ui::GOLD,
+        );
+        hoi_ui::paragraph(
+            if load_error.is_empty() {
+                "В данных выбранного сценария нет стран."
+            } else {
+                load_error
+            },
+            Rect::new(
+                card.x + 16.0,
+                card.y + 62.0,
+                card.w - 32.0,
+                (card.h - 128.0).max(22.0),
+            ),
+            15.0,
+            hoi_ui::TEXT,
+        );
+        if hoi_ui::small_button(
+            "Повторить загрузку",
+            Rect::new(
+                card.x + 16.0,
+                card.bottom() - 52.0,
+                (card.w - 32.0).min(260.0),
+                34.0,
+            ),
+            false,
+        ) {
+            *retry_requested = true;
+        }
+        return Screen::CountrySelect;
+    }
+    if !selected_country.as_ref().is_some_and(|t| tags.contains(t)) {
+        *selected_country = tags.first().cloned();
     }
     let grid_width = if compact { width - 32.0 } else { width - 390.0 };
     let cols = if compact { 2 } else { 3 };
@@ -2729,7 +2769,7 @@ async fn main() {
                 None
             }
         };
-    let empty_research_catalogue=research::ResearchCatalogue::default();
+    let empty_research_catalogue = research::ResearchCatalogue::default();
     let research_catalogue = research_dataset
         .as_ref()
         .map(|d| &d.registry)
@@ -2819,6 +2859,7 @@ async fn main() {
             ),
             Screen::CountrySelect => {
                 let old_scenario = scenario_choice;
+                let mut retry_requested = false;
                 let next = draw_country_select(
                     &session.world,
                     &session.military,
@@ -2829,8 +2870,10 @@ async fn main() {
                     research_dataset
                         .as_ref()
                         .map_or(&[], |d| d.bookmarks.as_slice()),
+                    &load_error,
+                    &mut retry_requested,
                 );
-                if old_scenario != scenario_choice {
+                if old_scenario != scenario_choice || retry_requested {
                     match start_session(scenario_choice) {
                         Ok(fresh) => {
                             session = fresh;
@@ -2846,15 +2889,6 @@ async fn main() {
                         }
                         Err(e) => load_error = e,
                     }
-                }
-                if !load_error.is_empty() {
-                    draw_ui_text(
-                        &load_error.chars().take(90).collect::<String>(),
-                        24.0,
-                        113.0,
-                        12.0,
-                        hoi_ui::GOLD,
-                    );
                 }
                 if next == Screen::MapViewer {
                     match start_session(scenario_choice) {
@@ -2886,13 +2920,6 @@ async fn main() {
                         }
                         Err(error) => {
                             load_error = error;
-                            draw_ui_text(
-                                &load_error.chars().take(90).collect::<String>(),
-                                24.0,
-                                113.0,
-                                12.0,
-                                hoi_ui::GOLD,
-                            );
                             Screen::CountrySelect
                         }
                     }

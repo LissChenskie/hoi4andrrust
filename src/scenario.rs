@@ -181,7 +181,7 @@ mod tests {
         fs::write(root.join("map/definition.csv"),
             "1;1;0;0;land;false;plains;1\n2;2;0;0;land;true;forest;1\n3;3;0;0;sea;true;ocean;1\n4;4;0;0;land;true;mountain;1").unwrap();
         fs::write(root.join("map/adjacencies.csv"),
-            "1;2;impassable;-1;-1;-1;-1;-1;;\n1;4;sea;3;-1;-1;-1;-1;test_strait;\n-1;-1;-1;-1;-1;-1;-1;-1;-1").unwrap();
+            "1;2;impassable;-1;-1;-1;-1;-1;;\n1;4;sea;3;-1;-1;-1;-1;test_strait;\n2;4;;3;-1;-1;-1;-1;test_strait;default sea type\n-1;-1;-1;-1;-1;-1;-1;-1;-1").unwrap();
         fs::write(
             root.join("map/adjacency_rules.txt"),
             "adjacency_rules = { test_strait = { } }",
@@ -200,6 +200,10 @@ mod tests {
         assert_eq!(world.owner_of_province(1), Some("AAA"));
         assert_eq!(world.controller_of_province(1), Some("BBB"));
         assert!(world.countries.contains_key("BBB"));
+        assert_eq!(
+            world.geography.connection(2, 4).unwrap().kind,
+            crate::map_graph::CrossingKind::Strait
+        );
         assert_eq!(world.country_economy("AAA").unwrap().civilian_factories, 2);
         assert_eq!(world.states[&1].shared_building_slots, 4);
         assert_eq!(

@@ -390,9 +390,16 @@ impl MapGraph {
                 return Err(format!("Unknown/self adjacency {a} -> {b}"));
             }
             let kind = match f[2] {
-                "sea" => CrossingKind::Strait,
+                // HOI4 uses an omitted type as the default sea connection,
+                // including naval rules between sea provinces.
+                "sea" | "" => CrossingKind::Strait,
                 "impassable" => CrossingKind::Impassable,
-                other => return Err(format!("Unsupported adjacency type {other}")),
+                other => {
+                    return Err(format!(
+                        "Unsupported adjacency type {other:?} at line {} ({a} -> {b}); expected sea, empty, or impassable",
+                        n + 1
+                    ));
+                }
             };
             let through = match f[3] {
                 "-1" | "" => None,
@@ -617,6 +624,31 @@ mod tests {
                 .is_err()
         );
         assert_eq!(graph, before);
+    }
+    #[test]
+    fn omitted_adjacency_type_matches_sea_and_keeps_access_rules() {
+        let mut implicit =
+            MapGraph::from_rgba(4, 1, &rgba(&[1, 2, 3, 4]), DEFINITIONS, false).unwrap();
+        let mut explicit = implicit.clone();
+        implicit.import_adjacencies("From;To;Type;Through;x;y;x;y;Rule;Comment\n1;4;;3;-1;-1;-1;-1;closed_strait;default type\n-1;-1;;-1;-1;-1;-1;-1;-1\n").unwrap();
+        explicit
+            .import_adjacencies(
+                "1;4;sea;3;-1;-1;-1;-1;closed_strait;explicit type\n-1;-1;-1;-1;-1;-1;-1;-1;-1\n",
+            )
+            .unwrap();
+        assert_eq!(implicit, explicit);
+        let edge = implicit.connection(4, 1).unwrap();
+        assert_eq!(edge.kind, CrossingKind::Strait);
+        assert_eq!(edge.through, Some(3));
+        assert_eq!(edge.rule.as_deref(), Some("closed_strait"));
+        let before = implicit.clone();
+        let error = implicit
+            .import_adjacencies("2;4;;3;-1;-1;-1;-1;;\n1;4;invalid;3;-1;-1;-1;-1;;")
+            .unwrap_err();
+        assert!(
+            error.contains("\"invalid\"") && error.contains("line 2") && error.contains("1 -> 4")
+        );
+        assert_eq!(implicit, before);
     }
 
     fn bmp(width: u32, height: i32, rows_in_file: &[u8]) -> Vec<u8> {

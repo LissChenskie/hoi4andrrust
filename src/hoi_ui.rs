@@ -198,6 +198,63 @@ pub fn label(text: &str, r: Rect, size: f32, color: Color) {
     }
     draw_ui_text(&shown, r.x, r.y + size, size, color);
 }
+/// Bounded multiline text for loading errors and other prose. Long path/ID
+/// tokens are split on character boundaries and overflow gets an ellipsis.
+pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
+    let step = size + 6.0;
+    let visible = (r.h / step).floor().max(0.0) as usize;
+    if r.w <= 1.0 || visible == 0 {
+        return;
+    }
+    let mut lines = Vec::new();
+    for source in text.lines() {
+        let mut line = String::new();
+        for word in source.split_whitespace() {
+            let next = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if measure_ui_text(&next, size as u16).width <= r.w {
+                line = next;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for ch in word.chars() {
+                let next = format!("{line}{ch}");
+                if !line.is_empty() && measure_ui_text(&next, size as u16).width > r.w {
+                    lines.push(std::mem::take(&mut line));
+                }
+                line.push(ch);
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
+    for (i, line) in lines.iter().take(visible).enumerate() {
+        let mut shown = line.clone();
+        if i + 1 == visible && lines.len() > visible {
+            while !shown.is_empty()
+                && measure_ui_text(&format!("{shown}…"), size as u16).width > r.w
+            {
+                shown.pop();
+            }
+            shown.push('…');
+        }
+        label(
+            &shown,
+            Rect::new(r.x, r.y + i as f32 * step, r.w, step),
+            size,
+            color,
+        );
+    }
+    if lines.len() > visible {
+        tooltip(r, "Сообщение загрузчика", text);
+    }
+}
 
 pub fn section(title: &str, x: f32, y: f32, width: f32) {
     draw_rectangle(x, y, width, 23.0, BASE);
