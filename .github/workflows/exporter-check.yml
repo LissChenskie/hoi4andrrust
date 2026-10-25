@@ -1,0 +1,28 @@
+name: Exporter PowerShell check
+
+on:
+  push:
+    paths:
+      - 'tools/**'
+      - '.github/workflows/exporter-check.yml'
+  pull_request:
+    paths:
+      - 'tools/**'
+      - '.github/workflows/exporter-check.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wrapper:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check exporter paths and argument forwarding
+        shell: ${{ matrix.shell }}
+        run: .\tools\tests\Test-Export-Hoi4Research.ps1

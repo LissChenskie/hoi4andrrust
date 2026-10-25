@@ -1,7 +1,7 @@
 ﻿[CmdletBinding()]
 param(
     [string]$GamePath = 'E:\перекид с ссд\games\Hearts of Iron IV',
-    [string]$ProjectPath = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectPath,
     [string]$OutputPath,
     [ValidateSet('1936','1939')][string]$Scenario = '1936',
     [string[]]$EnabledDlc = @(),
@@ -10,6 +10,20 @@ param(
     [string]$Checksum
 )
 $ErrorActionPreference = 'Stop'
+# Script-scoped automatic variables can be empty while parameter defaults bind
+# in Windows PowerShell. Resolve the project only after entering the script body.
+if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
+    $exportScriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($exportScriptPath)) { $exportScriptPath = $MyInvocation.MyCommand.Path }
+    if (![string]::IsNullOrWhiteSpace($exportScriptPath)) {
+        $exportScriptPath = [System.IO.Path]::GetFullPath($exportScriptPath)
+        $ProjectPath = Split-Path -Parent (Split-Path -Parent $exportScriptPath)
+    } elseif (Test-Path -LiteralPath (Join-Path (Get-Location).ProviderPath 'Cargo.toml') -PathType Leaf) {
+        $ProjectPath = (Get-Location).ProviderPath
+    } else {
+        throw 'Cannot locate the project. Pass -ProjectPath with the folder containing Cargo.toml.'
+    }
+}
 $ProjectPath = [System.IO.Path]::GetFullPath($ProjectPath)
 $GamePath = [System.IO.Path]::GetFullPath($GamePath)
 if (!(Test-Path -LiteralPath (Join-Path $ProjectPath 'Cargo.toml'))) { throw 'ProjectPath must contain Cargo.toml.' }
