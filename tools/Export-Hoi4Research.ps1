@@ -82,8 +82,25 @@ if ($UserDataPath -and (Test-Path -LiteralPath $UserDataPath -PathType Container
         $logPath = Join-Path $UserDataPath ('logs\' + $name)
         if (Test-Path -LiteralPath $logPath -PathType Leaf) {
             try {
-                $lines = @(Get-Content -LiteralPath $logPath -TotalCount 1000 | Where-Object { $_ -match '(?i)(game version|version:|checksum|dlc)' } | Select-Object -First 100)
-                $evidence.logs += [ordered]@{ name = $name; modified_utc = (Get-Item -LiteralPath $logPath).LastWriteTimeUtc.ToString('o'); lines = $lines }
+                # Get-Content decorates strings with provider/drive properties.
+                # Windows PowerShell serializes those properties recursively.
+                # StreamReader returns plain strings and bounds the evidence.
+                $lines = [System.Collections.Generic.List[string]]::new()
+                $stream = [System.IO.File]::Open($logPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true)
+                    try {
+                        for ($lineIndex = 0; $lineIndex -lt 1000; $lineIndex++) {
+                            $line = $reader.ReadLine()
+                            if ($null -eq $line) { break }
+                            if ($line -match '(?i)(game version|version:|checksum|dlc)') {
+                                $lines.Add($line.Substring(0, [Math]::Min(4096, $line.Length)))
+                                if ($lines.Count -ge 100) { break }
+                            }
+                        }
+                    } finally { $reader.Dispose() }
+                } finally { $stream.Dispose() }
+                $evidence.logs += [ordered]@{ name = $name; modified_utc = (Get-Item -LiteralPath $logPath).LastWriteTimeUtc.ToString('o'); lines = $lines.ToArray() }
             } catch { Write-Warning "Could not read optional $name evidence: $($_.Exception.Message)" }
         }
     }
@@ -100,7 +117,7 @@ $evidencePath = Join-Path $OutputPath 'research-runtime-evidence.json'
 [System.IO.File]::WriteAllText($evidencePath, ($evidence | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
 $sourcePath = Join-Path $OutputPath 'research-review-sources'
 Copy-Item -LiteralPath $evidencePath -Destination (Join-Path $sourcePath 'research-runtime-evidence.json') -Force
-$reviewFiles = @((Join-Path $OutputPath 'research-report.json'), (Join-Path $OutputPath 'cache\research-registry-v5.bin'), $sourcePath)
+$reviewFiles = @((Join-Path $OutputPath 'research-report.json'), (Join-Path $OutputPath 'cache\research-registry-v6.bin'), $sourcePath)
 $reviewPath = Join-Path $OutputPath 'research-review.zip'
 Compress-Archive -LiteralPath $reviewFiles -DestinationPath $reviewPath -Force
 Write-Host "For verification, attach: $reviewPath"

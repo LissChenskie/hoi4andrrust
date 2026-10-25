@@ -29,7 +29,8 @@ pub fn import_technology_source(
     path: &str,
     cat: &mut ResearchCatalogue,
 ) -> Result<usize, String> {
-    let root = parse_pdx(source).map_err(|e| format!("{path}: {e}"))?;
+    let parsed = crate::pdx::parse_pdx_compatible(source).map_err(|e| format!("{path}: {e}"))?;
+    let root = parsed.entries;
     let file_constants = crate::script_constants::scope(&root, &Default::default());
     let mut count = 0;
     for wrapper in root.iter().filter(|e| e.key == "technologies") {
@@ -74,7 +75,12 @@ pub fn import_technology_source(
                 t.prerequisites.insert(e.key.clone());
                 t.dependency_levels.insert(e.key.clone(), level);
             }
-            t.xor = block(b, "xor").map(names).unwrap_or_default();
+            t.xor = b
+                .iter()
+                .filter(|e| matches!(e.key.as_str(), "xor" | "XOR"))
+                .filter_map(Entry::block)
+                .flat_map(names)
+                .collect();
             t.sub_technologies = block(b, "sub_technologies").map(names).unwrap_or_default();
             t.allow = Requirement::Script(block(b, "allow").unwrap_or(&[]).to_vec());
             t.allow_branch = Requirement::Script(block(b, "allow_branch").unwrap_or(&[]).to_vec());
@@ -188,6 +194,7 @@ pub fn import_technology_source(
                     | "categories"
                     | "dependencies"
                     | "xor"
+                    | "XOR"
                     | "sub_technologies"
                     | "allow"
                     | "allow_branch"

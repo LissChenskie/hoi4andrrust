@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 5;
+const CACHE_VERSION: u32 = 6;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -49,6 +49,10 @@ pub struct ResearchDataset {
     pub define_values: BTreeMap<String, f64>,
     #[serde(default)]
     pub source_country_ids: BTreeSet<String>,
+    #[serde(default)]
+    pub eof_terminated_sources: BTreeMap<String, Vec<pdx::Span>>,
+    #[serde(default)]
+    pub history_source_files: BTreeMap<String, String>,
 }
 pub fn game_version(root: &Path) -> Option<(String, String)> {
     let source = fs::read_to_string(root.join("launcher-settings.json")).ok()?;
@@ -371,7 +375,7 @@ impl ResearchDataset {
                 inputs.extend(stamps(&BTreeMap::from([(name.into(), p)]))?);
             }
         }
-        let cache = root.join("cache/research-registry-v5.bin");
+        let cache = root.join("cache/research-registry-v6.bin");
         if use_cache {
             if let Ok(mut cached) = Self::read_compiled(&cache) {
                 if cached.cache_version == CACHE_VERSION && cached.files == inputs {
@@ -395,6 +399,8 @@ impl ResearchDataset {
             rule_sources: BTreeMap::new(),
             define_values: BTreeMap::new(),
             source_country_ids: BTreeSet::new(),
+            eof_terminated_sources: BTreeMap::new(),
+            history_source_files: BTreeMap::new(),
         };
         let mut roots = BTreeMap::new();
         let mut define_sources = BTreeMap::new();
@@ -432,8 +438,10 @@ impl ResearchDataset {
                 }
             }
             let source = fs::read_to_string(path).map_err(|e| format!("{rel}: {e}"))?;
-            match parse_pdx(&source) {
-                Ok(b) => {
+            match pdx::parse_pdx_compatible(&source) {
+                Ok(parsed) => {
+                    data.record_eof_sources(rel, &parsed.eof_terminated_blocks);
+                    let b = parsed.entries;
                     let resolved = if rel.starts_with("common/technologies/") {
                         b
                     } else {
@@ -574,6 +582,7 @@ impl ResearchDataset {
                     let tag = name.split([' ', '-', '.']).next().unwrap_or("");
                     if tag.len() >= 3 {
                         data.histories.insert(tag.into(), b.to_vec());
+                        data.history_source_files.insert(tag.into(), rel.clone());
                     }
                 }
             }
@@ -623,9 +632,11 @@ impl ResearchDataset {
         }) {
             match fs::read_to_string(path)
                 .map_err(|e| e.to_string())
-                .and_then(|s| parse_pdx(&s))
+                .and_then(|s| pdx::parse_pdx_compatible(&s))
             {
-                Ok(raw) => {
+                Ok(parsed) => {
+                    data.record_eof_sources(rel, &parsed.eof_terminated_blocks);
+                    let raw = parsed.entries;
                     data.registry.scripts.sources.insert(
                         format!("gui:{rel}"),
                         ScriptSource {
@@ -730,10 +741,20 @@ impl ResearchDataset {
         }
         Ok(data)
     }
+    fn record_eof_sources(&mut self, path: &str, spans: &[pdx::Span]) {
+        if spans.is_empty() {
+            return;
+        }
+        self.eof_terminated_sources
+            .insert(path.into(), spans.to_vec());
+        for at in spans {
+            self.diagnostics.push(format!("{path}: внешний блок {}:{} завершён концом файла; содержимое сохранено, исходник не изменён",at.line,at.column));
+        }
+    }
     pub fn read_compiled(path: &Path) -> Result<Self, String> {
         let bytes = fs::read(path).map_err(|e| e.to_string())?;
         let payload = bytes
-            .strip_prefix(b"HOI4RESEARCH\0V5\0")
+            .strip_prefix(b"HOI4RESEARCH\0V6\0")
             .ok_or("Неизвестный формат реестра")?;
         let json =
             miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(payload, 512 * 1024 * 1024)
@@ -746,7 +767,7 @@ impl ResearchDataset {
     }
     pub fn write_compiled(&self, path: &Path) -> Result<(), String> {
         let json = serde_json::to_vec(self).map_err(|e| e.to_string())?;
-        let mut bytes = b"HOI4RESEARCH\0V5\0".to_vec();
+        let mut bytes = b"HOI4RESEARCH\0V6\0".to_vec();
         bytes.extend(miniz_oxide::deflate::compress_to_vec_zlib(&json, 6));
         atomic_bytes(path, &bytes)
     }
@@ -787,7 +808,13 @@ impl ResearchDataset {
                 "version.txt",
                 "research-runtime-evidence.json",
             ] {
-                if root.join(name).is_file() {
+                if root.join(name).is_file()
+                    && (name != "research-runtime-evidence.json"
+                        || fs::metadata(root.join(name))
+                            .map_err(|e| e.to_string())?
+                            .len()
+                            <= 2 * 1024 * 1024)
+                {
                     fs::copy(root.join(name), staging.join(name)).map_err(|e| e.to_string())?;
                 }
             }
@@ -858,17 +885,17 @@ impl ResearchDataset {
         };
         let scenarios=dates.into_iter().map(|date|{
             let countries=self.histories.keys().map(|tag|{let c=self.country(tag,date,root).unwrap();let mut deferred_counts=BTreeMap::new();for e in &c.pending_effects{*deferred_counts.entry(&e.field).or_insert(0usize)+=1;}let missing:Vec<_>=c.researched.iter().filter(|id|!self.registry.technologies.contains_key(*id)).collect();
-                (tag.clone(),serde_json::json!({"slots":c.slots.len(),"slots_verified":c.research_slots_known,"technology_levels":c.technology_levels,"known_count":c.researched.len(),"missing_definitions":missing,"deferred_effects":c.pending_effects,"deferred_effect_counts":deferred_counts,"ideas":c.context.ideas}))}).collect::<BTreeMap<_,_>>();
+                (tag.clone(),serde_json::json!({"slots":c.slots.len(),"slots_verified":c.research_slots_known,"source_file":self.history_source_files.get(tag),"source_eof_terminated":self.history_source_files.get(tag).is_some_and(|path|self.eof_terminated_sources.contains_key(path)),"technology_levels":c.technology_levels,"known_count":c.researched.len(),"missing_definitions":missing,"deferred_effects":c.pending_effects,"deferred_effect_counts":deferred_counts,"ideas":c.context.ideas}))}).collect::<BTreeMap<_,_>>();
             (date.display(),countries)
         }).collect::<BTreeMap<_,_>>();
         let actual_ids: BTreeSet<_> = self.registry.technologies.keys().cloned().collect();
         let diagnostic_summary = serde_json::json!({
-            "total":self.diagnostics.len(),"failed_source_files":self.failed_source_files.len(),
+            "total":self.diagnostics.len(),"failed_source_files":self.failed_source_files.len(),"eof_terminated_sources":self.eof_terminated_sources.len(),
             "missing_localised_names":self.diagnostics.iter().filter(|s|s.contains("нет локализованного имени")).count(),
             "partially_supported_fields":self.diagnostics.iter().filter(|s|s.contains("частичная поддержка поля")).count(),
             "unresolved_lua_defines":self.diagnostics.iter().filter(|s|s.contains("не вычислено Lua-выражение")).count()
         });
-        serde_json::json!({"expected_technology_ids":self.source_technology_ids,"missing_technology_ids":self.source_technology_ids.difference(&actual_ids).collect::<Vec<_>>(),"unexpected_technology_ids":actual_ids.difference(&self.source_technology_ids).collect::<Vec<_>>(),"failed_source_files":self.failed_source_files,"missing_country_ids":self.source_country_ids.iter().filter(|id|!self.histories.contains_key(*id)).collect::<Vec<_>>(),"define_values":self.define_values,"schema":CACHE_VERSION,"installation":self.installation,"fingerprint":self.registry.fingerprint,"source_files":self.files.len(),"technologies":self.registry.technologies.len(),"ids":self.registry.technologies.keys().collect::<Vec<_>>(),"ordinary_technologies":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Standard).count(),"doctrine_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Doctrine).count(),"special_project_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::SpecialProject).count(),"separate_definition_files":self.registry.scripts.sources.values().filter(|s|s.kind=="separate_research_definition").map(|s|&s.source).collect::<BTreeSet<_>>(),"countries":self.histories.len(),"scenarios":scenarios,"diagnostics":self.diagnostics,"diagnostic_summary":diagnostic_summary,"research_rules":self.rules,"rule_sources":self.rule_sources,"technology_definitions":self.registry.technologies,"original_game_timing_comparisons":0,"parity_verified":false})
+        serde_json::json!({"expected_technology_ids":self.source_technology_ids,"missing_technology_ids":self.source_technology_ids.difference(&actual_ids).collect::<Vec<_>>(),"unexpected_technology_ids":actual_ids.difference(&self.source_technology_ids).collect::<Vec<_>>(),"failed_source_files":self.failed_source_files,"eof_terminated_sources":self.eof_terminated_sources,"missing_country_ids":self.source_country_ids.iter().filter(|id|!self.histories.contains_key(*id)).collect::<Vec<_>>(),"define_values":self.define_values,"schema":CACHE_VERSION,"installation":self.installation,"fingerprint":self.registry.fingerprint,"source_files":self.files.len(),"technologies":self.registry.technologies.len(),"ids":self.registry.technologies.keys().collect::<Vec<_>>(),"ordinary_technologies":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Standard).count(),"doctrine_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::Doctrine).count(),"special_project_technology_definitions":self.registry.technologies.values().filter(|t|t.kind==ResearchKind::SpecialProject).count(),"separate_definition_files":self.registry.scripts.sources.values().filter(|s|s.kind=="separate_research_definition").map(|s|&s.source).collect::<BTreeSet<_>>(),"countries":self.histories.len(),"scenarios":scenarios,"diagnostics":self.diagnostics,"diagnostic_summary":diagnostic_summary,"research_rules":self.rules,"rule_sources":self.rule_sources,"technology_definitions":self.registry.technologies,"original_game_timing_comparisons":0,"parity_verified":false})
     }
 }
 fn apply_localisations(
@@ -1263,7 +1290,7 @@ mod tests {
         let f = fixture();
         f.put(
             "common/defines/zcountry.lua",
-            "NDefines.NCountry.BASE_RESEARCH_SLOTS=2\nNDefines.NMilitary.BASE_TECH_COST=999",
+            "NDefines.NCountry.BASE_RESEARCH_SLOTS=2\nNDefines.NMilitary.BASE_TECH_COST=999\nNDefines.NAI.RESEARCH_BASE_DAYS=60",
         );
         f.put("history/countries/CCC - C.txt", "add_research_slot=1");
         let d = ResearchDataset::load(&f.0, false).unwrap();
@@ -1364,6 +1391,77 @@ mod tests {
         );
         f.put("launcher-settings.json", "{\"gameVersion\":\"2.test\"}");
         assert_eq!(game_version(&f.0).unwrap().0, "2.test");
+    }
+    #[test]
+    fn eof_wrappers_preserve_country_dates_ideas_and_focus_rewards_with_provenance() {
+        let f = fixture();
+        f.put(
+            "history/countries/CCC - C.txt",
+            "set_research_slots=2 set_technology={first=1} 1939.1.1={add_research_slot=1",
+        );
+        f.put(
+            "common/ideas/eof.txt",
+            "ideas={country={eof_scientists={modifier={research_speed_factor=0.25}}}",
+        );
+        f.put(
+            "common/national_focus/eof.txt",
+            "focus_tree={focus={id=eof_award completion_reward={add_research_slot=1}}",
+        );
+        let country_source = fs::read(f.0.join("history/countries/CCC - C.txt")).unwrap();
+        let d = ResearchDataset::load(&f.0, false).unwrap();
+        assert_eq!(d.eof_terminated_sources.len(), 3);
+        assert!(d.failed_source_files.is_empty());
+        let c = d.country("CCC", GameDate::START, &f.0).unwrap();
+        assert_eq!(c.slots.len(), 2);
+        assert!(c.researched.contains("first"));
+        let c = d
+            .country(
+                "CCC",
+                GameDate {
+                    year: 1939,
+                    month: 8,
+                    day: 14,
+                },
+                &f.0,
+            )
+            .unwrap();
+        assert_eq!(c.slots.len(), 3);
+        assert!(d.registry.scripts.ideas.contains_key("eof_scientists"));
+        assert!(d.registry.scripts.sources.contains_key("focus:eof_award"));
+        assert!(
+            d.audit(&f.0)["scenarios"][GameDate::START.display()]["CCC"]["source_eof_terminated"]
+                .as_bool()
+                .unwrap()
+        );
+        assert_eq!(
+            fs::read(f.0.join("history/countries/CCC - C.txt")).unwrap(),
+            country_source
+        );
+        let cached = ResearchDataset::load(&f.0, true).unwrap();
+        assert!(cached.from_cache);
+        assert_eq!(cached.eof_terminated_sources, d.eof_terminated_sources);
+    }
+    #[test]
+    fn uppercase_xor_makes_industry_choices_mutually_exclusive() {
+        let f = fixture();
+        f.put(
+            "common/technologies/industry_choices.txt",
+            "technologies={compact={XOR={spread}} spread={xor={compact}}}",
+        );
+        let d = ResearchDataset::load(&f.0, false).unwrap();
+        let mut c = CountryResearch::new(1, &d.rules);
+        assert!(d.registry.can_research("compact", &c).is_ok());
+        assert!(d.registry.can_research("spread", &c).is_ok());
+        assert!(c.grant("compact", &d.registry));
+        assert!(d.registry.can_research("spread", &c).is_err());
+        assert!(
+            !d.registry.technologies["compact"]
+                .unsupported
+                .contains("scope:XOR")
+        );
+        c.revoke("compact", &d.registry);
+        assert!(c.grant("spread", &d.registry));
+        assert!(d.registry.can_research("compact", &c).is_err());
     }
     #[test]
     fn alternatives_xor_separate_subsystems_and_cost_coefficients_are_enforced() {

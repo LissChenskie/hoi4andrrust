@@ -46,6 +46,12 @@ struct Token {
     kind: Kind,
     span: Span,
 }
+#[derive(Debug, Clone, Default)]
+pub struct CompatibleDocument {
+    pub entries: Vec<Entry>,
+    /// A non-empty outer container ended at EOF. No token/value was invented.
+    pub eof_terminated_blocks: Vec<Span>,
+}
 fn lex(source: &str) -> Result<Vec<Token>, String> {
     let mut out = Vec::new();
     let mut chars = source.char_indices().peekable();
@@ -206,6 +212,8 @@ fn entries(
     pos: &mut usize,
     depth: usize,
     opened: Option<&Span>,
+    allow_outer_eof: bool,
+    warnings: &mut Vec<Span>,
 ) -> Result<Vec<Entry>, String> {
     if depth > 256 {
         return Err("Script nesting exceeds 256 levels".into());
@@ -245,7 +253,14 @@ fn entries(
                 span,
             }) => {
                 *pos += 1;
-                Some(Value::Block(entries(tokens, pos, depth + 1, Some(span))?))
+                Some(Value::Block(entries(
+                    tokens,
+                    pos,
+                    depth + 1,
+                    Some(span),
+                    allow_outer_eof,
+                    warnings,
+                )?))
             }
             Some(Token {
                 kind: Kind::Atom(value),
@@ -270,7 +285,10 @@ fn entries(
             span,
         });
     }
-    if depth > 0 {
+    if depth == 1 && allow_outer_eof && !out.is_empty() {
+        warnings.push(opened.cloned().unwrap_or_default());
+        Ok(out)
+    } else if depth > 0 {
         Err(
             opened.map_or("Unclosed brace at end of script".into(), |s| {
                 format!(
@@ -284,7 +302,18 @@ fn entries(
     }
 }
 pub fn parse_pdx(source: &str) -> Result<Vec<Entry>, String> {
-    entries(&lex(source)?, &mut 0, 0, None)
+    entries(&lex(source)?, &mut 0, 0, None, false, &mut Vec::new())
+}
+/// Several scripts in the provided 1.15.4 export omit the final outer brace. Retain
+/// their complete children and report the location. Interior damage, missing
+/// values, unterminated strings and excessive nesting remain errors.
+pub fn parse_pdx_compatible(source: &str) -> Result<CompatibleDocument, String> {
+    let mut warnings = Vec::new();
+    let entries = entries(&lex(source)?, &mut 0, 0, None, true, &mut warnings)?;
+    Ok(CompatibleDocument {
+        entries,
+        eof_terminated_blocks: warnings,
+    })
 }
 pub fn find<'a>(b: &'a [Entry], key: &str) -> Option<&'a Entry> {
     b.iter().rev().find(|e| e.key == key)
@@ -307,6 +336,38 @@ pub fn names(b: &[Entry]) -> std::collections::BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn compatible_outer_eof_preserves_children_and_reports_without_editing_source() {
+        let source = "slots=2 1939.1.1={ if={limit={always=yes} add_research_slot=1}";
+        assert!(parse_pdx(source).is_err());
+        let parsed = parse_pdx_compatible(source).unwrap();
+        assert_eq!(parsed.entries.len(), 2);
+        assert_eq!(parsed.eof_terminated_blocks.len(), 1);
+        assert_eq!(
+            parsed.eof_terminated_blocks[0].offset,
+            source.find("{ if").unwrap()
+        );
+        let body = block(&parsed.entries, "1939.1.1").unwrap();
+        assert_eq!(
+            atom(block(body, "if").unwrap(), "add_research_slot"),
+            Some("1")
+        );
+        for bad in [
+            "x={",
+            "x={y={a=1",
+            "x={y=",
+            "x={y=\"unterminated",
+            "x={} } z=1",
+        ] {
+            assert!(parse_pdx_compatible(bad).is_err(), "{bad}");
+        }
+        assert!(
+            parse_pdx_compatible("x={y=1}")
+                .unwrap()
+                .eof_terminated_blocks
+                .is_empty()
+        );
+    }
     #[test]
     fn variable_fallback_and_conditional_assignment_are_distinct() {
         let b = parse_pdx("set_research_slots=var:ROOT.slots?2 variable?=0 question=tag?marker")
