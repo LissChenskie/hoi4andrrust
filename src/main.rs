@@ -2729,10 +2729,11 @@ async fn main() {
                 None
             }
         };
+    let empty_research_catalogue=research::ResearchCatalogue::default();
     let research_catalogue = research_dataset
         .as_ref()
-        .map(|d| d.registry.clone())
-        .unwrap_or_default();
+        .map(|d| &d.registry)
+        .unwrap_or(&empty_research_catalogue);
     let research_rules = research_dataset
         .as_ref()
         .map(|d| d.rules)

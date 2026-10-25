@@ -92,7 +92,98 @@ fn evaluate_depth(entries: &[Entry], c: &CountryResearch, depth: u8) -> Option<b
     if depth > 64 {
         return None;
     }
-    conjunction(entries.iter().map(|e| predicate(e, c, depth + 1)))
+    conjunction(parts(entries, c, depth + 1))
+}
+fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>> {
+    if depth > 64 {
+        return vec![None];
+    }
+    fn alternatives<'a>(body: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
+        for e in body
+            .iter()
+            .filter(|e| matches!(e.key.as_str(), "else_if" | "else"))
+        {
+            if let Some(b) = e.block() {
+                out.push((e.key == "else", b));
+                alternatives(b, out);
+            }
+        }
+    }
+    let mut result = Vec::new();
+    let mut index = 0;
+    while let Some(e) = entries.get(index) {
+        index += 1;
+        if e.key != "if" {
+            result.push(if matches!(e.key.as_str(), "else" | "else_if") {
+                None
+            } else {
+                predicate(e, c, depth)
+            });
+            continue;
+        }
+        let Some(body) = e.block() else {
+            result.push(None);
+            continue;
+        };
+        let mut chain = vec![(false, body)];
+        alternatives(body, &mut chain);
+        while index < entries.len() && matches!(entries[index].key.as_str(), "else" | "else_if") {
+            let branch = &entries[index];
+            index += 1;
+            if let Some(body) = branch.block() {
+                chain.push((branch.key == "else", body));
+                alternatives(body, &mut chain);
+            }
+        }
+        let mut value = Some(true);
+        for (otherwise, body) in chain {
+            match if otherwise {
+                Some(true)
+            } else {
+                evaluate_depth(block(body, "limit").unwrap_or(&[]), c, depth + 1)
+            } {
+                Some(false) => continue,
+                None => {
+                    value = None;
+                    break;
+                }
+                Some(true) => {
+                    let selected = body
+                        .iter()
+                        .filter(|e| !matches!(e.key.as_str(), "limit" | "else" | "else_if"))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    value = evaluate_depth(&selected, c, depth + 1);
+                    break;
+                }
+            }
+        }
+        result.push(value);
+    }
+    result
+}
+pub fn numeric(raw: &str, c: &CountryResearch) -> Option<f64> {
+    if let Ok(value) = raw.parse::<f64>() {
+        return value.is_finite().then_some(value);
+    }
+    let raw = raw.strip_prefix("var:").unwrap_or(raw);
+    let (id, fallback) = raw
+        .split_once('?')
+        .map_or((raw, None), |(id, n)| (id, n.parse::<f64>().ok()));
+    let id = if let Some((scope, id)) = id.split_once('.') {
+        if scope != c.context.tag && scope != "ROOT" && scope != "THIS" {
+            return None;
+        }
+        id
+    } else {
+        id
+    };
+    c.context
+        .variables
+        .get(id)
+        .copied()
+        .or(fallback)
+        .filter(|n| n.is_finite())
 }
 fn predicate(e: &Entry, c: &CountryResearch, d: u8) -> Option<bool> {
     let ctx = &c.context;
@@ -105,10 +196,8 @@ fn predicate(e: &Entry, c: &CountryResearch, d: u8) -> Option<bool> {
     };
     match e.key.as_str() {
         "AND" | "and" | "ROOT" | "THIS" if e.block().is_some() => evaluate_depth(nested, c, d),
-        "OR" | "or" => disjunction(nested.iter().map(|x| predicate(x, c, d))),
-        "NOT" | "not" | "NOR" | "nor" => {
-            disjunction(nested.iter().map(|x| predicate(x, c, d))).map(|v| !v)
-        }
+        "OR" | "or" => disjunction(parts(nested, c, d)),
+        "NOT" | "not" | "NOR" | "nor" => disjunction(parts(nested, c, d)).map(|v| !v),
         "NAND" | "nand" => evaluate_depth(nested, c, d).map(|v| !v),
         "always" => yesno(Some(true)),
         "tag" => raw.map(|v| ctx.tag == v),
@@ -118,6 +207,11 @@ fn predicate(e: &Entry, c: &CountryResearch, d: u8) -> Option<bool> {
         "has_tech" | "has_technology" => raw.map(|v| c.researched.contains(v)),
         "has_completed_focus" => raw.map(|v| ctx.completed_focuses.contains(v)),
         "has_idea" => raw.map(|v| ctx.ideas.contains(v)),
+        "has_template_containing_unit" => ctx
+            .template_units
+            .as_ref()
+            .map(|units| raw.map(|id| units.contains(id)))
+            .flatten(),
         "has_dlc" => {
             if ctx.dlc_selection_unverified {
                 None
@@ -204,11 +298,21 @@ pub fn expand_triggers(b: &[Entry], scripts: &ResearchScripts, depth: u8) -> Vec
     out
 }
 fn defer(c: &mut CountryResearch, e: &Entry, source: &str, reason: &str) {
+    defer_block(c, std::slice::from_ref(e), source, reason);
+}
+fn defer_block(c: &mut CountryResearch, entries: &[Entry], source: &str, reason: &str) {
+    fn changes_slots(e: &Entry) -> bool {
+        matches!(e.key.as_str(), "set_research_slots" | "add_research_slot")
+            || e.block().is_some_and(|b| b.iter().any(changes_slots))
+    }
+    if entries.iter().any(changes_slots) {
+        c.research_slots_known = false;
+    }
     let pending = DeferredEffect {
         source: source.into(),
-        field: e.key.clone(),
+        field: entries.first().map(|e| e.key.clone()).unwrap_or_default(),
         reason: reason.into(),
-        payload: vec![e.clone()],
+        payload: entries.to_vec(),
     };
     if !c.pending_effects.iter().any(|p| {
         p.source == pending.source && p.field == pending.field && p.payload == pending.payload
@@ -256,6 +360,7 @@ fn execute(
         *budget -= 1;
         let nested = e.block().unwrap_or(&[]);
         if e.key == "if" {
+            let chain_start = index - 1;
             let mut alternatives = vec![(false, nested)];
             fn collect<'a>(b: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
                 for e in b
@@ -297,9 +402,9 @@ fn execute(
                     }
                     Some(false) => {}
                     None => {
-                        defer(
+                        defer_block(
                             c,
-                            e,
+                            &b[chain_start..index],
                             source,
                             "Неизвестное условие if: ни одна ветка не исполнена",
                         );
@@ -351,23 +456,28 @@ fn execute(
                 }
             }
             "set_research_slots" | "add_research_slot" => {
-                let n = e
+                if let Some(n) = e
                     .atom()
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .or_else(|| c.context.variables.get(e.atom()?).map(|n| *n as i64));
-                if let Some(n) = n {
+                    .and_then(|v| numeric(v, c))
+                    .filter(|n| n.fract() == 0.0)
+                {
                     let count = if e.key == "add_research_slot" {
-                        c.slots.len() as i64 + n
+                        c.slots.len() as f64 + n
                     } else {
                         n
                     };
-                    if count < 0 || c.resize_slots(count as usize, rules).is_err() {
+                    if count < 0.0
+                        || count > rules.max_slots as f64
+                        || c.resize_slots(count as usize, rules).is_err()
+                    {
                         defer(
                             c,
                             e,
                             source,
                             "Недопустимое число слотов или занятые удаляемые ячейки",
                         );
+                    } else if e.key == "set_research_slots" {
+                        c.research_slots_known = true;
                     }
                 } else {
                     defer(c, e, source, "Не вычислено количество слотов");
@@ -629,7 +739,7 @@ pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
     for e in entries {
         match e.key.as_str() {
             "AND" | "and" | "OR" | "or" | "NOT" | "not" | "NOR" | "nor" | "NAND" | "nand"
-            | "ROOT" | "THIS" | "hidden_trigger" => {
+            | "ROOT" | "THIS" | "hidden_trigger" | "if" | "else_if" | "else" | "limit" => {
                 out.extend(unsupported_predicates(e.block().unwrap_or(&[])))
             }
             "custom_trigger_tooltip" => {
@@ -659,7 +769,8 @@ pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
             | "is_puppet_of"
             | "date"
             | "has_game_rule"
-            | "check_variable" => {}
+            | "check_variable"
+            | "has_template_containing_unit" => {}
             other => {
                 out.insert(other.into());
             }
@@ -671,6 +782,76 @@ pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
 #[cfg(test)]
 mod global_flag_tests {
     use super::*;
+    #[test]
+    fn conditional_triggers_select_branches_and_keep_unknown() {
+        let mut c = CountryResearch::new(1, &ResearchRules::default());
+        c.context.tag = "AAA".into();
+        for source in [
+            "if={limit={tag=AAA} always=yes} else={always=no}",
+            "if={limit={tag=BBB} always=no} else_if={limit={tag=AAA} always=yes} else={always=no}",
+            "if={limit={tag=BBB} always=no else={always=yes}}",
+            "if={limit={tag=BBB} always=no}",
+        ] {
+            assert_eq!(
+                evaluate(&crate::pdx::parse_pdx(source).unwrap(), &c),
+                Some(true),
+                "{source}"
+            );
+        }
+        for source in [
+            "if={limit={unknown_fact=yes} always=no} else={always=yes}",
+            "NOT={if={limit={unknown_fact=yes} always=no}}",
+        ] {
+            assert_eq!(evaluate(&crate::pdx::parse_pdx(source).unwrap(), &c), None);
+        }
+    }
+    #[test]
+    fn template_facts_and_slot_variable_fallbacks_are_explicit() {
+        let rules = ResearchRules::default();
+        let cat = ResearchCatalogue::default();
+        let mut c = CountryResearch::new(2, &rules);
+        c.context.tag = "AAA".into();
+        let p = crate::pdx::parse_pdx("has_template_containing_unit=marines").unwrap();
+        assert_eq!(evaluate(&p, &c), None);
+        c.context.template_units = Some(BTreeSet::new());
+        assert_eq!(evaluate(&p, &c), Some(false));
+        c.context
+            .template_units
+            .as_mut()
+            .unwrap()
+            .insert("marines".into());
+        assert_eq!(evaluate(&p, &c), Some(true));
+        assert_eq!(numeric("var:ROOT.slots?3", &c), Some(3.0));
+        assert_eq!(numeric("var:BBB.slots?3", &c), None);
+        c.context.variables.insert("slots".into(), 4.0);
+        assert_eq!(numeric("var:ROOT.slots?3", &c), Some(4.0));
+        apply_effects(
+            &mut c,
+            &crate::pdx::parse_pdx("set_research_slots=var:ROOT.slots?3").unwrap(),
+            &cat,
+            &rules,
+            GameDate::START,
+            "fixture",
+        );
+        assert_eq!(c.slots.len(), 4);
+        let chain = crate::pdx::parse_pdx(
+            "if={limit={unknown_fact=yes} set_country_flag=a} else={add_research_slot=1}",
+        )
+        .unwrap();
+        apply_effects(&mut c, &chain, &cat, &rules, GameDate::START, "fixture");
+        assert!(!c.research_slots_known);
+        assert_eq!(c.slots.len(), 4);
+        assert_eq!(c.pending_effects[0].payload.len(), 2);
+        apply_effects(
+            &mut c,
+            &crate::pdx::parse_pdx("set_research_slots=2").unwrap(),
+            &cat,
+            &rules,
+            GameDate::START,
+            "fixture",
+        );
+        assert!(c.research_slots_known);
+    }
     #[test]
     fn technology_and_event_global_flags_are_visible_to_other_countries() {
         let mut cat = ResearchCatalogue::default();

@@ -1,5 +1,7 @@
 //! Local data preparation; does not need a GPU or an Android device.
-use hoi4_mobile::research_import::{Installation, ResearchDataset, atomic_json};
+use hoi4_mobile::research_import::{
+    Installation, ResearchDataset, atomic_json, game_version, installation,
+};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -45,10 +47,87 @@ fn repeated(args: &[String], key: &str) -> Vec<String> {
         .map(|w| w[1].clone())
         .collect()
 }
-fn export(args: &[String]) -> Result<(), String> {
+fn validate_profile(args: &[String]) -> Result<(), String> {
     if args.iter().any(|s| s == "--no-dlc") && args.iter().any(|s| s == "--dlc") {
         return Err("Choose --no-dlc or --dlc".into());
     }
+    Ok(())
+}
+fn copy_metadata(game: &Path, output: &Path) -> Result<(), String> {
+    for name in ["launcher-settings.json", "version.txt"] {
+        if game.join(name).is_file() && game.join(name) != output.join(name) {
+            fs::copy(game.join(name), output.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        }
+    }
+    Ok(())
+}
+fn refresh_metadata(root: &Path, args: &[String]) -> Result<(), String> {
+    validate_profile(args)?;
+    if !root.join("common/technologies").is_dir() {
+        return Err("Export folder has no common/technologies".into());
+    }
+    if let Some(game) = arg(args, "--game") {
+        copy_metadata(Path::new(&game), root)?;
+    }
+    let mut install = installation(root);
+    if !root.join("research-import.json").is_file() {
+        if let Some(profile) = fs::read_to_string(root.join("military_profile.txt"))
+            .ok()
+            .and_then(|s| hoi4_mobile::pdx::parse_pdx(&s).ok())
+        {
+            if let Some(dlcs) = hoi4_mobile::pdx::block(&profile, "dlcs") {
+                install.enabled_dlcs = hoi4_mobile::pdx::names(dlcs).into_iter().collect();
+                install.dlc_selection_verified = true;
+            }
+        }
+    }
+    // Earlier wrappers confused EXE ProductVersion with the patch number.
+    if install.version_source.is_none() {
+        if install.executable_version.is_none() {
+            install.executable_version = install.version.take();
+        }
+        install.version = None;
+    }
+    if let Some(version) = arg(args, "--version") {
+        install.version = Some(version);
+        install.version_source = Some("command line --version".into());
+    } else if let Some((version, source)) = game_version(root) {
+        install.version = Some(version);
+        install.version_source = Some(source);
+    }
+    if let Some(version) = arg(args, "--exe-version") {
+        install.executable_version = Some(version);
+    }
+    if let Some(hash) = arg(args, "--exe-sha256") {
+        install.executable_sha256 = Some(hash);
+    }
+    if let Some(checksum) = arg(args, "--checksum") {
+        install.checksum = Some(checksum);
+    }
+    if let Some(scenario) = arg(args, "--scenario") {
+        install.scenario = Some(scenario);
+    }
+    if args.iter().any(|s| s == "--no-dlc" || s == "--dlc") {
+        install.enabled_dlcs = repeated(args, "--dlc");
+        install.dlc_selection_verified = true;
+        let path = root.join("military_profile.txt");
+        let mut profile = fs::read_to_string(&path).unwrap_or_default();
+        let names = install
+            .enabled_dlcs
+            .iter()
+            .map(|s| format!("\"{}\"", s.replace('\\', "/").replace('"', "\\\"")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        profile.push_str(&format!("\ndlcs = {{ {names} }}\n"));
+        fs::write(path, profile).map_err(|e| e.to_string())?;
+    }
+    if root.join("research-import.json").is_file() || args.iter().any(|s| s.starts_with("--")) {
+        atomic_json(&root.join("research-import.json"), &install)?;
+    }
+    Ok(())
+}
+fn export(args: &[String]) -> Result<(), String> {
+    validate_profile(args)?;
     let game = PathBuf::from(arg(args, "--game").ok_or("Specify --game <HOI4 installation>")?)
         .canonicalize()
         .map_err(|e| e.to_string())?;
@@ -76,6 +155,7 @@ fn export(args: &[String]) -> Result<(), String> {
     let staging = parent.join(format!("hoi4-export-{nonce}.tmp"));
     fs::create_dir(&staging).map_err(|e| e.to_string())?;
     let operation = (|| {
+        copy_metadata(&game, &staging)?;
         for rel in ["common", "history", "events", "localisation", "interface"] {
             copy_tree(&game.join(rel), &staging.join(rel))?;
         }
@@ -150,20 +230,15 @@ fn export(args: &[String]) -> Result<(), String> {
         installed.sort();
         installed.dedup();
         let enabled = repeated(args, "--dlc");
-        let mut version = arg(args, "--version");
-        if version.is_none() {
-            if let Ok(s) = fs::read_to_string(game.join("launcher-settings.json")) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s) {
-                    version = v
-                        .get("rawVersion")
-                        .or_else(|| v.get("version"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_owned);
-                }
-            }
-        }
+        let (version, version_source) = if let Some(version) = arg(args, "--version") {
+            (Some(version), Some("command line --version".into()))
+        } else {
+            game_version(&game).map_or((None, None), |(v, s)| (Some(v), Some(s)))
+        };
         let install = Installation {
             version,
+            version_source,
+            executable_version: arg(args, "--exe-version"),
             checksum: arg(args, "--checksum"),
             executable_sha256: arg(args, "--exe-sha256"),
             enabled_dlcs: enabled.clone(),
@@ -220,6 +295,7 @@ fn compile(root: &Path) -> Result<(), String> {
     let data = ResearchDataset::load(root, false)?;
     let report = data.audit(root);
     atomic_json(&root.join("research-report.json"), &report)?;
+    let sources = data.write_review_sources(root)?;
     println!(
         "Imported technology definitions: {}",
         data.registry.technologies.len()
@@ -227,12 +303,67 @@ fn compile(root: &Path) -> Result<(), String> {
     println!("Country histories: {}", data.histories.len());
     println!("Diagnostics: {}", data.diagnostics.len());
     println!("Report: {}", root.join("research-report.json").display());
+    println!("Review source texts: {}", sources.display());
     println!("No original-engine timing comparisons have been performed.");
     Ok(())
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reimport_preserves_profile_and_separates_legacy_exe_version() {
+        let root =
+            std::env::temp_dir().join(format!("hoi4-reimport-profile-{}", std::process::id()));
+        fs::create_dir_all(root.join("common/technologies")).unwrap();
+        let original = Installation {
+            version: Some("1.0".into()),
+            scenario: Some("1939".into()),
+            enabled_dlcs: vec!["Authored DLC".into()],
+            dlc_selection_verified: true,
+            data_layers: vec!["layers/one".into()],
+            ..Default::default()
+        };
+        atomic_json(&root.join("research-import.json"), &original).unwrap();
+        fs::write(
+            root.join("military_profile.txt"),
+            "custom_setting=yes\ndata_layers={\"layers/one\"}\n",
+        )
+        .unwrap();
+        refresh_metadata(&root, &[]).unwrap();
+        let install = installation(&root);
+        assert_eq!(install.scenario, original.scenario);
+        assert_eq!(install.enabled_dlcs, original.enabled_dlcs);
+        assert_eq!(install.data_layers, original.data_layers);
+        assert!(install.dlc_selection_verified);
+        assert!(install.version.is_none());
+        assert_eq!(install.executable_version.as_deref(), Some("1.0"));
+        fs::write(
+            root.join("launcher-settings.json"),
+            "{\"rawVersion\":\"1.test\"}",
+        )
+        .unwrap();
+        refresh_metadata(&root, &["--no-dlc".into()]).unwrap();
+        let install = installation(&root);
+        assert_eq!(install.version.as_deref(), Some("1.test"));
+        assert!(install.enabled_dlcs.is_empty());
+        assert!(install.dlc_selection_verified);
+        let profile = fs::read_to_string(root.join("military_profile.txt")).unwrap();
+        assert!(profile.contains("custom_setting=yes"));
+        let b = hoi4_mobile::pdx::parse_pdx(&profile).unwrap();
+        assert!(hoi4_mobile::pdx::block(&b, "dlcs").unwrap().is_empty());
+        fs::remove_dir_all(root).unwrap();
+    }
+}
 fn main() {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let result=match args.first().map(String::as_str){Some("export")=>export(&args[1..]),Some("import"|"audit")=>compile(Path::new(args.get(1).map(String::as_str).unwrap_or("data/hoi4"))),_=>Err("Usage: hoi4-research export --game <folder> [--out data/hoi4] [--dlc <exact name> | --no-dlc] [--layer <directory>] | import [data/hoi4] | audit [data/hoi4]".into())};
+    let result=match args.first().map(String::as_str){
+        Some("export")=>export(&args[1..]),
+        Some("import"|"audit")=>{
+            let root=Path::new(args.get(1).map(String::as_str).unwrap_or("data/hoi4"));
+            refresh_metadata(root,&args[2.min(args.len())..]).and_then(|_|compile(root))
+        },
+        _=>Err("Usage: hoi4-research export --game <folder> [--out data/hoi4] [--dlc <exact name> | --no-dlc] [--layer <directory>] | import [data/hoi4] | audit [data/hoi4] [--game <folder>] [--dlc <exact name> | --no-dlc]".into())
+    };
     if let Err(e) = result {
         eprintln!("Research import failed: {e}");
         std::process::exit(1);

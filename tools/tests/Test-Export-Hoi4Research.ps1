@@ -20,13 +20,24 @@ function Assert-Archive([string]$Output) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [System.IO.Compression.ZipFile]::OpenRead($archivePath)
     try {
-        Assert-Equal 2 $archive.Entries.Count 'The review archive must contain both outputs'
+        $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\','/') })
+        foreach ($expected in @('research-report.json','research-registry-v5.bin','research-review-sources/common/technologies/test.txt','research-review-sources/research-runtime-evidence.json')) {
+            if ($names -notcontains $expected) { throw "Missing review archive entry: $expected" }
+        }
     } finally { $archive.Dispose() }
 }
 function Assert-Call([string]$Project, [string]$Output) {
     $call = Get-Content -LiteralPath (Join-Path $Project 'cargo-call.json') -Raw | ConvertFrom-Json
-    Assert-Equal $testGame $call[([array]::IndexOf($call, '--game') + 1)] 'Game path changed during argument forwarding'
-    Assert-Equal $Output $call[([array]::IndexOf($call, '--out') + 1)] 'Wrong output directory'
+    $auditIndex = [array]::IndexOf($call, 'audit')
+    if ($auditIndex -ge 0) {
+        Assert-Equal $Output $call[$auditIndex + 1] 'Wrong existing export directory'
+        Assert-Equal -1 ([array]::IndexOf($call, '--out')) 'Reuse must not recopy the game'
+        Assert-Equal -1 ([array]::IndexOf($call, '--scenario')) 'Reuse must preserve the previous scenario by default'
+    } else {
+        Assert-Equal $testGame $call[([array]::IndexOf($call, '--game') + 1)] 'Game path changed during argument forwarding'
+        Assert-Equal $Output $call[([array]::IndexOf($call, '--out') + 1)] 'Wrong output directory'
+    }
+    Assert-Equal -1 ([array]::IndexOf($call, '--version')) 'EXE ProductVersion must not become the game patch'
     Assert-Equal $testCaller (Get-Location).ProviderPath 'Exporter did not restore caller location'
     Assert-Archive $Output
 }
@@ -47,11 +58,15 @@ if (Test-Path -LiteralPath (Join-Path (Get-Location).ProviderPath 'fail-cargo'))
     return
 }
 $outIndex = [array]::IndexOf($call, '--out')
-if ($outIndex -lt 0) { throw 'Missing --out in exporter command' }
+if ($outIndex -lt 0) { $outIndex = [array]::IndexOf($call, 'audit') }
+if ($outIndex -lt 0) { throw 'Missing export or audit output' }
 $outPath = $call[$outIndex + 1]
 New-Item -ItemType Directory -Path (Join-Path $outPath 'cache') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $outPath 'common\technologies') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $outPath 'research-review-sources\common\technologies') -Force | Out-Null
+Set-Content -LiteralPath (Join-Path $outPath 'research-review-sources\common\technologies\test.txt') -Value '# authored fixture' -Encoding UTF8
 Set-Content -LiteralPath (Join-Path $outPath 'research-report.json') -Value '{"test_fixture":true}' -Encoding UTF8
-[System.IO.File]::WriteAllBytes((Join-Path $outPath 'cache\research-registry-v4.bin'), [byte[]](1,2,3))
+[System.IO.File]::WriteAllBytes((Join-Path $outPath 'cache\research-registry-v5.bin'), [byte[]](1,2,3))
 $global:LASTEXITCODE = 0
 '@
     Set-Content -LiteralPath (Join-Path $testBin 'cargo.ps1') -Value $cargoStub -Encoding UTF8
@@ -75,6 +90,10 @@ $global:LASTEXITCODE = 0
     Set-Content -LiteralPath (Join-Path $alternateProject 'Cargo.toml') -Value '# alternate test project' -Encoding UTF8
     & $testScript -ProjectPath $alternateProject -GamePath $testGame -OutputPath 'relative output' -NoDlc
     Assert-Call $alternateProject (Join-Path $alternateProject 'relative output')
+
+    # Reimport existing data while the original installation is offline.
+    & $testScript -ProjectPath $testProject -GamePath (Join-Path $testRoot 'offline game') -ReuseExport
+    Assert-Call $testProject (Join-Path $testProject 'data\hoi4')
 
     # Compiler errors must propagate, while the caller's directory is restored.
     Set-Content -LiteralPath (Join-Path $testProject 'fail-cargo') -Value 'fail'

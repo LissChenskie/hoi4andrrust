@@ -219,7 +219,7 @@ fn draw_slots(
     refresh_estimates(view, country, catalogue, rules, date, tag);
     let active = country.slots.iter().filter(|s| s.active.is_some()).count();
     ui::label(
-        &format!("Занято ячеек: {active} / {}", country.slots.len()),
+        &format!("Занято ячеек: {active} / {}", if country.research_slots_known { country.slots.len().to_string() } else { "?".into() }),
         Rect::new(r.x + 12.0, r.y + 47.0, r.w - 24.0, 22.0),
         14.0,
         ui::GOLD,

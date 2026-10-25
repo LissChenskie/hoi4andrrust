@@ -177,6 +177,8 @@ pub struct ResearchContext {
     pub overlord: Option<String>,
     pub rules: BTreeMap<String, String>,
     pub variables: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub template_units: Option<BTreeSet<String>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeferredEffect {
@@ -192,6 +194,8 @@ pub struct Technology {
     pub kind: ResearchKind,
     pub source: String,
     pub raw: Vec<Entry>,
+    #[serde(default)]
+    pub constants: BTreeMap<String, String>,
     pub positions: Vec<TechPosition>,
     pub paths: Vec<TechPath>,
     pub incoming_paths: BTreeSet<String>,
@@ -228,6 +232,7 @@ impl Technology {
             kind: ResearchKind::Standard,
             source: String::new(),
             raw: Vec::new(),
+            constants: BTreeMap::new(),
             positions: Vec::new(),
             paths: Vec::new(),
             incoming_paths: BTreeSet::new(),
@@ -592,6 +597,8 @@ impl ResearchCatalogue {
 /// not read from the selected installation; these defaults are not a version claim.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ResearchRules {
+    #[serde(default)]
+    pub base_research_slots: Option<usize>,
     pub base_tech_cost: f64,
     pub year_ahead_penalty: f64,
     pub max_saved_days: f64,
@@ -601,6 +608,7 @@ pub struct ResearchRules {
 impl Default for ResearchRules {
     fn default() -> Self {
         Self {
+            base_research_slots: None,
             base_tech_cost: 110.0,
             year_ahead_penalty: 2.0,
             max_saved_days: 30.0,
@@ -662,6 +670,8 @@ pub struct ResearchSlot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryResearch {
+    #[serde(default = "known_slots")]
+    pub research_slots_known: bool,
     pub slots: Vec<ResearchSlot>,
     pub context: ResearchContext,
     pub technology_levels: BTreeMap<String, u32>,
@@ -686,9 +696,13 @@ pub struct CountryResearch {
     pub unlocks: BTreeSet<String>,
     pub applied_modifiers: BTreeMap<String, f64>,
 }
+fn known_slots() -> bool {
+    true
+}
 impl CountryResearch {
     pub fn new(slot_count: usize, rules: &ResearchRules) -> Self {
         Self {
+            research_slots_known: true,
             context: ResearchContext::default(),
             technology_levels: BTreeMap::new(),
             parked: BTreeMap::new(),
@@ -735,6 +749,9 @@ impl CountryResearch {
         rules: &ResearchRules,
         date: GameDate,
     ) -> Result<(), &'static str> {
+        if !self.research_slots_known {
+            return Err("Количество исследовательских ячеек не определено из данных");
+        }
         if slot >= self.slots.len() {
             return Err("Research slot is unavailable");
         }

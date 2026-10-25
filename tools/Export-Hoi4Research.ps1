@@ -3,6 +3,8 @@ param(
     [string]$GamePath = 'E:\перекид с ссд\games\Hearts of Iron IV',
     [string]$ProjectPath,
     [string]$OutputPath,
+    [switch]$ReuseExport,
+    [string]$UserDataPath,
     [ValidateSet('1936','1939')][string]$Scenario = '1936',
     [string[]]$EnabledDlc = @(),
     [switch]$NoDlc,
@@ -27,15 +29,25 @@ if ([string]::IsNullOrWhiteSpace($ProjectPath)) {
 $ProjectPath = [System.IO.Path]::GetFullPath($ProjectPath)
 $GamePath = [System.IO.Path]::GetFullPath($GamePath)
 if (!(Test-Path -LiteralPath (Join-Path $ProjectPath 'Cargo.toml'))) { throw 'ProjectPath must contain Cargo.toml.' }
-if (!(Test-Path -LiteralPath (Join-Path $GamePath 'hoi4.exe'))) { throw "hoi4.exe not found in $GamePath" }
 if (!$OutputPath) { $OutputPath = Join-Path $ProjectPath 'data\hoi4' }
 elseif (![System.IO.Path]::IsPathRooted($OutputPath)) { $OutputPath = Join-Path $ProjectPath $OutputPath }
 $OutputPath = [System.IO.Path]::GetFullPath($OutputPath)
-$exe = Get-Item -LiteralPath (Join-Path $GamePath 'hoi4.exe')
-$arguments = @('run','--release','--bin','hoi4-research','--','export','--game',$GamePath,'--out',$OutputPath,'--scenario',$Scenario)
-$exeVersion = $exe.VersionInfo.ProductVersion
-if ($exeVersion) { $arguments += @('--version',$exeVersion) }
-$arguments += @('--exe-sha256',(Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash)
+if ($ReuseExport) {
+    if ($DataLayers.Count) { throw 'ReuseExport keeps the existing layers. Omit DataLayers or make a fresh export.' }
+    if (!(Test-Path -LiteralPath (Join-Path $OutputPath 'common\technologies') -PathType Container)) { throw "No existing export in $OutputPath" }
+    $arguments = @('run','--release','--bin','hoi4-research','--','audit',$OutputPath)
+    if (Test-Path -LiteralPath $GamePath -PathType Container) { $arguments += @('--game',$GamePath) }
+} else {
+    if (!(Test-Path -LiteralPath (Join-Path $GamePath 'hoi4.exe') -PathType Leaf)) { throw "hoi4.exe not found in $GamePath" }
+    $arguments = @('run','--release','--bin','hoi4-research','--','export','--game',$GamePath,'--out',$OutputPath)
+}
+if (!$ReuseExport -or $PSBoundParameters.ContainsKey('Scenario')) { $arguments += @('--scenario',$Scenario) }
+if (Test-Path -LiteralPath (Join-Path $GamePath 'hoi4.exe') -PathType Leaf) {
+    $exe = Get-Item -LiteralPath (Join-Path $GamePath 'hoi4.exe')
+    $exeVersion = $exe.VersionInfo.ProductVersion
+    if ($exeVersion) { $arguments += @('--exe-version',$exeVersion) }
+    $arguments += @('--exe-sha256',(Get-FileHash -LiteralPath $exe.FullName -Algorithm SHA256).Hash)
+}
 if ($Checksum) { $arguments += @('--checksum',$Checksum) }
 if ($NoDlc -and $EnabledDlc.Count) { throw 'Choose NoDlc or EnabledDlc.' }
 if ($NoDlc) { $arguments += '--no-dlc' }
@@ -47,13 +59,48 @@ try {
     & cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "Exporter exited with code $LASTEXITCODE" }
 } finally { Pop-Location }
-if (!$NoDlc -and !$EnabledDlc.Count) {
+$dlcVerified = $NoDlc -or $EnabledDlc.Count -gt 0
+$profilePath = Join-Path $OutputPath 'research-import.json'
+if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+    $profile = Get-Content -LiteralPath $profilePath -Raw | ConvertFrom-Json
+    $dlcVerified = $profile.dlc_selection_verified
+}
+if (!$dlcVerified) {
     Write-Warning 'DLC selection is unknown. Re-run with -EnabledDlc and exact enabled DLC names, or -NoDlc. Installed DLC is not proof that it is active.'
 }
 Write-Host "Ready: $OutputPath\research-report.json"
 Write-Host 'The HOI4 checksum cannot be calculated from hoi4.exe. Pass -Checksum only after reading it in the original game.'
 
-$reviewFiles = @((Join-Path $OutputPath 'research-report.json'), (Join-Path $OutputPath 'cache\research-registry-v4.bin'))
+# Logs may be from an earlier launch. Keep them as evidence, not proof of active DLC.
+if (!$UserDataPath) {
+    $documents = [Environment]::GetFolderPath('MyDocuments')
+    if ($documents) { $UserDataPath = Join-Path $documents 'Paradox Interactive\Hearts of Iron IV' }
+}
+$evidence = [ordered]@{ collected_at_utc = [DateTime]::UtcNow.ToString('o'); active_dlc_verified = $false; logs = @(); disabled_dlcs = @(); enabled_mod_count = $null }
+if ($UserDataPath -and (Test-Path -LiteralPath $UserDataPath -PathType Container)) {
+    foreach ($name in @('system.log','game.log')) {
+        $logPath = Join-Path $UserDataPath ('logs\' + $name)
+        if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+            try {
+                $lines = @(Get-Content -LiteralPath $logPath -TotalCount 1000 | Where-Object { $_ -match '(?i)(game version|version:|checksum|dlc)' } | Select-Object -First 100)
+                $evidence.logs += [ordered]@{ name = $name; modified_utc = (Get-Item -LiteralPath $logPath).LastWriteTimeUtc.ToString('o'); lines = $lines }
+            } catch { Write-Warning "Could not read optional $name evidence: $($_.Exception.Message)" }
+        }
+    }
+    $dlcLoadPath = Join-Path $UserDataPath 'dlc_load.json'
+    if (Test-Path -LiteralPath $dlcLoadPath -PathType Leaf) {
+        try {
+            $dlcLoad = Get-Content -LiteralPath $dlcLoadPath -Raw | ConvertFrom-Json
+            $evidence.disabled_dlcs = @($dlcLoad.disabled_dlcs)
+            $evidence.enabled_mod_count = @($dlcLoad.enabled_mods | Where-Object { $_ }).Count
+        } catch { Write-Warning "Could not read optional DLC evidence: $($_.Exception.Message)" }
+    }
+}
+$evidencePath = Join-Path $OutputPath 'research-runtime-evidence.json'
+[System.IO.File]::WriteAllText($evidencePath, ($evidence | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+$sourcePath = Join-Path $OutputPath 'research-review-sources'
+Copy-Item -LiteralPath $evidencePath -Destination (Join-Path $sourcePath 'research-runtime-evidence.json') -Force
+$reviewFiles = @((Join-Path $OutputPath 'research-report.json'), (Join-Path $OutputPath 'cache\research-registry-v5.bin'), $sourcePath)
 $reviewPath = Join-Path $OutputPath 'research-review.zip'
 Compress-Archive -LiteralPath $reviewFiles -DestinationPath $reviewPath -Force
 Write-Host "For verification, attach: $reviewPath"

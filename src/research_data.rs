@@ -15,14 +15,8 @@ pub struct ImportReport {
     pub imported_technologies: usize,
     pub diagnostics: Vec<String>,
 }
-fn scalar(raw: &str, vars: &BTreeMap<String, String>, depth: u8) -> Option<f64> {
-    if depth > 32 {
-        return None;
-    }
-    raw.parse::<f64>()
-        .ok()
-        .filter(|v| v.is_finite())
-        .or_else(|| vars.get(raw).and_then(|s| scalar(s, vars, depth + 1)))
+fn scalar(raw: &str, vars: &BTreeMap<String, String>, _depth: u8) -> Option<f64> {
+    crate::script_constants::number(raw, vars)
 }
 fn value(b: &[Entry], key: &str, vars: &BTreeMap<String, String>) -> Option<f64> {
     scalar(atom(b, key)?, vars, 0)
@@ -36,232 +30,240 @@ pub fn import_technology_source(
     cat: &mut ResearchCatalogue,
 ) -> Result<usize, String> {
     let root = parse_pdx(source).map_err(|e| format!("{path}: {e}"))?;
-    let vars = root
-        .iter()
-        .filter(|e| e.key.starts_with('@'))
-        .filter_map(|e| e.atom().map(|v| (e.key.clone(), v.into())))
-        .collect::<BTreeMap<_, _>>();
+    let file_constants = crate::script_constants::scope(&root, &Default::default());
     let mut count = 0;
-    for node in root
-        .iter()
-        .filter(|e| e.key == "technologies")
-        .filter_map(Entry::block)
-        .flatten()
-    {
-        let Some(b) = node.block() else {
-            cat.diagnostics.push(format!(
-                "{path}:{}: {} is not a technology block",
-                node.span.line, node.key
-            ));
-            continue;
-        };
-        let mut t = Technology::sample(
-            &node.key,
-            value(b, "start_year", &vars).unwrap_or(0.0).max(0.0) as u32,
-            value(b, "research_cost", &vars).unwrap_or(1.0),
-        );
-        t.source = format!("{path}:{}", node.span.line);
-        t.raw = b.to_vec();
-        for key in ["research_cost", "start_year"] {
-            if atom(b, key).is_some() && value(b, key, &vars).is_none() {
-                t.unsupported.insert(key.into());
-                cat.diagnostics
-                    .push(format!("{}: {key} is an unresolved expression", t.source));
+    for wrapper in root.iter().filter(|e| e.key == "technologies") {
+        let nodes = wrapper.block().unwrap_or(&[]);
+        let block_constants = crate::script_constants::scope(nodes, &file_constants);
+        for node in nodes.iter().filter(|e| !e.key.starts_with('@')) {
+            let Some(original) = node.block() else {
+                cat.diagnostics.push(format!(
+                    "{path}:{}: {} is not a technology block",
+                    node.span.line, node.key
+                ));
+                continue;
+            };
+            let vars = crate::script_constants::scope(original, &block_constants);
+            let resolved = crate::script_constants::resolve(original, &vars);
+            let b = resolved.as_slice();
+            let mut t = Technology::sample(
+                &node.key,
+                value(b, "start_year", &vars).unwrap_or(0.0).max(0.0) as u32,
+                value(b, "research_cost", &vars).unwrap_or(1.0),
+            );
+            t.source = format!("{path}:{}", node.span.line);
+            t.raw = original.to_vec();
+            t.constants = vars.clone();
+            for key in ["research_cost", "start_year"] {
+                if atom(b, key).is_some() && value(b, key, &vars).is_none() {
+                    t.unsupported.insert(key.into());
+                    cat.diagnostics
+                        .push(format!("{}: {key} is an unresolved expression", t.source));
+                }
             }
-        }
-        t.kind = if atom(b, "is_special_project_tech") == Some("yes") {
-            ResearchKind::SpecialProject
-        } else if atom(b, "doctrine") == Some("yes") || atom(b, "xp_research_cost").is_some() {
-            ResearchKind::Doctrine
-        } else {
-            ResearchKind::Standard
-        };
-        t.categories = block(b, "categories").map(names).unwrap_or_default();
-        for e in block(b, "dependencies").unwrap_or(&[]) {
-            let level = e.atom().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
-            t.prerequisites.insert(e.key.clone());
-            t.dependency_levels.insert(e.key.clone(), level);
-        }
-        t.xor = block(b, "xor").map(names).unwrap_or_default();
-        t.sub_technologies = block(b, "sub_technologies").map(names).unwrap_or_default();
-        t.allow = Requirement::Script(block(b, "allow").unwrap_or(&[]).to_vec());
-        t.allow_branch = Requirement::Script(block(b, "allow_branch").unwrap_or(&[]).to_vec());
-        t.ai_weight = block(b, "ai_will_do")
-            .and_then(|b| value(b, "factor", &vars))
-            .unwrap_or(1.0)
-            .max(0.0);
-        t.on_complete_limit = block(b, "on_research_complete_limit")
-            .unwrap_or(&[])
-            .to_vec();
-        t.on_complete = block(b, "on_research_complete").unwrap_or(&[]).to_vec();
-        for e in b {
-            match e.key.as_str() {
-                "folder" => {
-                    if let Some(b) = e.block() {
-                        if let Some(name) = atom(b, "name") {
-                            let pos = block(b, "position").unwrap_or(&[]);
-                            t.positions.push(TechPosition {
-                                folder: name.into(),
-                                x: value(pos, "x", &vars).unwrap_or(0.0) as f32,
-                                y: value(pos, "y", &vars).unwrap_or(0.0) as f32,
-                            });
-                        }
-                    }
+            t.kind = if atom(b, "is_special_project_tech") == Some("yes") {
+                ResearchKind::SpecialProject
+            } else if atom(b, "doctrine") == Some("yes") || atom(b, "xp_research_cost").is_some() {
+                ResearchKind::Doctrine
+            } else {
+                ResearchKind::Standard
+            };
+            t.categories = block(b, "categories").map(names).unwrap_or_default();
+            for e in block(b, "dependencies").unwrap_or(&[]) {
+                let level = e.atom().and_then(|s| s.parse::<u32>().ok()).unwrap_or(1);
+                t.prerequisites.insert(e.key.clone());
+                t.dependency_levels.insert(e.key.clone(), level);
+            }
+            t.xor = block(b, "xor").map(names).unwrap_or_default();
+            t.sub_technologies = block(b, "sub_technologies").map(names).unwrap_or_default();
+            t.allow = Requirement::Script(block(b, "allow").unwrap_or(&[]).to_vec());
+            t.allow_branch = Requirement::Script(block(b, "allow_branch").unwrap_or(&[]).to_vec());
+            t.ai_weight = block(b, "ai_will_do")
+                .and_then(|b| value(b, "factor", &vars))
+                .unwrap_or(1.0)
+                .max(0.0);
+            t.on_complete_limit = block(b, "on_research_complete_limit")
+                .unwrap_or(&[])
+                .to_vec();
+            t.on_complete = block(b, "on_research_complete").unwrap_or(&[]).to_vec();
+            for e in b {
+                if e.key.starts_with('@') {
+                    continue;
                 }
-                "path" => {
-                    if let Some(b) = e.block() {
-                        if let Some(target) = atom(b, "leads_to_tech") {
-                            let coeff = value(b, "research_cost_coeff", &vars).unwrap_or(1.0);
-                            t.paths.push(TechPath {
-                                target: target.into(),
-                                research_cost_coeff: coeff,
-                                coefficient_known: (atom(b, "research_cost_coeff").is_none()
-                                    || value(b, "research_cost_coeff", &vars).is_some())
-                                    && coeff >= 0.0,
-                                ignore_for_layout: atom(b, "ignore_for_layout") == Some("yes"),
-                            });
-                        }
-                    }
-                }
-                "enable_subunits"
-                | "enable_equipments"
-                | "enable_equipment_modules"
-                | "enable_tactic" => {
-                    let kind = e.key.clone();
-                    let ids = e
-                        .atom()
-                        .map(|s| BTreeSet::from([s.into()]))
-                        .unwrap_or_else(|| e.block().map(names).unwrap_or_default());
-                    let limit = e
-                        .block()
-                        .and_then(|b| block(b, "limit"))
-                        .unwrap_or(&[])
-                        .to_vec();
-                    for id in ids {
-                        if limit.is_empty() {
-                            t.unlocks.insert(format!("{kind}:{id}"));
-                        }
-                        t.effects.push(TechnologyEffect::Unlock {
-                            kind: kind.clone(),
-                            id,
-                            limit: limit.clone(),
-                        });
-                    }
-                }
-                "enable_building" => {
-                    if let Some(b) = e.block() {
-                        if let (Some(id), Some(level)) =
-                            (atom(b, "building"), value(b, "level", &vars))
-                        {
-                            if level >= 0.0 && level <= u32::MAX as f64 {
-                                t.effects.push(TechnologyEffect::Building {
-                                    id: id.into(),
-                                    level: level as u32,
+                match e.key.as_str() {
+                    "folder" => {
+                        if let Some(b) = e.block() {
+                            if let Some(name) = atom(b, "name") {
+                                let pos = block(b, "position").unwrap_or(&[]);
+                                if ["x", "y"].iter().any(|key| {
+                                    atom(pos, key).is_some() && value(pos, key, &vars).is_none()
+                                }) {
+                                    t.unsupported.insert("folder.position".into());
+                                    continue;
+                                }
+                                t.positions.push(TechPosition {
+                                    folder: name.into(),
+                                    x: value(pos, "x", &vars).unwrap_or(0.0) as f32,
+                                    y: value(pos, "y", &vars).unwrap_or(0.0) as f32,
                                 });
+                            }
+                        }
+                    }
+                    "path" => {
+                        if let Some(b) = e.block() {
+                            if let Some(target) = atom(b, "leads_to_tech") {
+                                let coeff = value(b, "research_cost_coeff", &vars).unwrap_or(1.0);
+                                t.paths.push(TechPath {
+                                    target: target.into(),
+                                    research_cost_coeff: coeff,
+                                    coefficient_known: (atom(b, "research_cost_coeff").is_none()
+                                        || value(b, "research_cost_coeff", &vars).is_some())
+                                        && coeff >= 0.0,
+                                    ignore_for_layout: atom(b, "ignore_for_layout") == Some("yes"),
+                                });
+                            }
+                        }
+                    }
+                    "enable_subunits"
+                    | "enable_equipments"
+                    | "enable_equipment_modules"
+                    | "enable_tactic" => {
+                        let kind = e.key.clone();
+                        let ids = e
+                            .atom()
+                            .map(|s| BTreeSet::from([s.into()]))
+                            .unwrap_or_else(|| e.block().map(names).unwrap_or_default());
+                        let limit = e
+                            .block()
+                            .and_then(|b| block(b, "limit"))
+                            .unwrap_or(&[])
+                            .to_vec();
+                        for id in ids {
+                            if limit.is_empty() {
+                                t.unlocks.insert(format!("{kind}:{id}"));
+                            }
+                            t.effects.push(TechnologyEffect::Unlock {
+                                kind: kind.clone(),
+                                id,
+                                limit: limit.clone(),
+                            });
+                        }
+                    }
+                    "enable_building" => {
+                        if let Some(b) = e.block() {
+                            if let (Some(id), Some(level)) =
+                                (atom(b, "building"), value(b, "level", &vars))
+                            {
+                                if level >= 0.0 && level <= u32::MAX as f64 {
+                                    t.effects.push(TechnologyEffect::Building {
+                                        id: id.into(),
+                                        level: level as u32,
+                                    });
+                                } else {
+                                    t.unsupported.insert("enable_building".into());
+                                }
                             } else {
                                 t.unsupported.insert("enable_building".into());
                             }
-                        } else {
-                            t.unsupported.insert("enable_building".into());
                         }
                     }
-                }
-                "modifier" => {
-                    for m in e.block().unwrap_or(&[]) {
-                        if let Some(v) = m.atom().and_then(|s| scalar(s, &vars, 0)) {
-                            *t.modifiers.entry(m.key.clone()).or_default() += v;
+                    "modifier" => {
+                        for m in e.block().unwrap_or(&[]) {
+                            if let Some(v) = m.atom().and_then(|s| scalar(s, &vars, 0)) {
+                                *t.modifiers.entry(m.key.clone()).or_default() += v;
+                                t.effects.push(TechnologyEffect::CountryModifier {
+                                    key: m.key.clone(),
+                                    value: v,
+                                });
+                            } else {
+                                t.effects.push(TechnologyEffect::Deferred {
+                                    field: m.key.clone(),
+                                    payload: m.clone(),
+                                });
+                            }
+                        }
+                    }
+                    "research_cost"
+                    | "start_year"
+                    | "categories"
+                    | "dependencies"
+                    | "xor"
+                    | "sub_technologies"
+                    | "allow"
+                    | "allow_branch"
+                    | "ai_will_do"
+                    | "ai_research_weights"
+                    | "doctrine"
+                    | "doctrine_name"
+                    | "xp_research_type"
+                    | "xp_research_cost"
+                    | "xp_unlock_cost"
+                    | "xp_boost_cost"
+                    | "xp_research_bonus"
+                    | "is_special_project_tech"
+                    | "special_project_specialization"
+                    | "sub_tech_index"
+                    | "on_research_complete"
+                    | "on_research_complete_limit"
+                    | "show_equipment_icon"
+                    | "show_effect_as_desc"
+                    | "force_use_small_tech_layout"
+                    | "desc" => {}
+                    key => {
+                        if let Some(v) = e.atom().and_then(|s| scalar(s, &vars, 0)) {
+                            *t.modifiers.entry(key.into()).or_default() += v;
                             t.effects.push(TechnologyEffect::CountryModifier {
-                                key: m.key.clone(),
+                                key: key.into(),
                                 value: v,
                             });
-                        } else {
-                            t.effects.push(TechnologyEffect::Deferred {
-                                field: m.key.clone(),
-                                payload: m.clone(),
+                        } else if let Some(b) = e.block() {
+                            let values = b
+                                .iter()
+                                .filter_map(|e| {
+                                    e.atom()
+                                        .and_then(|s| scalar(s, &vars, 0))
+                                        .map(|v| (e.key.clone(), v))
+                                })
+                                .collect::<BTreeMap<_, _>>();
+                            t.effects.push(TechnologyEffect::ScopedModifier {
+                                scope: key.into(),
+                                values,
                             });
-                        }
-                    }
-                }
-                "research_cost"
-                | "start_year"
-                | "categories"
-                | "dependencies"
-                | "xor"
-                | "sub_technologies"
-                | "allow"
-                | "allow_branch"
-                | "ai_will_do"
-                | "ai_research_weights"
-                | "doctrine"
-                | "doctrine_name"
-                | "xp_research_type"
-                | "xp_research_cost"
-                | "xp_unlock_cost"
-                | "xp_boost_cost"
-                | "xp_research_bonus"
-                | "is_special_project_tech"
-                | "special_project_specialization"
-                | "sub_tech_index"
-                | "on_research_complete"
-                | "on_research_complete_limit"
-                | "show_equipment_icon"
-                | "show_effect_as_desc"
-                | "force_use_small_tech_layout"
-                | "desc" => {}
-                key => {
-                    if let Some(v) = e.atom().and_then(|s| scalar(s, &vars, 0)) {
-                        *t.modifiers.entry(key.into()).or_default() += v;
-                        t.effects.push(TechnologyEffect::CountryModifier {
-                            key: key.into(),
-                            value: v,
-                        });
-                    } else if let Some(b) = e.block() {
-                        let values = b
-                            .iter()
-                            .filter_map(|e| {
-                                e.atom()
-                                    .and_then(|s| scalar(s, &vars, 0))
-                                    .map(|v| (e.key.clone(), v))
-                            })
-                            .collect::<BTreeMap<_, _>>();
-                        t.effects.push(TechnologyEffect::ScopedModifier {
-                            scope: key.into(),
-                            values,
-                        });
-                        if b.iter()
-                            .any(|e| e.atom().and_then(|s| scalar(s, &vars, 0)).is_none())
-                        {
+                            if b.iter()
+                                .any(|e| e.atom().and_then(|s| scalar(s, &vars, 0)).is_none())
+                            {
+                                t.effects.push(TechnologyEffect::Deferred {
+                                    field: key.into(),
+                                    payload: e.clone(),
+                                });
+                            }
+                            t.unsupported.insert(format!("scope:{key}"));
+                        } else {
                             t.effects.push(TechnologyEffect::Deferred {
                                 field: key.into(),
                                 payload: e.clone(),
                             });
+                            t.unsupported.insert(key.into());
                         }
-                        t.unsupported.insert(format!("scope:{key}"));
-                    } else {
-                        t.effects.push(TechnologyEffect::Deferred {
-                            field: key.into(),
-                            payload: e.clone(),
-                        });
-                        t.unsupported.insert(key.into());
                     }
                 }
             }
+            if let Some(p) = t.positions.first() {
+                t.folder = p.folder.clone();
+                t.x = p.x;
+                t.y = p.y;
+            } else {
+                t.folder = "unplaced".into();
+            }
+            if cat.technologies.remove(&t.id).is_some() {
+                cat.diagnostics.push(format!(
+                    "{} overrides an earlier definition of {}",
+                    t.source, t.id
+                ));
+            }
+            cat.insert(t)?;
+            count += 1;
         }
-        if let Some(p) = t.positions.first() {
-            t.folder = p.folder.clone();
-            t.x = p.x;
-            t.y = p.y;
-        } else {
-            t.folder = "unplaced".into();
-        }
-        if cat.technologies.remove(&t.id).is_some() {
-            cat.diagnostics.push(format!(
-                "{} overrides an earlier definition of {}",
-                t.source, t.id
-            ));
-        }
-        cat.insert(t)?;
-        count += 1;
     }
     cat.rebuild_indices();
     Ok(count)
@@ -302,100 +304,40 @@ pub fn load_catalogue(directory: &Path) -> Result<(ResearchCatalogue, ImportRepo
 /// Literal Lua defines, both `NDefines.NTechnology.KEY = n` and table entries.
 /// Non-literal expressions are not executed and retain the visible baseline.
 pub fn update_rules_from_defines(source: &str, rules: &mut ResearchRules) -> Vec<String> {
-    // Tokenize the small literal-assignment subset of Lua, rather than executing game code.
-    let mut tokens = Vec::<String>::new();
-    let mut chars = source.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c.is_whitespace() {
-            continue;
-        }
-        if c == '-' && chars.peek() == Some(&'-') {
-            chars.next();
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    let mut prev = ' ';
-                    for ch in chars.by_ref() {
-                        if prev == ']' && ch == ']' {
-                            break;
-                        }
-                        prev = ch;
-                    }
-                    continue;
-                }
-            }
-            for ch in chars.by_ref() {
-                if ch == '\n' {
-                    break;
-                }
-            }
-            continue;
-        }
-        if c == '"' || c == '\'' {
-            let quote = c;
-            let mut s = String::new();
-            while let Some(ch) = chars.next() {
-                if ch == quote {
-                    break;
-                }
-                if ch == '\\' {
-                    chars.next();
-                } else {
-                    s.push(ch);
-                }
-            }
-            tokens.push(format!("\"{s}\""));
-            continue;
-        }
-        if c.is_alphanumeric() || matches!(c, '_' | '.' | '+' | '-') {
-            let mut s = c.to_string();
-            while let Some(&ch) = chars.peek() {
-                if ch.is_alphanumeric() || matches!(ch, '_' | '.') {
-                    s.push(ch);
-                    chars.next();
-                } else {
-                    break;
-                }
-            }
-            tokens.push(s);
-        } else {
-            tokens.push(c.to_string());
-        }
-    }
+    update_rules_from_define_values(&crate::defines::read(source), rules)
+}
+pub fn update_rules_from_define_values(
+    defines: &crate::defines::LiteralDefines,
+    rules: &mut ResearchRules,
+) -> Vec<String> {
     let mut imported = Vec::new();
-    for i in 1..tokens.len().saturating_sub(1) {
-        if tokens[i] != "=" {
-            continue;
-        }
-        let key = tokens[i - 1].rsplit('.').next().unwrap_or("");
-        let Some(v) = tokens[i + 1].parse::<f64>().ok().filter(|v| v.is_finite()) else {
-            continue;
-        };
-        if tokens
-            .get(i + 2)
-            .is_some_and(|t| matches!(t.as_str(), "*" | "/" | "+" | "-" | "^"))
-        {
-            continue;
-        }
-        match key {
-            "BASE_TECH_COST" | "RESEARCH_BASE_DAYS" if v > 0.0 => {
-                rules.base_tech_cost = v;
+    for (path, v) in &defines.values {
+        match path.strip_prefix("NDefines.NTechnology.") {
+            Some("BASE_TECH_COST" | "RESEARCH_BASE_DAYS") if *v > 0.0 => {
+                rules.base_tech_cost = *v;
                 imported.push("BASE_TECH_COST".into());
             }
-            "BASE_YEAR_AHEAD_PENALTY_FACTOR" if v >= 0.0 => {
-                rules.year_ahead_penalty = v;
-                imported.push(key.into());
+            Some("BASE_YEAR_AHEAD_PENALTY_FACTOR") if *v >= 0.0 => {
+                rules.year_ahead_penalty = *v;
+                imported.push("BASE_YEAR_AHEAD_PENALTY_FACTOR".into());
             }
-            "BASE_RESEARCH_POINTS_SAVED" if v >= 0.0 => {
-                rules.max_saved_days = v;
-                imported.push(key.into());
+            Some("BASE_RESEARCH_POINTS_SAVED") if *v >= 0.0 => {
+                rules.max_saved_days = *v;
+                imported.push("BASE_RESEARCH_POINTS_SAVED".into());
             }
-            "MIN_RESEARCH_SPEED" | "MIN_RESEARCH_SPEED_FACTOR" if v > 0.0 => {
-                rules.minimum_speed = v;
-                imported.push(key.into());
+            Some("MIN_RESEARCH_SPEED" | "MIN_RESEARCH_SPEED_FACTOR") if *v > 0.0 => {
+                rules.minimum_speed = *v;
+                imported.push("MIN_RESEARCH_SPEED".into());
             }
             _ => {}
+        }
+        if path == "NDefines.NCountry.BASE_RESEARCH_SLOTS"
+            && *v >= 0.0
+            && v.fract() == 0.0
+            && *v <= rules.max_slots as f64
+        {
+            rules.base_research_slots = Some(*v as usize);
+            imported.push("BASE_RESEARCH_SLOTS".into());
         }
     }
     imported

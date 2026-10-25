@@ -60,6 +60,14 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
             column: col,
         };
         col += 1;
+        if c == '\r' {
+            if chars.peek().is_some_and(|(_, c)| *c == '\n') {
+                chars.next();
+            }
+            line += 1;
+            col = 1;
+            continue;
+        }
         if c == '\n' {
             line += 1;
             col = 1;
@@ -69,8 +77,11 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
             continue;
         }
         if c == '#' {
-            for (_, v) in chars.by_ref() {
-                if v == '\n' {
+            while let Some((_, v)) = chars.next() {
+                if v == '\n' || v == '\r' {
+                    if v == '\r' && chars.peek().is_some_and(|(_, c)| *c == '\n') {
+                        chars.next();
+                    }
                     line += 1;
                     col = 1;
                     break;
@@ -82,7 +93,12 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
         let kind = match c {
             '{' => Kind::Open,
             '}' => Kind::Close,
-            '=' | '<' | '>' | '!' | '?' => {
+            '?' if chars.peek().is_some_and(|(_, c)| *c == '=') => {
+                chars.next();
+                col += 1;
+                Kind::Op("?=".into())
+            }
+            '=' | '<' | '>' | '!' => {
                 let mut op = c.to_string();
                 if chars.peek().is_some_and(|(_, c)| *c == '=') {
                     chars.next();
@@ -168,7 +184,8 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
                 } else {
                     while let Some(&(_, ch)) = chars.peek() {
                         if ch.is_whitespace()
-                            || matches!(ch, '{' | '}' | '=' | '<' | '>' | '!' | '?' | '#' | '"')
+                            || matches!(ch, '{' | '}' | '=' | '<' | '>' | '!' | '#' | '"')
+                            || (ch == '?' && chars.clone().nth(1).is_some_and(|(_, c)| c == '='))
                         {
                             break;
                         }
@@ -184,7 +201,12 @@ fn lex(source: &str) -> Result<Vec<Token>, String> {
     }
     Ok(out)
 }
-fn entries(tokens: &[Token], pos: &mut usize, depth: usize) -> Result<Vec<Entry>, String> {
+fn entries(
+    tokens: &[Token],
+    pos: &mut usize,
+    depth: usize,
+    opened: Option<&Span>,
+) -> Result<Vec<Entry>, String> {
     if depth > 256 {
         return Err("Script nesting exceeds 256 levels".into());
     }
@@ -219,10 +241,11 @@ fn entries(tokens: &[Token], pos: &mut usize, depth: usize) -> Result<Vec<Entry>
         }
         let value = match tokens.get(*pos) {
             Some(Token {
-                kind: Kind::Open, ..
+                kind: Kind::Open,
+                span,
             }) => {
                 *pos += 1;
-                Some(Value::Block(entries(tokens, pos, depth + 1)?))
+                Some(Value::Block(entries(tokens, pos, depth + 1, Some(span))?))
             }
             Some(Token {
                 kind: Kind::Atom(value),
@@ -248,13 +271,20 @@ fn entries(tokens: &[Token], pos: &mut usize, depth: usize) -> Result<Vec<Entry>
         });
     }
     if depth > 0 {
-        Err("Unclosed brace at end of script".into())
+        Err(
+            opened.map_or("Unclosed brace at end of script".into(), |s| {
+                format!(
+                    "Unclosed brace opened at {}:{} (byte {})",
+                    s.line, s.column, s.offset
+                )
+            }),
+        )
     } else {
         Ok(out)
     }
 }
 pub fn parse_pdx(source: &str) -> Result<Vec<Entry>, String> {
-    entries(&lex(source)?, &mut 0, 0)
+    entries(&lex(source)?, &mut 0, 0, None)
 }
 pub fn find<'a>(b: &'a [Entry], key: &str) -> Option<&'a Entry> {
     b.iter().rev().find(|e| e.key == key)
@@ -277,6 +307,31 @@ pub fn names(b: &[Entry]) -> std::collections::BTreeSet<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn variable_fallback_and_conditional_assignment_are_distinct() {
+        let b = parse_pdx("set_research_slots=var:ROOT.slots?2 variable?=0 question=tag?marker")
+            .unwrap();
+        assert_eq!(b[0].atom(), Some("var:ROOT.slots?2"));
+        assert_eq!(b[1].key, "variable");
+        assert_eq!(b[1].operator, "?=");
+        assert_eq!(b[2].atom(), Some("tag?marker"));
+    }
+    #[test]
+    fn cr_comments_preserve_braces_and_errors_locate_opening() {
+        for newline in ["\r", "\r\n", "\n"] {
+            let b = parse_pdx(&format!(
+                "country = {{{newline}# comment{newline}set_research_slots=2{newline}}}"
+            ))
+            .unwrap();
+            assert_eq!(atom(b[0].block().unwrap(), "set_research_slots"), Some("2"));
+            assert_eq!(b[0].block().unwrap()[0].span.line, 3);
+        }
+        assert!(
+            parse_pdx("x = {\n y = { a=1 }")
+                .unwrap_err()
+                .contains("1:5 (byte 4)")
+        );
+    }
     #[test]
     fn retains_strings_operators_repetition_and_positions() {
         let b = parse_pdx("\u{feff}# comment\nx={path=\"}\" path=\"# not comment\" date>1939.1.1 list={a b} text=\"a\\\"b\\nc\"}").unwrap();
