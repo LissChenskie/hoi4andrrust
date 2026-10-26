@@ -32,8 +32,10 @@ impl StatePixelIds {
 
     pub fn set(&mut self, index: usize, state_id: u32) {
         match self {
-            Self::Compact(data) => data[index] = u16::try_from(state_id)
-                .expect("Compact state IDs require values <= 65535"),
+            Self::Compact(data) => {
+                data[index] =
+                    u16::try_from(state_id).expect("Compact state IDs require values <= 65535")
+            }
             Self::Wide(data) => data[index] = state_id,
         }
     }
@@ -48,7 +50,9 @@ impl StatePixelIds {
     #[cfg(test)]
     pub fn from_slice(ids: &[u32]) -> Self {
         let mut result = Self::new(ids.len(), ids.iter().copied().max().unwrap_or(0));
-        for (index, &id) in ids.iter().enumerate() { result.set(index, id); }
+        for (index, &id) in ids.iter().enumerate() {
+            result.set(index, id);
+        }
         result
     }
 }
@@ -64,7 +68,12 @@ pub struct StateBounds {
 
 impl StateBounds {
     pub fn new(x: u32, y: u32) -> Self {
-        Self { left: x, top: y, right: x, bottom: y }
+        Self {
+            left: x,
+            top: y,
+            right: x,
+            bottom: y,
+        }
     }
 
     pub fn include(&mut self, x: u32, y: u32) {
@@ -74,12 +83,19 @@ impl StateBounds {
         self.bottom = self.bottom.max(y);
     }
 
-    pub fn width(self) -> u32 { self.right - self.left + 1 }
-    pub fn height(self) -> u32 { self.bottom - self.top + 1 }
+    pub fn width(self) -> u32 {
+        self.right - self.left + 1
+    }
+    pub fn height(self) -> u32 {
+        self.bottom - self.top + 1
+    }
 
     pub fn rect(self) -> macroquad::prelude::Rect {
         macroquad::prelude::Rect::new(
-            self.left as f32, self.top as f32, self.width() as f32, self.height() as f32,
+            self.left as f32,
+            self.top as f32,
+            self.width() as f32,
+            self.height() as f32,
         )
     }
 }
@@ -87,8 +103,11 @@ impl StateBounds {
 /// Only create pixels covering the state, not a full-world RGBA texture every
 /// time the user selects another state. Neighbours still use global coordinates.
 pub fn outline_rgba(
-    ids: &StatePixelIds, map_width: u32, map_height: u32,
-    state_id: u32, bounds: StateBounds,
+    ids: &StatePixelIds,
+    map_width: u32,
+    map_height: u32,
+    state_id: u32,
+    bounds: StateBounds,
 ) -> Vec<u8> {
     let width = bounds.width() as usize;
     let height = bounds.height() as usize;
@@ -100,7 +119,9 @@ pub fn outline_rgba(
         for local_x in 0..width {
             let x = bounds.left as usize + local_x;
             let index = y * map_width + x;
-            if ids.get(index) != Some(state_id) { continue; }
+            if ids.get(index) != Some(state_id) {
+                continue;
+            }
             let differs = (x > 0 && ids.get(index - 1) != Some(state_id))
                 || (x + 1 < map_width && ids.get(index + 1) != Some(state_id))
                 || (y > 0 && ids.get(index - map_width) != Some(state_id))
@@ -122,14 +143,21 @@ pub fn visible_outline(
     screen_view: macroquad::prelude::Rect,
 ) -> Option<(macroquad::prelude::Rect, macroquad::prelude::Rect)> {
     use macroquad::prelude::Rect;
-    if visible_world.w <= 0.0 || visible_world.h <= 0.0
-        || screen_view.w <= 0.0 || screen_view.h <= 0.0 { return None; }
+    if visible_world.w <= 0.0
+        || visible_world.h <= 0.0
+        || screen_view.w <= 0.0
+        || screen_view.h <= 0.0
+    {
+        return None;
+    }
     let state = bounds.rect();
     let left = state.x.max(visible_world.x);
     let top = state.y.max(visible_world.y);
     let right = (state.x + state.w).min(visible_world.x + visible_world.w);
     let bottom = (state.y + state.h).min(visible_world.y + visible_world.h);
-    if right <= left || bottom <= top { return None; }
+    if right <= left || bottom <= top {
+        return None;
+    }
     let source = Rect::new(left - state.x, top - state.y, right - left, bottom - top);
     let dest = Rect::new(
         screen_view.x + (left - visible_world.x) / visible_world.w * screen_view.w,
@@ -156,11 +184,7 @@ mod tests {
 
     #[test]
     fn selected_outline_allocates_only_state_bounds() {
-        let ids = StatePixelIds::from_slice(&[
-            0, 0, 0, 0, 0,
-            0, 2, 2, 0, 0,
-            0, 0, 0, 0, 0,
-        ]);
+        let ids = StatePixelIds::from_slice(&[0, 0, 0, 0, 0, 0, 2, 2, 0, 0, 0, 0, 0, 0, 0]);
         let mut bounds = StateBounds::new(1, 1);
         bounds.include(2, 1);
         assert_eq!((bounds.width(), bounds.height()), (2, 1));
@@ -171,7 +195,12 @@ mod tests {
     #[test]
     fn selected_outline_is_clipped_to_map_view() {
         use macroquad::prelude::Rect;
-        let bounds = StateBounds { left: 100, top: 100, right: 199, bottom: 199 };
+        let bounds = StateBounds {
+            left: 100,
+            top: 100,
+            right: 199,
+            bottom: 199,
+        };
         let viewport = Rect::new(0.0, 0.0, 400.0, 400.0);
         let view = Rect::new(20.0, 50.0, 800.0, 800.0);
         let (src, dst) = visible_outline(bounds, viewport, view).unwrap();

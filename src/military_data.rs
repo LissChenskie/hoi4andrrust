@@ -119,7 +119,17 @@ fn read_file(
     source.hash(&mut hash);
     db.source_files
         .insert(path.display().to_string(), hash.finish());
-    let root = parse_pdx(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+    let parsed = crate::pdx::parse_pdx_compatible(&source)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    for at in parsed.eof_terminated_blocks {
+        db.diagnostics.push(format!(
+            "{}:{}:{}: outer block ends at EOF",
+            path.display(),
+            at.line,
+            at.column
+        ));
+    }
+    let root = parsed.entries;
     let vars = variables(&root);
     Ok((root, vars))
 }
@@ -444,32 +454,55 @@ pub fn import_technologies(source: &str, db: &mut MilitaryCatalogue) -> Result<(
     Ok(())
 }
 
+/// Same explicit layer order as the research importer; no independently
+/// guessed DLC or mod activation in the army loader.
+pub fn data_layers(root: &Path) -> Vec<PathBuf> {
+    let install = hoi4_mobile::research_import::installation(root);
+    let mut layers = vec![root.to_path_buf()];
+    let extras = if !install.data_layers.is_empty() {
+        install.data_layers
+    } else {
+        fs::read_to_string(root.join("military_profile.txt"))
+            .ok()
+            .and_then(|s| parse_pdx(&s).ok())
+            .and_then(|e| {
+                block(&e, "data_layers").map(|b| {
+                    b.iter()
+                        .filter(|e| e.value.is_none())
+                        .map(|e| e.key.clone())
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    };
+    layers.extend(extras.into_iter().map(|s| {
+        let p = PathBuf::from(s);
+        if p.is_absolute() { p } else { root.join(p) }
+    }));
+    layers
+}
+
 pub fn load(root: &Path) -> MilitaryCatalogue {
     let mut db = MilitaryCatalogue::default();
-    let mut layers = vec![root.to_path_buf()];
-    if let Ok(profile) = fs::read_to_string(root.join("military_profile.txt")) {
-        if let Ok(entries) = parse_pdx(&profile) {
-            if let Some(extras) = block(&entries, "data_layers") {
-                for entry in extras {
-                    if entry.value.is_none() {
-                        let extra = PathBuf::from(&entry.key);
-                        layers.push(if extra.is_absolute() {
-                            extra
-                        } else {
-                            root.join(extra)
-                        });
-                    }
-                }
-            }
-            if let Some(version) = atom(&entries, "target_version") {
-                db.rules.target_version = version.into();
-            }
-        }
+    let layers = data_layers(root);
+    let install = hoi4_mobile::research_import::installation(root);
+    db.source_version = install.version.clone();
+    db.source_checksum = install.checksum;
+    if db.source_version.as_deref() != Some("1.19.3") {
+        db.diagnostics.push(format!(
+            "Target is 1.19.3; imported source version is {}. Version parity is not certified.",
+            db.source_version.as_deref().unwrap_or("unknown")
+        ));
     }
     for path in layered_files(&layers, "common/defines", false, "lua") {
         if let Ok(source) = fs::read_to_string(&path) {
             db.rules
                 .import_defines(&source, &path.display().to_string());
+            let parsed = hoi4_mobile::defines::read(&source);
+            for key in parsed.unresolved {
+                db.literal_defines.remove(&key);
+            }
+            db.literal_defines.extend(parsed.values);
         }
     }
     let mut modules = BTreeMap::new();

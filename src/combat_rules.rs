@@ -560,8 +560,14 @@ mod tests {
             "base.lua",
         );
         assert_eq!(r.support_slots, 5);
-        r.import_defines("NDefines.NMilitary.MAX_DIVISION_SUPPORT_HEIGHT = 8", "mod.lua");
-        r.import_defines("NDefines.NMilitary.MAX_DIVISION_SUPPORT_WIDTH = 1", "later.lua");
+        r.import_defines(
+            "NDefines.NMilitary.MAX_DIVISION_SUPPORT_HEIGHT = 8",
+            "mod.lua",
+        );
+        r.import_defines(
+            "NDefines.NMilitary.MAX_DIVISION_SUPPORT_WIDTH = 1",
+            "later.lua",
+        );
         assert_eq!(r.support_slots, 8);
     }
     #[test]

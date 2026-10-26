@@ -191,6 +191,13 @@ pub fn effective_files(
     root: &Path,
     install: &Installation,
 ) -> Result<BTreeMap<String, PathBuf>, String> {
+    effective_files_in(root, install, DIRECTORIES)
+}
+fn effective_files_in(
+    root: &Path,
+    install: &Installation,
+    directories: &[(&str, &str)],
+) -> Result<BTreeMap<String, PathBuf>, String> {
     let mut out = BTreeMap::new();
     let mut layers = vec![root.to_path_buf()];
     if install.data_layers.is_empty() {
@@ -222,7 +229,7 @@ pub fn effective_files(
                 out.retain(|p: &String, _| !Path::new(p).starts_with(replaced));
             }
         }
-        for (rel, ext) in DIRECTORIES {
+        for (rel, ext) in directories {
             walk(&layer, rel, ext, &mut out)?;
         }
         // Modern doctrine folders/tracks/subdoctrines and specialization data are not ordinary techs.
@@ -813,7 +820,24 @@ impl ResearchDataset {
         fs::create_dir(&staging).map_err(|e| e.to_string())?;
         let operation = (|| {
             let mut manifest = BTreeMap::new();
-            for (relative, path) in effective_files(root, &self.installation)? {
+            let mut review_files = effective_files(root, &self.installation)?;
+            // Private review inputs only: adding an OOB must not invalidate the
+            // research cache or accidentally interpret it as a research effect.
+            review_files.extend(effective_files_in(
+                root,
+                &self.installation,
+                &[
+                    ("common/units", "txt"),
+                    ("common/terrain", "txt"),
+                    ("common/modifiers", "txt"),
+                    ("common/unit_leader", "txt"),
+                    ("common/abilities", "txt"),
+                    ("history/units", "txt"),
+                    ("history/states", "txt"),
+                    ("history/diplomacy", "txt"),
+                ],
+            )?);
+            for (relative, path) in review_files {
                 if relative.ends_with(".yml")
                     && !["english", "russian"].iter().any(|lang| {
                         relative.ends_with(&format!("_l_{lang}.yml"))
@@ -838,6 +862,8 @@ impl ResearchDataset {
                 "launcher-settings.json",
                 "version.txt",
                 "research-runtime-evidence.json",
+                "military_profile.txt",
+                "military-import-report.json",
             ] {
                 if root.join(name).is_file()
                     && (name != "research-runtime-evidence.json"
@@ -1408,6 +1434,31 @@ mod tests {
         assert_eq!(replay.source_technology_ids, d.source_technology_ids);
         assert_eq!(replay.failed_source_files, d.failed_source_files);
         assert_eq!(d.write_review_sources(&f.0).unwrap(), sources);
+    }
+    #[test]
+    fn army_review_contains_effective_oob_without_polluting_research_cache() {
+        let f = fixture();
+        f.put(
+            "history/units/AAA_1936.txt",
+            "units={division={name=Source division_template=Infantry location=1}}",
+        );
+        f.put(
+            "common/units/a.txt",
+            "sub_units={infantry={combat_width=2}}",
+        );
+        let d = ResearchDataset::load(&f.0, false).unwrap();
+        let fingerprint = d.registry.fingerprint.clone();
+        let out = d.write_review_sources(&f.0).unwrap();
+        assert!(out.join("history/units/AAA_1936.txt").is_file());
+        assert!(out.join("common/units/a.txt").is_file());
+        assert!(!d.files.iter().any(|f| f.path.starts_with("history/units/")));
+        assert_eq!(
+            ResearchDataset::load(&f.0, true)
+                .unwrap()
+                .registry
+                .fingerprint,
+            fingerprint
+        );
     }
     #[test]
     fn game_version_has_a_recorded_source() {

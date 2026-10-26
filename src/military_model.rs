@@ -202,6 +202,9 @@ pub struct Tactic {
 #[derive(Debug, Clone, Default)]
 pub struct MilitaryCatalogue {
     pub rules: CombatRules,
+    pub source_version: Option<String>,
+    pub source_checksum: Option<String>,
+    pub literal_defines: BTreeMap<String, f64>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
     pub technologies: BTreeMap<String, TechnologyEffects>,

@@ -1,6 +1,6 @@
 //! Authoritative world model, independent from Macroquad rendering.
-use std::collections::{BTreeMap, BTreeSet, HashMap};
 use crate::state::StateEconomy;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Country {
@@ -61,20 +61,31 @@ impl World {
         let mut world = Self::default();
 
         for (&province_id, &state_id) in state_by_province {
-            world.provinces.insert(province_id, Province {
-                id: province_id,
-                state_id: Some(state_id),
-                controller: owner_by_state.get(&state_id).cloned(),
-                control_revision: 0,
-            });
-            world.states.entry(state_id).or_insert_with(|| State {
-                id: state_id,
-                name: state_names.get(&state_id).cloned(),
-                owner: owner_by_state.get(&state_id).cloned(),
-                province_ids: Vec::new(),
-                shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
-                economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
-            }).province_ids.push(province_id);
+            world.provinces.insert(
+                province_id,
+                Province {
+                    id: province_id,
+                    state_id: Some(state_id),
+                    controller: owner_by_state.get(&state_id).cloned(),
+                    control_revision: 0,
+                },
+            );
+            world
+                .states
+                .entry(state_id)
+                .or_insert_with(|| State {
+                    id: state_id,
+                    name: state_names.get(&state_id).cloned(),
+                    owner: owner_by_state.get(&state_id).cloned(),
+                    province_ids: Vec::new(),
+                    shared_building_slots: shared_slots_by_state
+                        .get(&state_id)
+                        .copied()
+                        .unwrap_or(0),
+                    economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
+                })
+                .province_ids
+                .push(province_id);
         }
 
         // Keep states that have an owner/name even if province membership is incomplete.
@@ -90,23 +101,35 @@ impl World {
             state.owner = Some(owner.clone());
         }
         for (&state_id, name) in state_names {
-            world.states.entry(state_id).or_insert_with(|| State {
-                id: state_id,
-                name: Some(name.clone()),
-                owner: owner_by_state.get(&state_id).cloned(),
-                province_ids: Vec::new(),
-                shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
-                economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
-            }).name = Some(name.clone());
+            world
+                .states
+                .entry(state_id)
+                .or_insert_with(|| State {
+                    id: state_id,
+                    name: Some(name.clone()),
+                    owner: owner_by_state.get(&state_id).cloned(),
+                    province_ids: Vec::new(),
+                    shared_building_slots: shared_slots_by_state
+                        .get(&state_id)
+                        .copied()
+                        .unwrap_or(0),
+                    economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
+                })
+                .name = Some(name.clone());
         }
 
         for state in world.states.values_mut() {
             state.province_ids.sort_unstable();
             if let Some(tag) = state.owner.as_ref() {
-                world.countries.entry(tag.clone()).or_insert_with(|| Country {
-                    tag: tag.clone(),
-                    state_ids: BTreeSet::new(),
-                }).state_ids.insert(state.id);
+                world
+                    .countries
+                    .entry(tag.clone())
+                    .or_insert_with(|| Country {
+                        tag: tag.clone(),
+                        state_ids: BTreeSet::new(),
+                    })
+                    .state_ids
+                    .insert(state.id);
             }
         }
         world
@@ -117,7 +140,9 @@ impl World {
         let country = self.countries.get(country_tag)?;
         let mut totals = CountryEconomy::default();
         for state_id in &country.state_ids {
-            let Some(state) = self.states.get(state_id) else { continue };
+            let Some(state) = self.states.get(state_id) else {
+                continue;
+            };
             totals.states += 1;
             totals.infrastructure_total += u32::from(state.economy.infrastructure);
             totals.civilian_factories += u32::from(state.economy.civilian_factories);
@@ -147,19 +172,30 @@ impl World {
     /// Occupying a province does not transfer its state, legal ownership,
     /// factories, or the controllers of neighbouring provinces.
     pub fn set_province_controller(&mut self, province_id: u32, controller: Option<&str>) -> bool {
-        if controller.is_some_and(|tag| tag.is_empty()
-            || !tag.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')) {
+        if controller.is_some_and(|tag| {
+            tag.is_empty()
+                || !tag
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        }) {
             return false;
         }
-        let Some(province) = self.provinces.get_mut(&province_id) else { return false; };
-        if province.controller.as_deref() == controller { return true; }
+        let Some(province) = self.provinces.get_mut(&province_id) else {
+            return false;
+        };
+        if province.controller.as_deref() == controller {
+            return true;
+        }
         self.control_revision = self.control_revision.saturating_add(1);
         province.control_revision = self.control_revision;
         province.controller = controller.map(str::to_owned);
         if let Some(tag) = controller {
-            self.countries.entry(tag.to_owned()).or_insert_with(|| Country {
-                tag: tag.to_owned(), state_ids: BTreeSet::new(),
-            });
+            self.countries
+                .entry(tag.to_owned())
+                .or_insert_with(|| Country {
+                    tag: tag.to_owned(),
+                    state_ids: BTreeSet::new(),
+                });
         }
         true
     }
@@ -184,8 +220,12 @@ impl World {
         if let Some(old_tag) = old_owner {
             if let Some(country) = self.countries.get_mut(&old_tag) {
                 country.state_ids.remove(&state_id);
-                if country.state_ids.is_empty() && !self.provinces.values()
-                    .any(|province| province.controller.as_deref() == Some(old_tag.as_str())) {
+                if country.state_ids.is_empty()
+                    && !self
+                        .provinces
+                        .values()
+                        .any(|province| province.controller.as_deref() == Some(old_tag.as_str()))
+                {
                     self.countries.remove(&old_tag);
                 }
             }
@@ -194,10 +234,14 @@ impl World {
         if let Some(tag) = new_owner.filter(|tag| !tag.is_empty()) {
             let tag = tag.to_owned();
             state.owner = Some(tag.clone());
-            self.countries.entry(tag.clone()).or_insert_with(|| Country {
-                tag: tag.clone(),
-                state_ids: BTreeSet::new(),
-            }).state_ids.insert(state_id);
+            self.countries
+                .entry(tag.clone())
+                .or_insert_with(|| Country {
+                    tag: tag.clone(),
+                    state_ids: BTreeSet::new(),
+                })
+                .state_ids
+                .insert(state_id);
         }
         true
     }
@@ -212,7 +256,13 @@ mod tests {
         let membership = HashMap::from([(101, 1), (102, 1), (201, 2)]);
         let owners = HashMap::from([(1, "GER".to_owned()), (2, "POL".to_owned())]);
         let names = HashMap::from([(1, "State One".to_owned()), (2, "State Two".to_owned())]);
-        World::from_map_data(&membership, &owners, &names, &HashMap::new(), &HashMap::new())
+        World::from_map_data(
+            &membership,
+            &owners,
+            &names,
+            &HashMap::new(),
+            &HashMap::new(),
+        )
     }
 
     #[test]
@@ -221,12 +271,18 @@ mod tests {
         assert_eq!(world.provinces.len(), 3);
         assert_eq!(world.states[&1].province_ids, vec![101, 102]);
         assert_eq!(world.states[&1].name.as_deref(), Some("State One"));
-        assert_eq!(world.countries["GER"].state_ids.iter().copied().collect::<Vec<_>>(), vec![1]);
+        assert_eq!(
+            world.countries["GER"]
+                .state_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1]
+        );
         assert_eq!(world.owner_of_province(102), Some("GER"));
         assert_eq!(world.country_economy("GER").unwrap().states, 1);
         assert_eq!(world.owner_of_province(999), None);
     }
-
 
     #[test]
     fn aggregates_factories_for_the_current_state_owner() {
@@ -235,8 +291,26 @@ mod tests {
         let owners = HashMap::from([(1, "GER".to_owned()), (2, "GER".to_owned())]);
         let names = HashMap::new();
         let economies = HashMap::from([
-            (1, StateEconomy { infrastructure: 5, civilian_factories: 3, military_factories: 2, dockyards: 1, ..StateEconomy::default() }),
-            (2, StateEconomy { infrastructure: 7, civilian_factories: 4, military_factories: 1, dockyards: 2, ..StateEconomy::default() }),
+            (
+                1,
+                StateEconomy {
+                    infrastructure: 5,
+                    civilian_factories: 3,
+                    military_factories: 2,
+                    dockyards: 1,
+                    ..StateEconomy::default()
+                },
+            ),
+            (
+                2,
+                StateEconomy {
+                    infrastructure: 7,
+                    civilian_factories: 4,
+                    military_factories: 1,
+                    dockyards: 2,
+                    ..StateEconomy::default()
+                },
+            ),
         ]);
         let world = World::from_map_data(&membership, &owners, &names, &economies, &HashMap::new());
         let totals = world.country_economy("GER").unwrap();
@@ -252,7 +326,14 @@ mod tests {
         let mut world = fixture();
         assert!(world.set_state_owner(1, Some("POL")));
         assert!(!world.countries.contains_key("GER"));
-        assert_eq!(world.countries["POL"].state_ids.iter().copied().collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            world.countries["POL"]
+                .state_ids
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
         assert_eq!(world.owner_of_province(101), Some("POL"));
     }
 

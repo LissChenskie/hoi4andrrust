@@ -182,10 +182,21 @@ impl GameSession {
     pub fn refresh_research_contexts(&mut self) {
         for (tag, c) in &mut self.research.countries {
             let war = self.military.wars.iter().any(|(a, b)| a == tag || b == tag);
-            let units = self.military.countries.get(tag).map(|army|army.templates.values().flat_map(|t|
-                t.line.iter().map(|s|s.unit.clone()).chain(t.support.iter().map(|s|s.unit.clone()))
-            ).collect());
-            if c.context.template_units != units {c.context.template_units=units;c.revision+=1;}
+            let units = self.military.countries.get(tag).map(|army| {
+                army.templates
+                    .values()
+                    .flat_map(|t| {
+                        t.line
+                            .iter()
+                            .map(|s| s.unit.clone())
+                            .chain(t.support.iter().map(|s| s.unit.clone()))
+                    })
+                    .collect()
+            });
+            if c.context.template_units != units {
+                c.context.template_units = units;
+                c.revision += 1;
+            }
             if c.context.date != Some(self.clock.date) || c.context.at_war != Some(war) {
                 c.context.date = Some(self.clock.date);
                 c.context.at_war = Some(war);

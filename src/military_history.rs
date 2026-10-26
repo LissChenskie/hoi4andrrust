@@ -1,7 +1,7 @@
 //! Starting armies and explicit campaign inputs. No generated historical armies.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::GameDate;
 use crate::military_data::{atom, block, layered_files, number, parse_oob_for_country, stats};
@@ -142,17 +142,11 @@ pub fn initialize(
     today: GameDate,
 ) -> Warfare {
     let mut warfare = Warfare::new(crate::military_data::load(root));
-    let mut layers = vec![root.to_path_buf()];
+    let layers = crate::military_data::data_layers(root);
     let profile = fs::read_to_string(root.join("military_profile.txt"))
         .ok()
         .and_then(|s| parse_pdx(&s).ok())
         .unwrap_or_default();
-    if let Some(entries) = block(&profile, "data_layers") {
-        layers.extend(entries.iter().filter(|e| e.value.is_none()).map(|e| {
-            let p = PathBuf::from(&e.key);
-            if p.is_absolute() { p } else { root.join(p) }
-        }));
-    }
     warfare.strict_geography = atom(&profile, "strict_geography") == Some("yes");
     if let Some(seed) = atom(&profile, "seed").and_then(|s| s.parse().ok()) {
         warfare.rng = crate::combat_rules::SeededRandom::new(seed);
@@ -536,7 +530,7 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
             )
         })
         .collect();
-    serde_json::json!({"scenario": date.display(), "countries": countries, "diagnostics": warfare.diagnostics})
+    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "countries": countries, "diagnostics": warfare.diagnostics})
 }
 
 #[cfg(test)]
