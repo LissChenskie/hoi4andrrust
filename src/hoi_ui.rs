@@ -13,24 +13,44 @@ pub const EDGE: Color = Color::new(0.36, 0.39, 0.38, 1.0);
 
 /// Research content is clipped by the renderer, including partially visible
 /// cards and connectors. Scissors use physical framebuffer pixels on HiDPI.
-pub struct ClipGuard;
-pub fn clip(rect: Rect) -> ClipGuard {
+pub struct ClipGuard {
+    previous: Option<Rect>,
+}
+fn set_clip(rect: Option<Rect>) {
     let dpi = macroquad::window::screen_dpi_scale();
     unsafe {
-        macroquad::window::get_internal_gl().quad_gl.scissor(Some((
-            (rect.x * dpi).round() as i32,
-            (rect.y * dpi).round() as i32,
-            (rect.w * dpi).round().max(0.0) as i32,
-            (rect.h * dpi).round().max(0.0) as i32,
-        )));
+        macroquad::window::get_internal_gl()
+            .quad_gl
+            .scissor(rect.map(|r| {
+                (
+                    (r.x * dpi).round() as i32,
+                    (r.y * dpi).round() as i32,
+                    (r.w * dpi).round().max(0.0) as i32,
+                    (r.h * dpi).round().max(0.0) as i32,
+                )
+            }));
     }
-    ClipGuard
+}
+pub fn clip(rect: Rect) -> ClipGuard {
+    let previous = CLIP_RECT.with(|c| c.get());
+    let rect = previous.map_or(rect, |p| {
+        let x = p.x.max(rect.x);
+        let y = p.y.max(rect.y);
+        Rect::new(
+            x,
+            y,
+            (p.right().min(rect.right()) - x).max(0.0),
+            (p.bottom().min(rect.bottom()) - y).max(0.0),
+        )
+    });
+    CLIP_RECT.with(|c| c.set(Some(rect)));
+    set_clip(Some(rect));
+    ClipGuard { previous }
 }
 impl Drop for ClipGuard {
     fn drop(&mut self) {
-        unsafe {
-            macroquad::window::get_internal_gl().quad_gl.scissor(None);
-        }
+        CLIP_RECT.with(|c| c.set(self.previous));
+        set_clip(self.previous);
     }
 }
 
@@ -97,6 +117,9 @@ pub fn inside(rect: Rect) -> bool {
         return false;
     }
     let (mx, my) = mouse_position();
+    if CLIP_RECT.with(|c| c.get().is_some_and(|r| !r.contains(vec2(mx, my)))) {
+        return false;
+    }
     mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h
 }
 
@@ -332,6 +355,7 @@ struct TooltipState {
     anchor: Vec2,
 }
 thread_local! {
+    static CLIP_RECT: std::cell::Cell<Option<Rect>> = const {std::cell::Cell::new(None)};
     static SCROLL_DRAG: std::cell::RefCell<Option<(Rect,f32)>> = const { std::cell::RefCell::new(None) };
     static INPUT_BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TOOLTIPS: std::cell::RefCell<TooltipState> = std::cell::RefCell::new(TooltipState::default());

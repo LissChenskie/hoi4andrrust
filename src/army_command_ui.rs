@@ -9,9 +9,19 @@ use crate::{
 use macroquad::prelude::*;
 
 pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
+    let _clip = ui::clip(r);
+    if view.commander_picker.is_none() && ui::inside(r) {
+        let (_, wheel) = mouse_wheel();
+        view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(0.0, (620.0 - r.h).max(0.0));
+    }
     let x = r.x;
     let width = r.w;
-    let mut y = r.y;
+    let mut y = r.y
+        - if view.commander_picker.is_none() {
+            view.army_scroll
+        } else {
+            0.0
+        };
     let armies: Vec<_> = w
         .command
         .armies
@@ -289,7 +299,7 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
         }
     }
     y += 36.0;
-    if y + 60.0 < r.bottom() {
+    {
         if ui::small_button("Цвет армии", Rect::new(x, y, half, 28.0), false) {
             let c = &mut w.command.armies.get_mut(&id).unwrap().color;
             *c = [c[1], c[2], c[0]];

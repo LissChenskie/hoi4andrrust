@@ -26,6 +26,13 @@ pub struct ArmyView {
     pub right_down: Option<Vec2>,
     pub strategic: bool,
     pub selected_army: Option<crate::command::ArmyId>,
+    pub selected_front: Option<crate::frontline::FrontId>,
+    pub plan_tool: Option<crate::battle_plan_ui::Tool>,
+    pub front_start: Option<crate::frontline::FrontEdge>,
+    pub front_hover: Option<crate::frontline::FrontEdge>,
+    pub front_preview_end: Option<crate::frontline::FrontEdge>,
+    pub front_preview: Vec<crate::frontline::FrontEdge>,
+    pub army_scroll: f32,
     pub commander_picker: Option<bool>,
     pub command_scroll: usize,
     pub edit_army_name: bool,
@@ -59,8 +66,12 @@ impl ArmyView {
         self.right_down = None;
     }
 }
-pub fn bounds(_view: &ArmyView) -> Rect {
-    crate::ui_layout::Layout::current().primary()
+pub fn bounds(view: &ArmyView) -> Rect {
+    let mut r = crate::ui_layout::Layout::current().primary();
+    if view.selected_army.is_some() {
+        r.h -= (if screen_width() < 760.0 { 110.0 } else { 42.0 });
+    }
+    r
 }
 pub fn is_over_panel(point: Vec2, view: &ArmyView) -> bool {
     interactive_bounds(view).is_some_and(|r| r.contains(point))
@@ -90,6 +101,9 @@ fn result<T>(view: &mut ArmyView, value: Result<T, String>, ok: &str) {
 }
 
 pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
+    if view.plan_tool.is_some() && !view.open {
+        return None;
+    }
     if view.open {
         Some(bounds(view))
     } else if !view.selected.is_empty() {
@@ -97,7 +111,15 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
             0.0,
             crate::ui_layout::Layout::current().top,
             (screen_width() - 10.0).min(310.0).max(1.0),
-            (screen_height() - crate::ui_layout::Layout::current().top - 52.0).max(120.0),
+            (screen_height()
+                - crate::ui_layout::Layout::current().top
+                - 52.0
+                - if view.selected_army.is_some() {
+                    if screen_width() < 760.0 { 110.0 } else { 42.0 }
+                } else {
+                    0.0
+                })
+            .max(120.0),
         ))
     } else {
         None
@@ -123,7 +145,7 @@ pub fn issue_order(
     view.notice = report.message();
 }
 pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &mut ArmyView) {
-    if view.open || view.selected.is_empty() {
+    if view.open || view.selected.is_empty() || view.plan_tool.is_some() {
         return;
     }
     let Some(tag) = tag else {

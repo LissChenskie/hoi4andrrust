@@ -8,6 +8,8 @@ mod construction;
 mod construction_map;
 mod construction_ui;
 pub use hoi4_mobile::game;
+mod battle_plan_ui;
+mod frontline;
 mod history_conditions;
 mod hoi_ui;
 mod land_combat;
@@ -2256,6 +2258,7 @@ fn draw_map_viewer(
                 ..Default::default()
             },
         );
+        battle_plan_ui::draw_map(world, military, army_view, source_rect, rect);
         army_ui::draw_counters(
             world,
             military,
@@ -2614,6 +2617,9 @@ fn draw_map_viewer(
     );
     if hud.active.is_none() {
         army_ui::draw_selection(world, player_country, military, army_view);
+        if let Some(tag) = player_country {
+            battle_plan_ui::draw_toolbar(world, tag, military, army_view);
+        }
         if army_view.open {
             hud.active = Some(campaign_ui::Panel::Army);
         }
@@ -3205,6 +3211,7 @@ async fn main() {
                         && !production_ui::is_over_panel(mouse, &production_view)
                         && !research_ui::is_over_panel(mouse, &research_view)
                         && !army_ui::is_over_panel(mouse, &army_view)
+                        && !battle_plan_ui::blocked(&army_view, mouse)
                         && !army_before_ui.is_some_and(|r| r.contains(mouse))
                         && !inspector_before_ui.is_some_and(|r| r.contains(mouse))
                         && !province_inspector_bounds(
@@ -3264,6 +3271,31 @@ async fn main() {
                         && !production_view.open
                         && !research_view.open
                         && !research_before_ui;
+                    let drawing_plan = army_view.plan_tool.is_some();
+                    if drawing_plan && !multitouch {
+                        let p = map_camera::screen_to_world(current_map.source_rect(), rect, mouse);
+                        let province = if p.x >= 0.0 && p.y >= 0.0 {
+                            current_map.province_at(p.x as u32, p.y as u32).map(|p| p.0)
+                        } else {
+                            None
+                        };
+                        if let Some(tag) = selected_country.as_deref() {
+                            battle_plan_ui::pointer(
+                                &mut army_view,
+                                military,
+                                world,
+                                tag,
+                                province,
+                                map_graph::MapPosition {
+                                    x: p.x as f64,
+                                    y: p.y as f64,
+                                },
+                                24.0 * current_map.source_rect().w as f64 / rect.w as f64,
+                                inside_map,
+                            );
+                        }
+                        army_view.map_drag = None;
+                    }
                     let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                     let control =
                         is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
@@ -3284,7 +3316,11 @@ async fn main() {
                             army_view.pan_last = None;
                         }
                     }
-                    if !multitouch && is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                    if !multitouch
+                        && !drawing_plan
+                        && is_mouse_button_pressed(MouseButton::Left)
+                        && inside_map
+                    {
                         army_view.map_drag = Some(army_controls::Drag::new(
                             mouse,
                             touch_input,

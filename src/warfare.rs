@@ -22,6 +22,8 @@ pub struct ProvinceConditions {
 #[derive(Debug)]
 pub struct Warfare {
     pub command: crate::command::CommandState,
+    pub fronts: crate::frontline::FrontState,
+    pub automatic_order: bool,
     pub catalogue: Arc<MilitaryCatalogue>,
     pub countries: BTreeMap<String, CountryArmy>,
     pub divisions: BTreeMap<DivisionId, Division>,
@@ -49,6 +51,8 @@ impl Warfare {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
             command: Default::default(),
+            fronts: Default::default(),
+            automatic_order: false,
             catalogue: Arc::new(catalogue),
             countries: BTreeMap::new(),
             divisions: BTreeMap::new(),
@@ -91,7 +95,7 @@ impl Warfare {
         self.notice(format!("{a} is at war with {b}"));
         Ok(())
     }
-    fn friendly(&self, country: &str, controller: &str) -> bool {
+    pub(crate) fn friendly(&self, country: &str, controller: &str) -> bool {
         country == controller
             || (!self.at_war(country, controller)
                 && self
@@ -611,7 +615,7 @@ impl Warfare {
         }
     }
 
-    fn edge_allowed(&self, country: &str, from: u32, to: u32, world: &World) -> bool {
+    pub(crate) fn edge_allowed(&self, country: &str, from: u32, to: u32, world: &World) -> bool {
         let Some(edge) = world.geography.connection(from, to) else {
             return false;
         };
@@ -633,6 +637,44 @@ impl Warfare {
             .provinces
             .get(&to)
             .is_some_and(|p| p.definition.kind == ProvinceKind::Land)
+    }
+    pub fn movement_distances(
+        &self,
+        country: &str,
+        from: u32,
+        world: &World,
+    ) -> BTreeMap<u32, f64> {
+        let Some(scale) = self.catalogue.rules.pixels_to_km else {
+            return BTreeMap::new();
+        };
+        let mut dist = BTreeMap::from([(from, 0.0f64)]);
+        let mut heap = BinaryHeap::from([Reverse((0u64, from))]);
+        while let Some(Reverse((bits, p))) = heap.pop() {
+            let cost = f64::from_bits(bits);
+            if cost > dist[&p] {
+                continue;
+            }
+            for edge in world.geography.land_neighbors(p) {
+                if !self.edge_allowed(country, p, edge.to, world)
+                    || !world
+                        .controller_of_province(edge.to)
+                        .is_some_and(|c| self.friendly(country, c))
+                {
+                    continue;
+                }
+                let Some(d) = world.geography.distance_in_pixels(p, edge.to) else {
+                    continue;
+                };
+                let terrain = &world.geography.provinces[&edge.to].definition.terrain;
+                let next = cost
+                    + (d * scale * self.catalogue.default_terrain(terrain).movement_cost).max(0.01);
+                if next < dist.get(&edge.to).copied().unwrap_or(f64::INFINITY) {
+                    dist.insert(edge.to, next);
+                    heap.push(Reverse((next.to_bits(), edge.to)));
+                }
+            }
+        }
+        dist
     }
     pub fn route(
         &self,
@@ -1448,6 +1490,11 @@ impl Warfare {
         player: Option<&str>,
     ) {
         self.simulated_hours = elapsed;
+        let mut fronts = std::mem::take(&mut self.fronts);
+        self.automatic_order = true;
+        fronts.tick(self, world);
+        self.automatic_order = false;
+        self.fronts = fronts;
         self.command
             .membership
             .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
