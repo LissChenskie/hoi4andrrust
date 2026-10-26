@@ -67,6 +67,15 @@ fn effects(
                     army.modifiers.flags.remove(flag);
                 }
             }
+            "add_command_power" => {
+                if let Some(v) = entry
+                    .atom()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+                {
+                    army.command_power = Some((army.command_power.unwrap_or(0.0) + v).max(0.0));
+                }
+            }
             "add_manpower" => {
                 if let Some(amount) = entry.atom().and_then(|v| v.parse::<i64>().ok()) {
                     army.manpower_pool = army.manpower_pool.saturating_add_signed(amount);
@@ -153,9 +162,17 @@ pub fn initialize(
     }
     let dlcs = crate::history_conditions::profile_dlcs(root);
     for tag in world.countries.keys() {
-        warfare
-            .countries
-            .insert(tag.clone(), CountryArmy::default());
+        warfare.countries.insert(
+            tag.clone(),
+            CountryArmy {
+                command_power: warfare
+                    .catalogue
+                    .literal_defines
+                    .get("NDefines.NCountry.STARTING_COMMAND_POWER")
+                    .copied(),
+                ..Default::default()
+            },
+        );
     }
     for entry in profile.iter().filter(|e| e.key == "country") {
         if let Some(b) = entry.block() {
@@ -523,6 +540,7 @@ pub fn initialize(
         }
     }
     warfare.command = crate::command::load(root, &warfare, today);
+    crate::command_abilities::load(root, &mut warfare);
     warfare
 }
 

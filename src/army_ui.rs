@@ -30,6 +30,11 @@ pub struct ArmyView {
     pub selected_front: Option<crate::frontline::FrontId>,
     pub selected_plan: Option<crate::operations::PlanId>,
     pub plan_page: usize,
+    pub group_orders: bool,
+    pub ability_marshal: bool,
+    pub name_target: u8,
+    pub group_choice: usize,
+    pub command_touch_last: Option<Vec2>,
     pub line_preview: Vec<u32>,
     pub line_preview_end: Option<u32>,
     pub plan_tool: Option<crate::battle_plan_ui::Tool>,
@@ -436,6 +441,9 @@ pub fn draw(
                 w,
                 view,
                 Rect::new(x, y, width, (bottom - y).max(1.0)),
+                world,
+                production,
+                selected_province,
             );
         }
         Page::Divisions => {

@@ -561,6 +561,29 @@ impl LandBattle {
                 );
             }
         }
+        let ability = |key: &str| division.ability_modifiers.get(key).copied().unwrap_or(0.0);
+        f.multiply(
+            "commander ability",
+            1.0 + ability("offence") + ability("army_attack_factor"),
+            1.0,
+        );
+        f.apply(
+            "commander ability",
+            CombatStat::Defense,
+            1.0 + ability("defence") + ability("army_defence_factor"),
+        );
+        f.apply(
+            "commander ability",
+            CombatStat::Breakthrough,
+            1.0 + ability("breakthrough_factor") + ability("army_defence_factor"),
+        );
+        if !attacker {
+            f.multiply(
+                "ability entrenchment",
+                1.0 + ability("combat_entrenchment"),
+                1.0 + ability("combat_entrenchment"),
+            );
+        }
         let strength = division.strength();
         f.multiply("strength", strength, strength);
         f
@@ -585,6 +608,10 @@ impl LandBattle {
             }
             let chance = rules.reinforce_chance
                 + d.reinforce_bonus
+                + d.ability_modifiers
+                    .get("land_reinforce_rate")
+                    .copied()
+                    .unwrap_or(0.0)
                 + d.derived.stats.initiative * rules.initiative_reinforce;
             if rng.chance(chance) {
                 side.reserves.retain(|v| *v != id);
@@ -827,8 +854,25 @@ impl LandBattle {
                                 }
                             })
                             .sum::<f64>();
-                    let org = org * org_tactic.max(0.0) * f.org_damage;
-                    let hp = hp * f.hp_damage;
+                    let org = org
+                        * org_tactic.max(0.0)
+                        * f.org_damage
+                        * (1.0
+                            + opponent
+                                .ability_modifiers
+                                .get("org_damage_multiplier")
+                                .copied()
+                                .unwrap_or(0.0))
+                        .max(0.0);
+                    let hp = hp
+                        * f.hp_damage
+                        * (1.0
+                            + opponent
+                                .ability_modifiers
+                                .get("str_damage_multiplier")
+                                .copied()
+                                .unwrap_or(0.0))
+                        .max(0.0);
                     let delta = damage.entry(target).or_default();
                     delta.0 += hp;
                     delta.1 += org;

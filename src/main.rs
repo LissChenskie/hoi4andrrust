@@ -5,6 +5,7 @@ mod campaign_ui;
 mod combat_modifiers;
 mod combat_rules;
 mod command;
+mod command_abilities;
 mod construction;
 mod construction_map;
 mod construction_ui;

@@ -59,3 +59,15 @@
 JSON combat log содержит источник версии, правила, RNG до/после часа, frontline/reserves, отдельные width/stacking penalties, остаток общей защиты, попадания и конкретные HP/Org dice. Выгрузка доступна во вкладке боёв. Имена/числа тактик читаются из данных. Дополнительный источник навыков — https://hoi4.paradoxwikis.com/Commander (attack: SA/HA; defense: Defense/Breakthrough), без предположения, что Attack повышает Breakthrough.
 
 Проверки: 227 тестов, включая статистическое среднее 25 попаданий, границы piercing, роли защиты, независимость weather breakthrough от SA, интервалы 1/13/25, одинаковый seed и trace, поддержку атаки и восстановление в движении. Первый параллельный build встретил нулевой object file; повторная чистая пересборка объекта с `-j 1` успешна. Supply fraction и resolved CAS пока поступают через существующий вход условий; полноценной сети rail/convoy и симуляции air missions нет. Закрытый recon counter-picker не объявляется точной копией. Далее — command power, способности и условная поддержка штабов.
+
+## Этап 7
+
+`command_abilities.rs`, `command.rs`, `military_history.rs`, `military_model.rs`, `warfare.rs`, `land_combat.rs`, `frontline.rs`, `operations.rs`, `army_command_ui.rs`, `army_ui.rs`, `battle_plan_ui.rs`, `campaign_ui.rs`, `main.rs`: Command Power из NCountry/history, почасовое восстановление, расход по назначенным батальонам, allowed/traits, длительность/cooldown и эффекты импортированных способностей. Неизвестный эффект блокирует всю способность с объяснением. HUD показывает реальный ресурс. General-only traits больше не протекают в бонусы фельдмаршала. Добавлены названия/смена театров, выбор групп, фронт группы армий с сохранением отдельных армий и ограничений командования.
+
+Поддержаны отдельные физические HQ: назначение существующей штабной дивизии приказу, развёртывание только из своего шаблона за реальные ресурсы, manual/auto-follow, distance-scoped planning. Правила и XP thresholds принимаются через `military-command-profile.json` только при совпадении версии/checksum и непустом provenance. HQ дополнительно требует 1.19.3 и нужных DLC. Штабы не создаются из воздуха и не нужны для обычной армии. У предоставленной 1.15.4 этих данных нет; поэтому оригинальные HQ и Regimental Support edge cases всё ещё не верифицированы.
+
+Навыки по первичной Commander Wiki: attack/defense 2.5%, planning speed 5%, max planning 2%, logistics consumption −2.5% на уровень. Imported static modifiers имеют приоритет. Рост навыков использует imported weights/count и только подтверждённый profile thresholds; неизвестная кривая не выдумывается. 
+
+Изучен синтаксис `common/abilities/generic_leader_abilities.txt` MillenniumDawn (CC BY-SA 4.0) исключительно как дополнительный пример схемы; код/названия/числа мода в проект не копировались и не считаются vanilla.
+
+Проверки: `cargo check --all-targets`, 231 тест: CP/атомарный отказ/cooldown/expiry, scope фельдмаршала, imported level progression, HQ manual/distance/уничтожение без удаления армии и общий фронт двух армий. Далее — сохранение состояния, сквозные сценарии, проверка UI и платформ.

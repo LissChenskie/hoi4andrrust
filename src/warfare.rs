@@ -25,6 +25,7 @@ pub struct ProvinceConditions {
 #[derive(Debug)]
 pub struct Warfare {
     pub command: crate::command::CommandState,
+    pub abilities: crate::command_abilities::AbilityState,
     pub fronts: crate::frontline::FrontState,
     pub plans: crate::operations::OperationalState,
     pub automatic_order: bool,
@@ -55,6 +56,7 @@ impl Warfare {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
             command: Default::default(),
+            abilities: Default::default(),
             fronts: Default::default(),
             plans: Default::default(),
             automatic_order: false,
@@ -330,6 +332,7 @@ impl Warfare {
                 supply_fraction: 1.0,
                 fuel_fraction: 1.0,
                 command: Default::default(),
+                ability_modifiers: Default::default(),
                 commander_attack: 0.0,
                 commander_defense: 0.0,
                 reinforce_bonus: 0.0,
@@ -975,6 +978,17 @@ impl Warfare {
         path.reverse();
         Ok(path)
     }
+    fn may_withdraw(&self, d: &Division, b: &LandBattle) -> Result<(), String> {
+        let key = if b.origins.contains_key(&d.id) {
+            "cannot_retreat_while_attacking"
+        } else {
+            "cannot_retreat_while_defending"
+        };
+        if d.ability_modifiers.get(key).is_some_and(|v| *v > 0.0) {
+            return Err("Действующая способность запрещает отход".into());
+        }
+        Ok(())
+    }
     pub fn stop(&mut self, country: &str, id: u64, world: &World) -> Result<(), String> {
         let d = self
             .divisions
@@ -986,6 +1000,7 @@ impl Warfare {
         }
         let battle = d.battle.and_then(|id| self.battles.get(&id)).cloned();
         if let Some(b) = &battle {
+            self.may_withdraw(d, b)?;
             self.battles
                 .get_mut(&b.id)
                 .unwrap()
@@ -1067,6 +1082,7 @@ impl Warfare {
             }
             if d.battle.is_some() && !append {
                 let b = &self.battles[&d.battle.unwrap()];
+                self.may_withdraw(d, b)?;
                 if b.elapsed_hours < self.catalogue.rules.minimum_hours {
                     return Err(format!(
                         "Cannot withdraw before {} combat hours",
@@ -1644,7 +1660,13 @@ impl Warfare {
                     speed *=
                         (1.0 + impact * f64::from(maximum.saturating_sub(infrastructure))).max(0.0);
                 }
-                speed *= (1.0 + d.command.movement).max(0.0);
+                speed *= (1.0
+                    + d.command.movement
+                    + d.ability_modifiers
+                        .get("army_speed_factor")
+                        .copied()
+                        .unwrap_or(0.0))
+                .max(0.0);
                 speed *= d.supply_fraction.clamp(0.0, 1.0);
                 let org_fraction =
                     (d.organization / d.derived.stats.organization.max(1e-9)).clamp(0.0, 1.0);
@@ -1796,11 +1818,34 @@ impl Warfare {
         plans.tick(self, world, elapsed);
         self.automatic_order = false;
         self.plans = plans;
+        self.command.garrison_armies = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| p.order_type == crate::operations::OrderType::AreaDefense)
+            .map(|p| p.army)
+            .collect();
+        self.abilities.tick(elapsed);
+        self.tick_command_power();
+        self.automatic_order = true;
+        self.tick_headquarters(world);
+        self.automatic_order = false;
         self.command
             .membership
             .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
-        for d in self.divisions.values_mut() {
-            d.command = self.command.bonuses(d.id);
+        let bonuses: BTreeMap<_, _> = self
+            .divisions
+            .keys()
+            .map(|&id| {
+                let mut b = self.command.bonuses(id);
+                b.add(self.hq_bonus(id), 1.0);
+                (id, (b, self.unit_ability_modifiers(id)))
+            })
+            .collect();
+        for (id, (command, ability)) in bonuses {
+            let d = self.divisions.get_mut(&id).unwrap();
+            d.command = command;
+            d.ability_modifiers = ability;
         }
         if self.divisions.is_empty() {
             return;
@@ -1825,7 +1870,15 @@ impl Warfare {
                 d.organization = (d.organization + d.derived.stats.recovery * supply * movement)
                     .min(d.derived.stats.organization);
                 if matches!(d.order, DivisionOrder::Hold) {
-                    d.entrenchment = (d.entrenchment + self.catalogue.rules.dig_in_daily / 24.0)
+                    d.entrenchment = (d.entrenchment
+                        + self.catalogue.rules.dig_in_daily
+                            * (1.0
+                                + d.ability_modifiers
+                                    .get("dig_in_speed")
+                                    .copied()
+                                    .unwrap_or(0.0))
+                            .max(0.0)
+                            / 24.0)
                         .min(self.catalogue.rules.dig_in_cap + d.derived.stats.entrenchment);
                 }
                 let strength = d.strength();
@@ -1844,11 +1897,23 @@ impl Warfare {
             });
             let modifiers = self.countries.get(&d.country).map(|a| &a.modifiers);
             let get = |key: &str| modifiers.map_or(0.0, |m| m.value(key));
-            let cap =
-                (self.catalogue.rules.planning_cap + get("max_planning") + d.command.planning_max)
-                    .max(0.0);
+            let cap = (self.catalogue.rules.planning_cap
+                + get("max_planning")
+                + d.command.planning_max
+                + d.ability_modifiers
+                    .get("max_planning")
+                    .copied()
+                    .unwrap_or(0.0))
+            .max(0.0);
             if at_front && !manual && d.battle.is_none() && matches!(d.order, DivisionOrder::Hold) {
-                let speed = (1.0 + get("planning_speed") + d.command.planning_speed).max(0.0)
+                let speed = (1.0
+                    + get("planning_speed")
+                    + d.command.planning_speed
+                    + d.ability_modifiers
+                        .get("planning_speed")
+                        .copied()
+                        .unwrap_or(0.0))
+                .max(0.0)
                     * (1.0 + d.derived.stats.initiative).max(0.0);
                 d.planning =
                     (d.planning + self.catalogue.rules.planning_daily * speed / 24.0).min(cap);
@@ -1885,6 +1950,7 @@ impl Warfare {
                 .copied()
                 .collect();
             self.command.gain_combat_xp(&active);
+            self.command.advance_levels(&mut self.rng);
             let env = self.environment(&battle, world, hour);
             if let Some(trace) = battle.step(
                 &mut self.divisions,

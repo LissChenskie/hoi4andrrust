@@ -470,10 +470,14 @@ pub fn draw_chrome(
         ),
         (
             Icon::Command,
-            "—".into(),
+            tag.and_then(|t| w.countries.get(t))
+                .and_then(|c| c.command_power)
+                .map_or_else(|| "—".into(), |p| format!("{p:.1}")),
             "Командный ресурс",
-            "ЗАГЛУШКА · Командный ресурс ещё не реализован.",
-            false,
+            "Command Power из состояния страны. Расходуется на доступные способности командующих.",
+            tag.and_then(|t| w.countries.get(t))
+                .and_then(|c| c.command_power)
+                .is_some(),
         ),
         (
             Icon::Army,

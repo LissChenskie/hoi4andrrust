@@ -66,7 +66,7 @@ pub struct CommanderBonuses {
     pub tactic_skill: f64,
 }
 impl CommanderBonuses {
-    fn add(&mut self, other: Self, scale: f64) {
+    pub fn add(&mut self, other: Self, scale: f64) {
         self.attack += other.attack * scale;
         self.breakthrough += other.breakthrough * scale;
         self.defense += other.defense * scale;
@@ -98,11 +98,14 @@ pub struct TraitModifiers {
     pub general: StatBlock,
     pub field_marshal: StatBlock,
     pub extra_divisions: i32,
+    pub abilities: BTreeSet<String>,
     pub extra_armies: i32,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CommandRules {
     pub general_cap: Option<i32>,
+    pub marshal_divisions_cap: Option<i32>,
+    pub garrison_factor: Option<f64>,
     pub marshal_armies_cap: Option<i32>,
     pub marshal_ratio: Option<f64>,
     pub marshal_xp_ratio: Option<f64>,
@@ -110,6 +113,10 @@ pub struct CommandRules {
     pub attack_per_skill: Option<f64>,
     pub defense_per_skill: Option<f64>,
     pub planning_per_skill: Option<f64>,
+    pub max_planning_per_skill: Option<f64>,
+    pub level_thresholds: Vec<f64>,
+    pub level_weights: Vec<f64>,
+    pub level_stat_count: Option<u32>,
     pub logistics_per_skill: Option<f64>,
     pub over_capacity_penalty: Option<f64>,
     pub traits: BTreeMap<String, TraitModifiers>,
@@ -128,6 +135,8 @@ impl CommandRules {
         };
         Self {
             general_cap: value("CORPS_COMMANDER_DIVISIONS_CAP").map(|v| v as i32),
+            marshal_divisions_cap: value("FIELD_MARSHAL_DIVISIONS_CAP").map(|v| v as i32),
+            garrison_factor: value("GARRISON_ORDER_ARMY_CAP_FACTOR"),
             marshal_armies_cap: value("FIELD_MARSHAL_ARMIES_CAP").map(|v| v as i32),
             marshal_ratio: value("FIELD_MARSHAL_ARMY_BONUS_RATIO"),
             marshal_xp_ratio: value("FIELD_MARSHAL_XP_RATIO"),
@@ -135,19 +144,34 @@ impl CommandRules {
             attack_per_skill: stat(
                 &["army_attack_skill_factor", "army_leader_attack_skill"],
                 "army_attack_factor",
-            ),
+            )
+            .or(Some(0.025)),
             defense_per_skill: stat(
                 &["army_defense_skill_factor", "army_leader_defense_skill"],
                 "army_defence_factor",
-            ),
+            )
+            .or(Some(0.025)),
             planning_per_skill: stat(
                 &["army_planning_skill_factor", "army_leader_planning_skill"],
                 "planning_speed",
-            ),
+            )
+            .or(Some(0.05)),
+            max_planning_per_skill: stat(
+                &["army_planning_skill_factor", "army_leader_planning_skill"],
+                "max_planning",
+            )
+            .or(Some(0.02)),
+            level_weights: db
+                .literal_arrays
+                .get("NDefines.NMilitary.COMMANDER_LEVEL_UP_STAT_WEIGHTS")
+                .cloned()
+                .unwrap_or_default(),
+            level_stat_count: value("COMMANDER_LEVEL_UP_STAT_COUNT").map(|n| n.max(0.0) as u32),
             logistics_per_skill: stat(
                 &["army_logistics_skill_factor", "army_leader_logistics_skill"],
                 "supply_consumption_factor",
-            ),
+            )
+            .or(Some(-0.025)),
             over_capacity_penalty: value("UNIT_LEADER_DIVISIONS_CAP_PENALTY"),
             ..Default::default()
         }
@@ -162,6 +186,7 @@ pub struct CommandState {
     pub membership: BTreeMap<DivisionId, ArmyId>,
     pub rules: CommandRules,
     pub revision: u64,
+    pub garrison_armies: BTreeSet<ArmyId>,
     next_id: u64,
 }
 impl CommandState {
@@ -245,7 +270,21 @@ impl CommandState {
         id: ArmyId,
         divisions: &[DivisionId],
     ) -> Result<(), String> {
-        self.own_army(country, id)?;
+        let army = self.own_army(country, id)?;
+        if let Some(c) = army.general.as_ref().and_then(|c| self.commanders.get(c)) {
+            let count = self
+                .members(id)
+                .chain(divisions.iter().copied())
+                .collect::<BTreeSet<_>>()
+                .len();
+            if self
+                .army_cap(c, id)
+                .is_some_and(|cap| cap < 0 || cap > 0 && count > cap as usize)
+                && self.rules.over_capacity_penalty.is_none()
+            {
+                return Err("Превышен лимит генерала; правило штрафа не импортировано".into());
+            }
+        }
         for d in divisions {
             self.membership.insert(*d, id);
         }
@@ -288,6 +327,26 @@ impl CommandState {
         if group.is_some_and(|id| !self.groups.get(&id).is_some_and(|g| g.country == country)) {
             return Err("Чужая группа армий".into());
         }
+        if let Some(g) = group.and_then(|id| self.groups.get(&id)) {
+            if let Some(c) = g
+                .field_marshal
+                .as_ref()
+                .and_then(|id| self.commanders.get(id))
+            {
+                let count = self
+                    .armies
+                    .values()
+                    .filter(|a| a.group == Some(g.id) && a.id != army)
+                    .count()
+                    + 1;
+                if self
+                    .cap(c, true)
+                    .is_some_and(|cap| cap < 0 || cap > 0 && count > cap as usize)
+                {
+                    return Err("Превышен лимит армий фельдмаршала".into());
+                }
+            }
+        }
         self.armies.get_mut(&army).unwrap().group = group;
         self.revision += 1;
         Ok(())
@@ -308,6 +367,8 @@ impl CommandState {
     pub fn cap(&self, commander: &Commander, group: bool) -> Option<i32> {
         let base = if group {
             self.rules.marshal_armies_cap
+        } else if commander.rank == Rank::FieldMarshal {
+            self.rules.marshal_divisions_cap.or(self.rules.general_cap)
         } else {
             self.rules.general_cap
         }?;
@@ -327,6 +388,15 @@ impl CommandState {
             })
             .sum();
         Some(base + extra)
+    }
+    pub fn army_cap(&self, c: &Commander, army: ArmyId) -> Option<i32> {
+        self.cap(c, false).map(|n| {
+            if n > 0 && self.garrison_armies.contains(&army) {
+                (n as f64 * self.rules.garrison_factor.unwrap_or(1.0)) as i32
+            } else {
+                n
+            }
+        })
     }
     pub fn set_general(
         &mut self,
@@ -353,7 +423,7 @@ impl CommandState {
                 return Err("Командующий уже назначен".into());
             }
             if self
-                .cap(c, false)
+                .army_cap(c, army)
                 .is_some_and(|cap| cap < 0 || cap > 0 && self.members(army).count() > cap as usize)
                 && self.rules.over_capacity_penalty.is_none()
             {
@@ -410,12 +480,18 @@ impl CommandState {
         self.revision += 1;
         Ok(())
     }
-    fn leader_bonus(&self, c: &Commander, marshal: bool) -> CommanderBonuses {
+    fn leader_base(&self, c: &Commander) -> CommanderBonuses {
+        let mut b = self.leader_bonus(c, None);
+        b.tactic_skill = c.skill as f64;
+        b
+    }
+    fn leader_bonus(&self, c: &Commander, marshal: Option<bool>) -> CommanderBonuses {
         let mut b = CommanderBonuses {
             attack: c.attack as f64 * self.rules.attack_per_skill.unwrap_or(0.0),
             defense: c.defense as f64 * self.rules.defense_per_skill.unwrap_or(0.0),
             breakthrough: c.defense as f64 * self.rules.defense_per_skill.unwrap_or(0.0),
             planning_speed: c.planning as f64 * self.rules.planning_per_skill.unwrap_or(0.0),
+            planning_max: c.planning as f64 * self.rules.max_planning_per_skill.unwrap_or(0.0),
             supply: c.logistics as f64 * self.rules.logistics_per_skill.unwrap_or(0.0),
             tactic_skill: c.skill as f64,
             ..Default::default()
@@ -423,14 +499,16 @@ impl CommandState {
         for id in &c.traits {
             if let Some(t) = self.rules.traits.get(id) {
                 b.add(CommanderBonuses::from_modifiers(&t.shared), 1.0);
-                b.add(
-                    CommanderBonuses::from_modifiers(if marshal {
-                        &t.field_marshal
-                    } else {
-                        &t.general
-                    }),
-                    1.0,
-                );
+                if let Some(marshal) = marshal {
+                    b.add(
+                        CommanderBonuses::from_modifiers(if marshal {
+                            &t.field_marshal
+                        } else {
+                            &t.general
+                        }),
+                        1.0,
+                    );
+                }
             }
         }
         b
@@ -446,7 +524,7 @@ impl CommandState {
         let mut b = CommanderBonuses::default();
         if let Some(c) = army.general.as_ref().and_then(|id| self.commanders.get(id)) {
             let count = self.members(army.id).count();
-            let cap = self.cap(c, false).unwrap_or(0);
+            let cap = self.army_cap(c, army.id).unwrap_or(0);
             let excess = if cap > 0 {
                 count.saturating_sub(cap as usize)
             } else {
@@ -457,7 +535,7 @@ impl CommandState {
             } else {
                 (1.0 - excess as f64 * self.rules.over_capacity_penalty.unwrap_or(1.0)).max(0.0)
             };
-            b.add(self.leader_bonus(c, false), factor);
+            b.add(self.leader_bonus(c, Some(false)), factor);
         }
         if let Some(c) = army
             .group
@@ -465,7 +543,7 @@ impl CommandState {
             .and_then(|g| g.field_marshal.as_ref())
             .and_then(|id| self.commanders.get(id))
         {
-            let mut shared = self.leader_bonus(c, false);
+            let mut shared = self.leader_base(c);
             shared.tactic_skill = 0.0;
             b.add(shared, self.rules.marshal_ratio.unwrap_or(0.0));
             for id in &c.traits {
@@ -475,6 +553,78 @@ impl CommandState {
             }
         }
         b
+    }
+    pub fn advance_levels<R: crate::combat_rules::CombatRandom>(&mut self, rng: &mut R) {
+        let weights = &self.rules.level_weights;
+        if weights.len() != 4 || weights.iter().any(|v| !v.is_finite() || *v < 0.0) {
+            return;
+        }
+        let total: f64 = weights.iter().sum();
+        if total <= 0.0 {
+            return;
+        }
+        let Some(count) = self.rules.level_stat_count else {
+            return;
+        };
+        for c in self.commanders.values_mut() {
+            while let Some(&required) = self
+                .rules
+                .level_thresholds
+                .get(c.skill.saturating_sub(1) as usize)
+            {
+                if !required.is_finite() || required <= 0.0 || c.experience < required {
+                    break;
+                }
+                c.experience -= required;
+                c.skill += 1;
+                for _ in 0..count {
+                    let mut roll = rng.unit() * total;
+                    let mut pick = 3;
+                    for (i, w) in weights.iter().enumerate() {
+                        if roll < *w {
+                            pick = i;
+                            break;
+                        }
+                        roll -= w;
+                    }
+                    match pick {
+                        0 => c.attack += 1,
+                        1 => c.defense += 1,
+                        2 => c.planning += 1,
+                        _ => c.logistics += 1,
+                    }
+                }
+                self.revision += 1;
+            }
+        }
+    }
+    pub fn set_theater(
+        &mut self,
+        country: &str,
+        army: ArmyId,
+        theater: TheaterId,
+    ) -> Result<(), String> {
+        let a = self.own_army(country, army)?;
+        let group = a.group;
+        if !self
+            .theaters
+            .get(&theater)
+            .is_some_and(|t| t.country == country)
+        {
+            return Err("Выберите свой театр".into());
+        }
+        if let Some(group) = group {
+            self.groups.get_mut(&group).unwrap().theater = theater;
+        }
+        for a in self
+            .armies
+            .values_mut()
+            .filter(|a| a.id == army || group.is_some() && a.group == group)
+        {
+            a.theater = theater;
+        }
+        self.revision += 1;
+        Ok(())
     }
     pub fn gain_combat_xp(&mut self, units: &[DivisionId]) {
         let Some(rate) = self.rules.combat_xp else {
@@ -583,6 +733,13 @@ pub fn load(
             state.rules.traits.insert(
                 t.key.clone(),
                 TraitModifiers {
+                    abilities: block(b, "enable_ability")
+                        .map(crate::military_data::names)
+                        .unwrap_or_else(|| {
+                            atom(b, "enable_ability")
+                                .map(|s| BTreeSet::from([s.into()]))
+                                .unwrap_or_default()
+                        }),
                     shared: block(b, "modifier")
                         .map(|b| crate::military_data::stats(b, &Default::default()))
                         .unwrap_or_default(),
@@ -596,6 +753,13 @@ pub fn load(
                     extra_armies: number(b, "army_group_size", 0.0) as i32,
                 },
             );
+        }
+    }
+    let keys = state.commanders.values().map(|c| c.name.clone()).collect();
+    let names = crate::military_data::localisation(&layers, &keys);
+    for c in state.commanders.values_mut() {
+        if let Some(name) = names.get(&c.name) {
+            c.name = name.clone();
         }
     }
     state

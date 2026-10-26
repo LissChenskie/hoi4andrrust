@@ -127,6 +127,8 @@ pub struct FrontLine {
     pub id: FrontId,
     pub country: String,
     pub army: ArmyId,
+    #[serde(default)]
+    pub group: Option<crate::command::GroupId>,
     pub enemy_country: String,
     pub edges: Vec<FrontEdge>,
     pub assigned_divisions: BTreeSet<u64>,
@@ -208,6 +210,7 @@ impl FrontState {
                 id,
                 country: country.into(),
                 army,
+                group: None,
                 enemy_country: enemy,
                 edges,
                 auto_include: assigned == members,
@@ -225,6 +228,60 @@ impl FrontState {
         );
         self.revision += 1;
         Ok(id)
+    }
+    pub fn assign_group(
+        &mut self,
+        w: &Warfare,
+        country: &str,
+        id: FrontId,
+        selection: &BTreeSet<u64>,
+    ) -> Result<(), String> {
+        let f = self
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        let group = w
+            .command
+            .armies
+            .get(&f.army)
+            .and_then(|a| a.group)
+            .ok_or("Армия должна входить в группу")?;
+        let members: BTreeSet<_> = w
+            .command
+            .membership
+            .iter()
+            .filter(|(_, army)| {
+                w.command
+                    .armies
+                    .get(army)
+                    .is_some_and(|a| a.group == Some(group))
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        let assigned = if selection.is_empty() {
+            members.clone()
+        } else {
+            members.intersection(selection).copied().collect()
+        };
+        if assigned.is_empty() {
+            return Err("Нет выбранных дивизий этой группы".into());
+        }
+        for other in self
+            .fronts
+            .values_mut()
+            .filter(|f| f.id != id && f.country == country)
+        {
+            other.assigned_divisions.retain(|d| !assigned.contains(d));
+        }
+        let f = self.fronts.get_mut(&id).unwrap();
+        f.group = Some(group);
+        f.auto_include = assigned == members;
+        f.assigned_divisions = assigned;
+        f.command_revision = u64::MAX;
+        f.revision += 1;
+        self.revision += 1;
+        Ok(())
     }
     pub fn create_drawn(
         &mut self,
@@ -402,18 +459,42 @@ impl FrontState {
                     let assigned_elsewhere: BTreeSet<_> = self
                         .fronts
                         .values()
-                        .filter(|other| other.army == f.army)
+                        .filter(|other| other.country == f.country)
                         .flat_map(|other| other.assigned_divisions.iter().copied())
                         .collect();
                     f.assigned_divisions.extend(
                         w.command
-                            .members(f.army)
-                            .filter(|d| !assigned_elsewhere.contains(d)),
+                            .membership
+                            .iter()
+                            .filter(|(_, army)| {
+                                if let Some(group) = f.group {
+                                    w.command
+                                        .armies
+                                        .get(army)
+                                        .is_some_and(|a| a.group == Some(group))
+                                } else {
+                                    **army == f.army
+                                }
+                            })
+                            .map(|(&d, _)| d)
+                            .filter(|d| {
+                                !assigned_elsewhere.contains(d)
+                                    && !w.abilities.headquarters.contains_key(d)
+                            }),
                     );
                 }
                 f.assigned_divisions.retain(|d| {
-                    w.command.membership.get(d) == Some(&f.army)
-                        && w.divisions.get(d).is_some_and(|d| !d.destroyed)
+                    w.command.membership.get(d).is_some_and(|army| {
+                        if let Some(group) = f.group {
+                            w.command
+                                .armies
+                                .get(army)
+                                .is_some_and(|a| a.group == Some(group))
+                        } else {
+                            *army == f.army
+                        }
+                    }) && w.divisions.get(d).is_some_and(|d| !d.destroyed)
+                        && !w.abilities.headquarters.contains_key(d)
                 });
                 self.rebalance(&mut f, w, world);
                 f.command_revision = w.command.revision;

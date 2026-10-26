@@ -8,11 +8,33 @@ use crate::{
 };
 use macroquad::prelude::*;
 
-pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
+pub fn draw(
+    tag: &str,
+    w: &mut Warfare,
+    view: &mut ArmyView,
+    r: Rect,
+    world: &crate::world::World,
+    production: &mut crate::production::ProductionState,
+    province: Option<u32>,
+) {
     let _clip = ui::clip(r);
     if view.commander_picker.is_none() && ui::inside(r) {
         let (_, wheel) = mouse_wheel();
-        view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(0.0, (620.0 - r.h).max(0.0));
+        view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(
+            0.0,
+            (1050.0 + w.abilities.definitions.len() as f32 * 33.0 - r.h).max(0.0),
+        );
+    }
+    let touch = touches()
+        .into_iter()
+        .find(|t| !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled));
+    if let Some(t) = touch.filter(|t| r.contains(t.position)) {
+        if let Some(last) = view.command_touch_last {
+            view.army_scroll = (view.army_scroll + last.y - t.position.y).max(0.0);
+        }
+        view.command_touch_last = Some(t.position);
+    } else {
+        view.command_touch_last = None;
     }
     let x = r.x;
     let width = r.w;
@@ -144,6 +166,7 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
         view.edit_army_name,
     ) {
         view.army_name = army.name.clone();
+        view.name_target = 0;
         view.edit_army_name = true;
         macroquad::miniquad::window::show_keyboard(true);
     }
@@ -157,7 +180,20 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
             view.army_name.pop();
         }
         if is_key_pressed(KeyCode::Enter) && !view.army_name.trim().is_empty() {
-            w.command.armies.get_mut(&id).unwrap().name = view.army_name.trim().into();
+            let name = view.army_name.trim().to_owned();
+            match view.name_target {
+                1 => {
+                    if let Some(g) = army.group.and_then(|id| w.command.groups.get_mut(&id)) {
+                        g.name = name;
+                    }
+                }
+                2 => {
+                    if let Some(t) = w.command.theaters.get_mut(&army.theater) {
+                        t.name = name;
+                    }
+                }
+                _ => w.command.armies.get_mut(&id).unwrap().name = name,
+            }
             w.command.revision += 1;
             view.edit_army_name = false;
             macroquad::miniquad::window::show_keyboard(false);
@@ -237,7 +273,16 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
     y += 39.0;
     let group = army.group.and_then(|id| w.command.groups.get(&id)).cloned();
     if let Some(group) = group {
-        ui::label(&group.name, Rect::new(x, y, width, 20.0), 13.0, ui::GOLD);
+        if ui::small_button(
+            &group.name,
+            Rect::new(x, y, width, 24.0),
+            view.edit_army_name && view.name_target == 1,
+        ) {
+            view.army_name = group.name.clone();
+            view.name_target = 1;
+            view.edit_army_name = true;
+            macroquad::miniquad::window::show_keyboard(true);
+        }
         y += 26.0;
         let marshal = group
             .field_marshal
@@ -286,7 +331,14 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
             .filter(|g| g.country == tag)
             .map(|g| (g.id, g.name.clone()))
             .collect();
-        if let Some((group, name)) = groups.first() {
+        if !groups.is_empty() {
+            view.group_choice %= groups.len();
+            let (group, name) = &groups[view.group_choice];
+            if ui::small_button("Следующая группа", Rect::new(x, y, width, 26.0), false)
+            {
+                view.group_choice = (view.group_choice + 1) % groups.len();
+            }
+            y += 32.0;
             if ui::small_button(
                 &format!("В группу: {name}"),
                 Rect::new(x, y, width, 29.0),
@@ -318,6 +370,208 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
                 "Армия удалена; дивизии сохранены",
             );
             view.selected_army = None;
+        }
+    }
+    y += 36.0;
+    let theater_name = w
+        .command
+        .theaters
+        .get(&army.theater)
+        .map(|t| t.name.clone())
+        .unwrap_or_default();
+    if ui::small_button(
+        &format!("Театр: {theater_name}"),
+        Rect::new(x, y, width, 28.0),
+        false,
+    ) {
+        view.army_name = theater_name;
+        view.name_target = 2;
+        view.edit_army_name = true;
+        macroquad::miniquad::window::show_keyboard(true);
+    }
+    y += 34.0;
+    if ui::small_button("Новый театр", Rect::new(x, y, half, 28.0), false) {
+        let t = w.command.create_theater(tag, "Новый театр");
+        notice(view, w.command.set_theater(tag, id, t), "Театр создан");
+    }
+    if ui::small_button(
+        "Сменить театр",
+        Rect::new(x + half + 6.0, y, half, 28.0),
+        false,
+    ) {
+        let ts: Vec<_> = w
+            .command
+            .theaters
+            .values()
+            .filter(|t| t.country == tag)
+            .map(|t| t.id)
+            .collect();
+        if let Some(at) = ts.iter().position(|t| *t == army.theater) {
+            notice(
+                view,
+                w.command.set_theater(tag, id, ts[(at + 1) % ts.len()]),
+                "Театр изменён",
+            );
+        }
+    }
+    y += 37.0;
+    let power = w.countries.get(tag).and_then(|c| c.command_power);
+    ui::label(
+        &format!(
+            "Command Power: {} / {}",
+            power.map_or_else(|| "нет данных".into(), |p| format!("{p:.1}")),
+            w.command_power_max(tag)
+                .map_or_else(|| "?".into(), |p| format!("{p:.1}"))
+        ),
+        Rect::new(x, y, width, 22.0),
+        12.0,
+        ui::GOLD,
+    );
+    y += 28.0;
+    if ui::small_button(
+        if view.ability_marshal {
+            "Способности фельдмаршала"
+        } else {
+            "Способности генерала"
+        },
+        Rect::new(x, y, width, 28.0),
+        view.ability_marshal,
+    ) {
+        view.ability_marshal = !view.ability_marshal;
+    }
+    y += 34.0;
+    let definitions: Vec<_> = w
+        .abilities
+        .definitions
+        .values()
+        .map(|d| (d.id.clone(), d.name.clone()))
+        .collect();
+    if definitions.is_empty() {
+        ui::paragraph(
+            "Определения способностей не импортированы.",
+            Rect::new(x, y, width, 35.0),
+            12.0,
+            ui::MUTED,
+        );
+        y += 40.0;
+    }
+    for (ability, name) in definitions {
+        let cost = w.ability_cost(tag, id, view.ability_marshal, &ability);
+        let title = format!(
+            "{} · {}",
+            w.catalogue.label(&name),
+            cost.as_ref()
+                .map_or_else(|_| "недоступно".into(), |c| format!("{c:.1} CP"))
+        );
+        let row = Rect::new(x, y, width, 28.0);
+        if ui::small_button(&title, row, false) {
+            notice(
+                view,
+                w.activate_ability(tag, id, view.ability_marshal, &ability)
+                    .map(|_| ()),
+                "Способность активирована",
+            );
+        }
+        ui::tooltip(row,&name,&cost.map_or_else(|e|e,|c|format!("Цена {c:.2} CP, только назначенным дивизиям; длительность и cooldown из локальных данных")));
+        y += 33.0;
+    }
+    y += 7.0;
+    ui::section("ARMY HQ", x, y, width);
+    y += 29.0;
+    if w.abilities.hq_rules.is_none() {
+        ui::paragraph(
+            "Подтверждённые правила HQ 1.19.3 отсутствуют в экспорте.",
+            Rect::new(x, y, width, 40.0),
+            12.0,
+            ui::MUTED,
+        );
+    } else {
+        if ui::small_button(
+            "Выделенную дивизию назначить штабом",
+            Rect::new(x, y, width, 28.0),
+            false,
+        ) {
+            if let Some(&d) = view.selected.first() {
+                notice(
+                    view,
+                    w.assign_hq(tag, id, d, view.selected_plan),
+                    "Штаб назначен приказу",
+                );
+            }
+        }
+        y += 34.0;
+        let h = w
+            .abilities
+            .headquarters
+            .values()
+            .find(|h| h.army == id)
+            .cloned();
+        if ui::small_button(
+            "Развернуть штаб из своего шаблона",
+            Rect::new(x, y, width, 28.0),
+            false,
+        ) {
+            let template = w
+                .countries
+                .get(tag)
+                .and_then(|c| {
+                    c.templates.values().find(|t| {
+                        !t.line.is_empty()
+                            && t.line.iter().all(|b| {
+                                w.abilities
+                                    .hq_rules
+                                    .as_ref()
+                                    .unwrap()
+                                    .unit_ids
+                                    .contains(&b.unit)
+                            })
+                    })
+                })
+                .map(|t| t.name.clone());
+            let result = template
+                .ok_or_else(|| "Нет импортированного штабного шаблона".to_owned())
+                .and_then(|t| {
+                    province
+                        .ok_or_else(|| "Выберите свою провинцию".into())
+                        .and_then(|p| w.deploy_hq(tag, id, &t, p, world, production))
+                });
+            notice(
+                view,
+                result.map(|_| ()),
+                "Штаб развёрнут; пополнение и подготовка используют общие правила",
+            );
+        }
+        y += 34.0;
+        if let Some(h) = h {
+            if ui::small_button(
+                if h.automatic {
+                    "HQ: авто · переключить"
+                } else {
+                    "HQ: ручной · переключить"
+                },
+                Rect::new(x, y, width, 28.0),
+                h.automatic,
+            ) {
+                w.abilities
+                    .headquarters
+                    .get_mut(&h.division)
+                    .unwrap()
+                    .automatic = !h.automatic;
+                if !h.automatic {
+                    w.fronts.manual.remove(&h.division);
+                }
+            }
+            y += 34.0;
+            ui::label(
+                &format!(
+                    "Расстояние до фронта: {} км",
+                    h.distance_km
+                        .map_or_else(|| "?".into(), |d| format!("{d:.1}"))
+                ),
+                Rect::new(x, y, width, 22.0),
+                12.0,
+                ui::TEXT,
+            );
         }
     }
 }

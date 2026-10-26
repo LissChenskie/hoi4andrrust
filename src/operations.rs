@@ -227,6 +227,7 @@ impl OperationalState {
             .ok_or("Выберите свой план")?;
         // One active movement owner per division; other armies are unaffected.
         let army = p.army;
+        let members = p.assigned_divisions.clone();
         p.activation = if active {
             Activation::Executing
         } else {
@@ -240,11 +241,11 @@ impl OperationalState {
         }
         .into();
         if active {
-            for other in self
-                .plans
-                .values_mut()
-                .filter(|p| p.army == army && p.id != id && p.activation == Activation::Executing)
-            {
+            for other in self.plans.values_mut().filter(|p| {
+                (p.army == army || !p.assigned_divisions.is_disjoint(&members))
+                    && p.id != id
+                    && p.activation == Activation::Executing
+            }) {
                 other.activation = Activation::Paused;
             }
         }
@@ -282,9 +283,16 @@ impl OperationalState {
                 p.assigned_divisions = f.assigned_divisions.clone();
             }
             p.assigned_divisions.retain(|id| {
-                w.divisions
-                    .get(id)
-                    .is_some_and(|d| !d.destroyed && w.command.membership.get(id) == Some(&p.army))
+                w.divisions.get(id).is_some_and(|d| {
+                    !d.destroyed
+                        && !w.abilities.headquarters.contains_key(id)
+                        && (w.command.membership.get(id) == Some(&p.army)
+                            || p.source_front
+                                .and_then(|f| w.fronts.fronts.get(&f))
+                                .is_some_and(|f| {
+                                    f.group.is_some() && f.assigned_divisions.contains(id)
+                                }))
+                })
             });
             let n = p.assigned_divisions.len().max(1) as f64;
             p.preparation = p

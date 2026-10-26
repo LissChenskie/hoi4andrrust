@@ -78,6 +78,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         "РЕЗЕРВ −",
         "УДАЛ.ФРОНТ",
         "ИЗМ.ПЛАН",
+        "ГРУППА",
     ];
     let compact = screen_width() < 760.0;
     let page_size = if compact { 8 } else { actions.len() };
@@ -125,6 +126,14 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             continue;
         }
         let result = match i {
+            20 => {
+                if w.command.armies[&army].group.is_some() {
+                    view.group_orders = !view.group_orders;
+                    Ok(())
+                } else {
+                    Err("Сначала включите армию в группу".into())
+                }
+            }
             5 | 6 => view
                 .selected_plan
                 .ok_or_else(|| "Сначала нарисуйте план".into())
@@ -334,11 +343,27 @@ pub fn pointer(
         if let Some((start, end)) = view.front_start.take().zip(view.front_hover) {
             if let Some(army) = view.selected_army {
                 let mut fronts = std::mem::take(&mut w.fronts);
+                let empty_selection = std::collections::BTreeSet::new();
                 let result = match tool {
                     Tool::Front => fronts
-                        .create_drawn(w, world, tag, army, &view.front_preview, &view.selected)
-                        .map(|id| {
+                        .create_drawn(
+                            w,
+                            world,
+                            tag,
+                            army,
+                            &view.front_preview,
+                            if view.group_orders {
+                                &empty_selection
+                            } else {
+                                &view.selected
+                            },
+                        )
+                        .and_then(|id| {
+                            if view.group_orders {
+                                fronts.assign_group(w, tag, id, &view.selected)?;
+                            }
                             view.selected_front = Some(id);
+                            Ok(())
                         }),
                     Tool::EditStart | Tool::EditEnd => view
                         .selected_front
