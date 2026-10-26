@@ -539,13 +539,13 @@ pub fn draw(
             );
     }
     if ui::small_button(
-        "Развернуть из запасов",
+        "В очередь подготовки",
         Rect::new(x, footer + 34.0, width, 27.0),
         false,
     ) {
         *notice = province
             .ok_or_else(|| "Выберите свою провинцию".into())
-            .and_then(|p| w.recruit(tag, &current.name, p, world, production))
-            .map_or_else(|e| e, |_| "Дивизия развёрнута".into());
+            .and_then(|p| w.queue_recruitment(tag, &current.name, p, world, production))
+            .map_or_else(|e| e, |_| "Набор добавлен в очередь подготовки".into());
     }
 }

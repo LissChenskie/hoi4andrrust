@@ -398,4 +398,39 @@ mod tests {
         );
         std::fs::remove_file(path).unwrap();
     }
+    #[test]
+    fn preparation_and_temporary_manual_control_survive_campaign_load() {
+        let mut s = configured();
+        Arc::make_mut(&mut s.military.catalogue)
+            .units
+            .get_mut("infantry")
+            .unwrap()
+            .stats
+            .insert("training_time".into(), 2.0);
+        let job = s
+            .military
+            .queue_recruitment("A", "test", 1, &s.world, &mut s.production)
+            .unwrap();
+        s.military
+            .issue_move("A", &[1], 2, &s.world, false, false)
+            .unwrap();
+        let before = s.military.countries["A"].manpower_pool;
+        let path = file("queue-and-manual");
+        let cat = ResearchCatalogue::default();
+        s.save_game(&path, &cat).unwrap();
+        s.military
+            .cancel_recruitment("A", job, &mut s.production)
+            .unwrap();
+        s.military.fronts.manual_return.clear();
+        s.restore_game(&path, &cat).unwrap();
+        assert_eq!(s.military.countries["A"].manpower_pool, before);
+        assert!(s.military.recruitment.contains_key(&job));
+        assert!(s.military.fronts.manual_return.contains(&1));
+        for _ in 0..50 {
+            tick(&mut s);
+        }
+        assert!(s.military.recruitment.is_empty());
+        assert_eq!(s.military.divisions.len(), 13);
+        std::fs::remove_file(path).unwrap();
+    }
 }

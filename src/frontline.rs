@@ -148,6 +148,10 @@ pub struct FrontLine {
 pub struct FrontState {
     pub fronts: BTreeMap<FrontId, FrontLine>,
     pub manual: BTreeSet<u64>,
+    /// Manual routes return to their assignment after the final waypoint.
+    /// Explicit Hold/detach remains persistent until the player resumes it.
+    #[serde(default)]
+    pub manual_return: BTreeSet<u64>,
     pub detached: BTreeSet<u64>,
     #[serde(skip)]
     pub active_orders: BTreeSet<u64>,

@@ -23,9 +23,34 @@ pub fn toolbar_bounds() -> Rect {
     }
 }
 pub fn blocked(view: &ArmyView, p: Vec2) -> bool {
-    view.orders_visible() && toolbar_bounds().contains(p)
+    view.orders_visible()
+        && (toolbar_bounds().contains(p) || (view.plan_advanced && advanced_bounds().contains(p)))
 }
-pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView) {
+fn advanced_bounds() -> Rect {
+    let r = toolbar_bounds();
+    Rect::new(r.x, r.y - 244.0, r.w.min(600.0), 198.0)
+}
+pub fn begin_tool(view: &mut ArmyView, w: &mut Warfare, tag: &str, tool: Tool) {
+    if view.plan_tool == Some(tool) {
+        view.cancel_tool();
+        return;
+    }
+    if let Err(e) = view.ensure_army(tag, w) {
+        view.notice = e;
+        return;
+    }
+    view.cancel_tool();
+    view.plan_advanced = false;
+    view.plan_tool = Some(tool);
+    view.open = false;
+    view.notice = match tool {
+        Tool::Front | Tool::EditStart | Tool::EditEnd => "Протяните по границе. ПКМ / Esc — отмена",
+        Tool::AreaDefense => "Проведите по своим областям. ПКМ / Esc — отмена",
+        _ => "Нарисуйте конечную линию. Повторный рисунок меняет цель. ПКМ / Esc — отмена",
+    }
+    .into();
+}
+pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, paused: bool) {
     if !view.orders_visible() {
         return;
     }
@@ -58,44 +83,69 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         view.selected_plan = plans.first().copied();
     }
     let actions = [
-        "ФРОНТ",
-        "НАСТУП.",
-        "ПРОРЫВ",
-        "ОБОРОНА",
-        "ОБЛАСТЬ",
-        "▶ ПЛАН",
-        "❚❚ ПЛАН",
-        "РЕЖИМ",
-        "К ПЛАНУ",
-        "ИСКЛЮЧИТЬ",
-        "ПЛАН ▸",
-        "УДАЛ.ПЛАН",
-        "НАЧАЛО",
-        "КОНЕЦ",
-        "РАЗДЕЛИТЬ",
-        "СЛИТЬ",
-        "РЕЗЕРВ +",
-        "РЕЗЕРВ −",
-        "УДАЛ.ФРОНТ",
-        "ИЗМ.ПЛАН",
-        "ГРУППА",
+        "Фронт",
+        "Наступление",
+        "Прорыв",
+        "Оборона",
+        "Область",
+        "▶ Начать",
+        "■ Остановить",
+        "Режим",
+        "К плану",
+        "Исключить",
+        "Следующий план",
+        "Удалить план",
+        "Начало фронта",
+        "Конец фронта",
+        "Разделить фронт",
+        "Слить фронты",
+        "Резерв +",
+        "Резерв −",
+        "Удалить фронт",
+        "Изменить цель",
+        "Группа армий",
     ];
     let compact = screen_width() < 760.0;
-    let page_size = if compact { 8 } else { actions.len() };
-    let cols = if compact { 3 } else { actions.len() };
+    let primary = [0usize, 1, 2, 3, 5, 6, 7, 11];
+    let cols = if compact { 3 } else { 9 };
     let cell = (r.w - 8.0) / cols as f32;
-    let first = if compact {
-        view.plan_page % actions.len().div_ceil(page_size) * page_size
-    } else {
-        0
-    };
-    for (slot, i) in (first..(first + page_size).min(actions.len())).enumerate() {
-        let b = Rect::new(
-            r.x + 4.0 + (slot % cols) as f32 * cell,
-            r.y + 3.0 + (slot / cols) as f32 * 34.0,
-            cell - 3.0,
-            28.0,
-        );
+    let extra = advanced_bounds();
+    if view.plan_advanced {
+        ui::panel(extra.x, extra.y, extra.w, extra.h);
+    }
+    let visible: Vec<_> = primary
+        .into_iter()
+        .enumerate()
+        .map(|(slot, i)| {
+            (
+                i,
+                Rect::new(
+                    r.x + 4.0 + (slot % cols) as f32 * cell,
+                    r.y + 3.0 + (slot / cols) as f32 * 34.0,
+                    cell - 3.0,
+                    28.0,
+                ),
+            )
+        })
+        .chain(
+            (0..actions.len())
+                .filter(|i| view.plan_advanced && !primary.contains(i))
+                .enumerate()
+                .map(|(slot, i)| {
+                    let cw = (extra.w - 12.0) / 3.0;
+                    (
+                        i,
+                        Rect::new(
+                            extra.x + 5.0 + (slot % 3) as f32 * cw,
+                            extra.y + 5.0 + (slot / 3) as f32 * 36.0,
+                            cw - 4.0,
+                            30.0,
+                        ),
+                    )
+                }),
+        )
+        .collect();
+    for (i, b) in visible {
         let tool = match i {
             0 => Some(Tool::Front),
             1 => Some(Tool::Offensive),
@@ -107,22 +157,23 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             19 => Some(Tool::EditPlan),
             _ => None,
         };
-        if !ui::small_button(actions[i], b, tool.is_some() && view.plan_tool == tool) {
+        let mode = view
+            .selected_plan
+            .and_then(|id| w.plans.plans.get(&id))
+            .map(|p| p.mode.label())
+            .unwrap_or("Режим");
+        let title = if i == 7 { mode } else { actions[i] };
+        let active = (tool.is_some() && view.plan_tool == tool)
+            || (i == 5
+                && view
+                    .selected_plan
+                    .and_then(|id| w.plans.plans.get(&id))
+                    .is_some_and(|p| p.activation == crate::operations::Activation::Executing));
+        if !ui::small_button(title, b, active) {
             continue;
         }
         if let Some(tool) = tool {
-            view.plan_tool = Some(tool);
-            view.front_start = None;
-            view.front_preview.clear();
-            view.line_preview.clear();
-            view.line_preview_end = None;
-            view.open = false;
-            view.notice = match tool {
-                Tool::Front | Tool::EditStart | Tool::EditEnd => "Протяните линию по границе",
-                Tool::AreaDefense => "Проведите по областям для обороны",
-                _ => "Нарисуйте линию цели в провинциях",
-            }
-            .into();
+            begin_tool(view, w, tag, tool);
             continue;
         }
         let result = match i {
@@ -201,25 +252,33 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             18 => view
                 .selected_front
                 .ok_or_else(|| "Выберите фронт".into())
-                .and_then(|id| w.fronts.delete(tag, id)),
+                .and_then(|id| {
+                    w.fronts.delete(tag, id)?;
+                    w.clean_references();
+                    Ok(())
+                }),
             _ => Ok(()),
         };
         view.notice = result.map_or_else(|e| e, |_| "Приказ обновлён".into());
     }
-    if compact
-        && ui::small_button(
-            "ЕЩЁ ▸",
-            Rect::new(r.x + 4.0 + 2.0 * cell, r.y + 71.0, cell - 3.0, 28.0),
-            false,
-        )
-    {
-        view.plan_page = (view.plan_page + 1) % actions.len().div_ceil(page_size);
+    if ui::small_button(
+        "Ещё ▴",
+        Rect::new(
+            r.x + 4.0 + (8 % cols) as f32 * cell,
+            r.y + 3.0 + (8 / cols) as f32 * 34.0,
+            cell - 3.0,
+            28.0,
+        ),
+        view.plan_advanced,
+    ) {
+        view.plan_advanced = !view.plan_advanced;
     }
-    let status = if let Some(p) = view.selected_plan.and_then(|id| w.plans.plans.get(&id)) {
+    let mut status = if let Some(p) = view.selected_plan.and_then(|id| w.plans.plans.get(&id)) {
         format!(
-            "{} · {:?} · цель {:.0}% · подготовка {:.0}% · {}",
-            p.mode.label(),
-            p.activation,
+            "План #{} · {} · {} · цель {:.0}% · подготовка {:.0}% · {}",
+            p.id,
+            p.order_type.label(),
+            p.activation.label(),
             p.progress * 100.0,
             p.preparation * 100.0,
             p.status
@@ -227,7 +286,16 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
     } else {
         view.notice.clone()
     };
-    draw_rectangle(r.x, r.y - 22.0, r.w, 22.0, ui::BASE);
+    if paused {
+        status = format!("ПАУЗА · Space для хода времени · {status}");
+    }
+    draw_rectangle(r.x, r.y - 42.0, r.w, 42.0, ui::BASE);
+    ui::label(
+        &view.notice,
+        Rect::new(r.x + 6.0, r.y - 40.0, r.w - 12.0, 18.0),
+        11.0,
+        ui::TEXT,
+    );
     ui::label(
         &status,
         Rect::new(r.x + 6.0, r.y - 20.0, r.w - 12.0, 19.0),
@@ -301,6 +369,10 @@ pub fn pointer(
     max_distance: f64,
     inside: bool,
 ) {
+    if is_mouse_button_pressed(MouseButton::Right) || is_key_pressed(KeyCode::Escape) {
+        view.cancel_tool();
+        return;
+    }
     let Some(tool) = view.plan_tool else {
         view.front_hover = None;
         return;
@@ -448,7 +520,7 @@ fn inland_pointer(
                 .ok_or_else(|| "Выберите армию".into())
                 .and_then(|army| {
                     plans
-                        .create(w, world, tag, army, view.selected_front, kind, line)
+                        .draw_order(w, world, tag, army, view.selected_front, kind, line)
                         .map(|id| {
                             view.selected_plan = Some(id);
                         })
@@ -457,7 +529,7 @@ fn inland_pointer(
         w.plans = plans;
         view.notice = result.map_or_else(
             |e| e,
-            |_| "План сохранён; нажмите ▶ ПЛАН для исполнения".into(),
+            |_| "План сохранён; нажмите ▶ Начать и снимите паузу".into(),
         );
         view.plan_tool = None;
         view.line_preview.clear();

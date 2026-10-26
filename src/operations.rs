@@ -18,6 +18,16 @@ pub enum OrderType {
     Fallback,
     AreaDefense,
 }
+impl OrderType {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Offensive => "Наступление",
+            Self::Spearhead => "Прорыв",
+            Self::Fallback => "Линия обороны",
+            Self::AreaDefense => "Охрана области",
+        }
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExecutionMode {
     Cautious,
@@ -54,6 +64,17 @@ pub enum Activation {
     Paused,
     Completed,
     Blocked,
+}
+impl Activation {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preparing => "Подготовка",
+            Self::Executing => "Выполняется",
+            Self::Paused => "Остановлен",
+            Self::Completed => "Завершён",
+            Self::Blocked => "Недоступен",
+        }
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AreaGuard {
@@ -192,6 +213,49 @@ impl OperationalState {
         self.revision += 1;
         Ok(id)
     }
+    /// Drawing over the same order changes its objective rather than silently
+    /// creating competing orders for the same army/front. Other fronts survive.
+    pub fn draw_order(
+        &mut self,
+        w: &Warfare,
+        world: &World,
+        country: &str,
+        army: ArmyId,
+        source: Option<FrontId>,
+        kind: OrderType,
+        line: Vec<u32>,
+    ) -> Result<PlanId, String> {
+        let previous = self
+            .plans
+            .values()
+            .find(|p| {
+                p.country == country
+                    && p.army == army
+                    && p.source_front == source
+                    && (p.order_type == kind
+                        || (matches!(p.order_type, OrderType::Offensive | OrderType::Spearhead)
+                            && matches!(kind, OrderType::Offensive | OrderType::Spearhead)))
+            })
+            .map(|p| p.id);
+        // Validate the replacement before touching a working order.
+        let new = self.create(w, world, country, army, source, kind, line)?;
+        if let Some(id) = previous {
+            let mut replacement = self.plans.remove(&new).unwrap();
+            replacement.id = id;
+            replacement.mode = self.plans[&id].mode;
+            if self.plans[&id].activation == Activation::Executing {
+                replacement.activation = Activation::Executing;
+                replacement.status = "Цель изменена; выполнение продолжается".into();
+            } else {
+                replacement.status = "Цель изменена; план готов к запуску".into();
+            }
+            self.plans.insert(id, replacement);
+            Ok(id)
+        } else {
+            Ok(new)
+        }
+    }
+
     pub fn edit_line(
         &mut self,
         country: &str,
@@ -234,7 +298,6 @@ impl OperationalState {
             .filter(|p| p.country == country)
             .ok_or("Выберите свой план")?;
         // One active movement owner per division; other armies are unaffected.
-        let army = p.army;
         let members = p.assigned_divisions.clone();
         p.activation = if active {
             Activation::Executing
@@ -250,7 +313,7 @@ impl OperationalState {
         .into();
         if active {
             for other in self.plans.values_mut().filter(|p| {
-                (p.army == army || !p.assigned_divisions.is_disjoint(&members))
+                !p.assigned_divisions.is_disjoint(&members)
                     && p.id != id
                     && p.activation == Activation::Executing
             }) {
@@ -416,6 +479,15 @@ fn ready(d: &Division, mode: ExecutionMode) -> bool {
         && d.supply_fraction >= supply
 }
 fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
+    if let Some(neutral) = p
+        .destination_line
+        .iter()
+        .filter_map(|id| world.controller_of_province(*id))
+        .find(|c| !w.friendly(&p.country, c) && !w.at_war(&p.country, c))
+    {
+        p.status = format!("Нет войны с {neutral}. Объявите войну в дипломатии");
+        return;
+    }
     let (_, _, risk) = p.mode.policy();
     let mut attacks = BTreeMap::<u32, Vec<u64>>::new();
     let mut origins = BTreeMap::<u32, BTreeSet<u32>>::new();
@@ -500,6 +572,7 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
             }
         }
     }
+    let relocating = moves.len();
     for (id, target) in moves {
         let _ = w.issue_move(&p.country, &[id], target, world, false, false);
     }
@@ -561,8 +634,23 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
             }
         }
     }
+    let engaged = p
+        .assigned_divisions
+        .iter()
+        .filter(|id| w.divisions.get(id).is_some_and(|d| d.battle.is_some()))
+        .count();
     if launched > 0 {
-        p.status = format!("Атакуют дивизии: {launched}");
+        p.status = format!("Начали атаку: {launched}");
+    } else if engaged > 0 {
+        p.status = format!("В сражениях: {engaged} дивизий");
+    } else if relocating > 0 {
+        p.status = format!("Выдвигаются на позиции: {relocating} дивизий");
+    } else if p
+        .assigned_divisions
+        .iter()
+        .all(|id| w.fronts.manual.contains(id) || w.fronts.detached.contains(id))
+    {
+        p.status = "Назначенные дивизии сейчас под ручным управлением".into();
     } else {
         p.status = "Ожидание организации, снабжения или подходящего направления".into();
     }
@@ -763,6 +851,7 @@ pub(crate) mod tests {
             tick(&mut w, &mut world, h);
         }
         w.issue_move("A", &[1], 1, &world, false, false).unwrap();
+        w.stop("A", 1, &world).unwrap();
         w.plans.activate("A", plan, true).unwrap();
         for h in 5..=12 {
             tick(&mut w, &mut world, h);
@@ -840,5 +929,106 @@ pub(crate) mod tests {
             tick(&mut w, &mut world, h);
         }
         assert!(w.divisions.values().all(|d| [2, 4].contains(&d.province)));
+    }
+}
+
+#[cfg(test)]
+mod interaction_regressions {
+    use super::*;
+    #[test]
+    fn redrawing_an_offensive_or_spearhead_reuses_the_front_order() {
+        let (world, mut w, front, id) = tests::configured(OrderType::Offensive);
+        let mut plans = std::mem::take(&mut w.plans);
+        for _ in 0..50 {
+            assert_eq!(
+                plans
+                    .draw_order(
+                        &w,
+                        &world,
+                        "A",
+                        plans.plans[&id].army,
+                        Some(front),
+                        OrderType::Spearhead,
+                        vec![24]
+                    )
+                    .unwrap(),
+                id
+            );
+        }
+        assert_eq!(plans.plans.len(), 1);
+        assert_eq!(plans.plans[&id].destination_line, vec![24]);
+        assert!(
+            plans
+                .draw_order(
+                    &w,
+                    &world,
+                    "A",
+                    plans.plans[&id].army,
+                    Some(front),
+                    OrderType::Offensive,
+                    vec![99999]
+                )
+                .is_err()
+        );
+        assert_eq!(plans.plans.len(), 1);
+        assert_eq!(plans.plans[&id].destination_line, vec![24]);
+    }
+    #[test]
+    fn manual_waypoints_finish_then_rejoin_without_stopping_the_army() {
+        let (mut world, mut w, _, plan) = tests::configured(OrderType::Offensive);
+        w.divisions.get_mut(&1).unwrap().province = 1;
+        w.divisions.get_mut(&1).unwrap().derived.stats.speed = 0.25;
+        w.issue_move("A", &[1], 2, &world, false, false).unwrap();
+        w.issue_move("A", &[1], 3, &world, false, true).unwrap();
+        w.plans.activate("A", plan, true).unwrap();
+        w.tick_hour(&mut world, crate::game::GameDate::START, 1, 1, Some("A"));
+        assert!(w.fronts.manual.contains(&1));
+        assert_eq!(w.divisions[&1].destination.unwrap().province, 2);
+        assert_eq!(w.divisions[&1].waypoints.back().unwrap().province, 3);
+        assert!(
+            w.divisions
+                .values()
+                .any(|d| d.id != 1 && !matches!(d.order, DivisionOrder::Hold))
+        );
+        w.divisions.get_mut(&1).unwrap().derived.stats.speed = 100.0;
+        for h in 2..=20 {
+            w.tick_hour(
+                &mut world,
+                crate::game::GameDate::START,
+                (h % 24) as u8,
+                h,
+                Some("A"),
+            );
+            if !w.fronts.manual.contains(&1) {
+                break;
+            }
+        }
+        assert!(!w.fronts.manual.contains(&1));
+        assert!(!w.fronts.manual_return.contains(&1));
+        assert!(w.command.membership.contains_key(&1));
+        w.stop("A", 1, &world).unwrap();
+        w.tick_hour(&mut world, crate::game::GameDate::START, 21, 21, Some("A"));
+        assert!(w.fronts.manual.contains(&1), "Explicit Hold remains manual");
+        w.resume_plans("A", &[1]).unwrap();
+        assert!(!w.fronts.manual.contains(&1));
+    }
+    #[test]
+    fn a_peacetime_plan_explains_why_it_is_waiting() {
+        let (mut world, mut w, _, plan) = tests::configured(OrderType::Offensive);
+        w.wars.clear();
+        w.plans.activate("A", plan, true).unwrap();
+        w.tick_hour(&mut world, crate::game::GameDate::START, 1, 1, Some("A"));
+        assert!(w.plans.plans[&plan].status.contains("Нет войны"));
+        w.declare_war("A", "B", &world).unwrap();
+        for h in 2..=100 {
+            w.tick_hour(
+                &mut world,
+                crate::game::GameDate::START,
+                (h % 24) as u8,
+                h,
+                Some("A"),
+            );
+        }
+        assert_eq!(w.plans.plans[&plan].activation, Activation::Completed);
     }
 }

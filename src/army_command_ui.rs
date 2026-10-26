@@ -54,6 +54,36 @@ pub fn draw(
     if !view.selected_army.is_some_and(|id| armies.contains(&id)) {
         view.selected_army = armies.first().copied();
     }
+    if view.selected_army.is_none() {
+        ui::paragraph(
+            "Выделите дивизии и нажмите + в нижней панели, чтобы создать армию. Затем нажмите её портрет для назначения генерала.",
+            Rect::new(x, y, width, 85.0),
+            14.0,
+            ui::TEXT,
+        );
+        y += 95.0;
+        ui::section("ДОСТУПНЫЕ КОМАНДУЮЩИЕ", x, y, width);
+        y += 30.0;
+        for c in w
+            .command
+            .commanders
+            .values()
+            .filter(|c| c.country == tag)
+            .take(((r.bottom() - y) / 30.0).max(0.0) as usize)
+        {
+            ui::label(
+                &format!(
+                    "{} · ур. {} · А{} З{} П{} Л{}",
+                    c.name, c.skill, c.attack, c.defense, c.planning, c.logistics
+                ),
+                Rect::new(x, y, width, 25.0),
+                12.0,
+                ui::TEXT,
+            );
+            y += 30.0;
+        }
+        return;
+    }
     if let Some(marshal) = view.commander_picker {
         ui::section(
             if marshal {
@@ -153,11 +183,19 @@ pub fn draw(
     };
     let index = armies.iter().position(|a| *a == id).unwrap_or(0);
     if ui::small_button("◀", Rect::new(x, y, 26.0, 30.0), false) {
-        view.selected_army = Some(armies[(index + armies.len() - 1) % armies.len()]);
+        let next = armies[(index + armies.len() - 1) % armies.len()];
+        view.selected_army = Some(next);
+        view.selected = w.command.members(next).collect();
+        view.selected_front = None;
+        view.selected_plan = None;
         view.edit_army_name = false;
     }
     if ui::small_button("▶", Rect::new(x + width - 26.0, y, 26.0, 30.0), false) {
-        view.selected_army = Some(armies[(index + 1) % armies.len()]);
+        let next = armies[(index + 1) % armies.len()];
+        view.selected_army = Some(next);
+        view.selected = w.command.members(next).collect();
+        view.selected_front = None;
+        view.selected_plan = None;
         view.edit_army_name = false;
     }
     if ui::small_button(
@@ -596,9 +634,18 @@ fn notice(view: &mut ArmyView, r: Result<(), String>, ok: &str) {
 }
 
 pub fn selected_army(view: &ArmyView, w: &Warfare) -> Option<ArmyId> {
-    view.selected_army.or_else(|| {
-        view.selected
+    if !view.selected.is_empty() {
+        let armies: std::collections::BTreeSet<_> = view
+            .selected
             .iter()
-            .find_map(|id| w.command.membership.get(id).copied())
-    })
+            .filter_map(|id| w.command.membership.get(id).copied())
+            .collect();
+        if armies.len() == 1 {
+            armies.first().copied()
+        } else {
+            None
+        }
+    } else {
+        view.selected_army
+    }
 }

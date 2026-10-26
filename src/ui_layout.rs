@@ -77,7 +77,7 @@ impl Layout {
         )
     }
     pub fn map_modes(self) -> Rect {
-        let w = if self.compact { 260.0 } else { 306.0 };
+        let w = if self.compact { 64.0 } else { 306.0 };
         Rect::new(self.width - w - 5.0, self.height - 44.0, w, 39.0)
     }
     pub fn army_dock(self) -> Rect {

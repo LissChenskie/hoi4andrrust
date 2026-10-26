@@ -242,7 +242,15 @@ impl CommandState {
                 id,
                 country: country.into(),
                 name: if name.trim().is_empty() {
-                    format!("Армия {id}")
+                    let mut number = 1;
+                    while self
+                        .armies
+                        .values()
+                        .any(|a| a.country == country && a.name == format!("Армия {number}"))
+                    {
+                        number += 1;
+                    }
+                    format!("Армия {number}")
                 } else {
                     name.into()
                 },
