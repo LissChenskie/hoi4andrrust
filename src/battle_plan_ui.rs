@@ -23,9 +23,12 @@ pub fn toolbar_bounds() -> Rect {
     }
 }
 pub fn blocked(view: &ArmyView, p: Vec2) -> bool {
-    view.selected_army.is_some() && toolbar_bounds().contains(p)
+    view.orders_visible() && toolbar_bounds().contains(p)
 }
 pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView) {
+    if !view.orders_visible() {
+        return;
+    }
     let Some(army) = view
         .selected_army
         .filter(|id| w.command.armies.get(id).is_some_and(|a| a.country == tag))

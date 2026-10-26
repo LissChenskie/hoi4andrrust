@@ -133,6 +133,9 @@ pub struct DivisionTemplate {
     pub line: Vec<BattalionSlot>,
     pub support: Vec<SupportSlot>,
     pub locked: bool,
+    pub icon: String,
+    pub division_type: Option<String>,
+    pub equipment_preferences: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -205,6 +208,7 @@ pub struct MilitaryCatalogue {
     pub source_version: Option<String>,
     pub source_checksum: Option<String>,
     pub literal_defines: BTreeMap<String, f64>,
+    pub localisation: BTreeMap<String, String>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
     pub technologies: BTreeMap<String, TechnologyEffects>,
@@ -277,6 +281,10 @@ pub struct DerivedTemplate {
 }
 
 impl MilitaryCatalogue {
+    pub fn label<'a>(&'a self, id: &'a str) -> &'a str {
+        self.localisation.get(id).map_or(id, String::as_str)
+    }
+
     pub fn default_terrain(&self, id: &str) -> TerrainDefinition {
         self.terrains.get(id).cloned().unwrap_or_else(|| {
             let (width, extra_width) = match id {
@@ -391,67 +399,95 @@ impl MilitaryCatalogue {
         Ok(())
     }
     pub fn edit_cost(&self, old: &DivisionTemplate, new: &DivisionTemplate) -> Result<f64, String> {
-        if old.locked {
+        self.edit_cost_with_modifiers(old, new, &MilitaryModifiers::default())
+    }
+    pub fn edit_cost_with_modifiers(
+        &self,
+        old: &DivisionTemplate,
+        new: &DivisionTemplate,
+        m: &MilitaryModifiers,
+    ) -> Result<f64, String> {
+        if old.locked && (old.line != new.line || old.support != new.support) {
             return Err("This template is locked".into());
         }
-        self.validate_template(new, &MilitaryModifiers::default(), false)?;
-        let old_positions: BTreeMap<_, _> = old
-            .line
-            .iter()
-            .map(|s| ((s.column, s.row), &s.unit))
-            .collect();
-        let new_positions: BTreeMap<_, _> = new
-            .line
-            .iter()
-            .map(|s| ((s.column, s.row), &s.unit))
-            .collect();
-        let positions: BTreeSet<_> = old_positions
-            .keys()
-            .chain(new_positions.keys())
-            .copied()
-            .collect();
-        let changed = positions
-            .iter()
-            .filter(|p| old_positions.get(p) != new_positions.get(p))
-            .count();
-        let old_support: BTreeMap<_, _> = old
+        self.validate_template(new, m, false)?;
+        let change = |old: Vec<String>, new: Vec<String>, base: f64| {
+            let mut before = BTreeMap::<String, usize>::new();
+            let mut after = BTreeMap::<String, usize>::new();
+            for u in old {
+                *before.entry(u).or_default() += 1;
+            }
+            for u in new {
+                *after.entry(u).or_default() += 1;
+            }
+            let ids: BTreeSet<_> = before.keys().chain(after.keys()).collect();
+            let mut add = 0.0;
+            let mut remove = 0.0;
+            for id in ids {
+                let a = after.get(id).copied().unwrap_or(0);
+                let b = before.get(id).copied().unwrap_or(0);
+                let price =
+                    base * (1.0 + m.value(&format!("unit_{id}_design_cost_factor"))).max(0.0);
+                add += a.saturating_sub(b) as f64 * price;
+                remove += b.saturating_sub(a) as f64 * price;
+            }
+            add.max(remove)
+        };
+        let line = change(
+            old.line.iter().map(|s| s.unit.clone()).collect(),
+            new.line.iter().map(|s| s.unit.clone()).collect(),
+            self.rules.line_edit_xp,
+        );
+        let support = change(
+            old.support
+                .iter()
+                .filter(|s| s.regiment.is_none())
+                .map(|s| s.unit.clone())
+                .collect(),
+            new.support
+                .iter()
+                .filter(|s| s.regiment.is_none())
+                .map(|s| s.unit.clone())
+                .collect(),
+            self.rules.support_edit_xp,
+        );
+        let old_reg: Vec<_> = old
             .support
             .iter()
-            .map(|s| ((s.regiment, s.row), &s.unit))
+            .filter(|s| s.regiment.is_some())
+            .map(|s| format!("{}:{}", s.regiment.unwrap(), s.unit))
             .collect();
-        let new_support: BTreeMap<_, _> = new
+        let new_reg: Vec<_> = new
             .support
             .iter()
-            .map(|s| ((s.regiment, s.row), &s.unit))
+            .filter(|s| s.regiment.is_some())
+            .map(|s| format!("{}:{}", s.regiment.unwrap(), s.unit))
             .collect();
-        let support_positions: BTreeSet<_> = old_support
-            .keys()
-            .chain(new_support.keys())
-            .copied()
-            .collect();
-        let support_changes = support_positions
-            .iter()
-            .filter(|p| old_support.get(p) != new_support.get(p))
-            .count();
-        let old_groups: BTreeSet<_> = old
-            .line
-            .iter()
-            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
-            .collect();
-        let new_groups: BTreeSet<_> = new
-            .line
-            .iter()
-            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
-            .collect();
+        let regimental = if old_reg == new_reg {
+            0.0
+        } else {
+            change(
+                old_reg,
+                new_reg,
+                self.rules
+                    .regimental_support_edit_xp
+                    .ok_or("Regimental Support edit cost was not imported for this version")?,
+            )
+        };
+        let groups = |t: &DivisionTemplate| {
+            t.line
+                .iter()
+                .filter_map(|s| self.units.get(&s.unit).map(|u| u.group.clone()))
+                .collect::<BTreeSet<_>>()
+        };
+        let old_groups = groups(old);
+        let new_groups = groups(new);
         let extra = new_groups
             .difference(&old_groups)
             .count()
             .saturating_sub(usize::from(old_groups.is_empty()));
-        Ok(changed as f64 * self.rules.line_edit_xp
-            + support_changes as f64 * self.rules.support_edit_xp
-            + extra as f64 * self.rules.new_group_xp)
+        Ok(line + support + regimental + extra as f64 * self.rules.new_group_xp)
     }
-
     /// Equipment combat stats are averages per archetype, not multiplied by the
     /// number of rifles/tanks. Need counts determine cost and completeness.
     pub fn aggregate(
@@ -505,7 +541,11 @@ impl MilitaryCatalogue {
                         })
                         .collect()
                 } else {
-                    self.best_equipment(archetype, m)
+                    t.equipment_preferences
+                        .get(archetype)
+                        .and_then(|id| self.equipment.get(id))
+                        .filter(|e| e.archetype == *archetype && self.equipment_available(&e.id, m))
+                        .or_else(|| self.best_equipment(archetype, m))
                         .map(|e| vec![(e, 1.0)])
                         .unwrap_or_default()
                 };
@@ -610,6 +650,21 @@ impl MilitaryCatalogue {
         };
         a.armor = combine(&armor, self.rules.armor_max_weight);
         a.piercing = combine(&piercing, self.rules.piercing_max_weight);
+        let total_equipment: f64 = result.model_requirements.values().sum();
+        a.reliability = if total_equipment > 0.0 {
+            result
+                .model_requirements
+                .iter()
+                .filter_map(|(id, n)| {
+                    self.equipment
+                        .get(id)
+                        .map(|e| n * e.stats.get("reliability").copied().unwrap_or(0.0))
+                })
+                .sum::<f64>()
+                / total_equipment
+        } else {
+            0.0
+        };
         a.speed = if speed.is_finite() { speed } else { 0.0 };
         a.supply *= (1.0 + m.value("supply_consumption_factor")).max(0.0);
         a.organization *= (1.0 + m.value("army_org_factor")).max(0.0);

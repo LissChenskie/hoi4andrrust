@@ -7,6 +7,7 @@ mod command;
 mod construction;
 mod construction_map;
 mod construction_ui;
+mod division_designer_ui;
 pub use hoi4_mobile::game;
 mod battle_plan_ui;
 mod frontline;
@@ -3004,7 +3005,11 @@ async fn main() {
                         hud.menu = true;
                     }
                 }
-                if !hud.menu && hud.detail.is_none() && !hud.map_palette {
+                if !hud.menu
+                    && hud.detail.is_none()
+                    && !hud.map_palette
+                    && !army_view.text_input_active()
+                {
                     let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                     for panel in
                         Panel::NAV

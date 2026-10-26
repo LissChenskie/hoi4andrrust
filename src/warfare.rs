@@ -421,22 +421,14 @@ impl Warfare {
         if old_name.is_none() && army.templates.contains_key(&template.name) {
             return Err("Template name already exists".into());
         }
-        let cost = self.catalogue.edit_cost(old, &template)?;
+        let cost = self
+            .catalogue
+            .edit_cost_with_modifiers(old, &template, &army.modifiers)?;
         if army.army_xp + 1e-9 < cost {
             return Err(format!(
                 "Need {cost:.0} Army XP; available {:.1}",
                 army.army_xp
             ));
-        }
-        if let Some(name) = old_name {
-            if name != template.name
-                && self
-                    .divisions
-                    .values()
-                    .any(|d| d.country == country && d.template == name && !d.destroyed)
-            {
-                return Err("Rename a copy; active divisions reference this template".into());
-            }
         }
         if let Some(name) = old_name {
             if name != template.name {
@@ -446,6 +438,18 @@ impl Warfare {
         army.army_xp -= cost;
         army.templates
             .insert(template.name.clone(), template.clone());
+        if let Some(old) = old_name {
+            if old != template.name {
+                for d in self
+                    .divisions
+                    .values_mut()
+                    .filter(|d| d.country == country && d.template == old)
+                {
+                    d.template = template.name.clone();
+                }
+            }
+        }
+
         for d in self
             .divisions
             .values_mut()
@@ -463,6 +467,179 @@ impl Warfare {
             }
         }
         Ok(())
+    }
+    pub fn copy_template(&mut self, country: &str, source: &str, name: &str) -> Result<(), String> {
+        let army = self.countries.get_mut(country).ok_or("No country army")?;
+        if name.trim().is_empty() || army.templates.contains_key(name) {
+            return Err("Укажите свободное имя шаблона".into());
+        }
+        let mut t = army
+            .templates
+            .get(source)
+            .ok_or("Нет исходного шаблона")?
+            .clone();
+        t.name = name.into();
+        army.templates.insert(name.into(), t);
+        Ok(())
+    }
+    pub fn template_edit_cost(
+        &self,
+        country: &str,
+        old: Option<&str>,
+        new: &DivisionTemplate,
+    ) -> Result<f64, String> {
+        let army = self.countries.get(country).ok_or("No country army")?;
+        let empty = DivisionTemplate::default();
+        self.catalogue.edit_cost_with_modifiers(
+            old.and_then(|id| army.templates.get(id)).unwrap_or(&empty),
+            new,
+            &army.modifiers,
+        )
+    }
+    pub fn apply_template(
+        &mut self,
+        country: &str,
+        ids: &[u64],
+        name: &str,
+        production: &mut ProductionState,
+    ) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        let army = self.countries.get(country).ok_or("No country army")?;
+        let t = army.templates.get(name).ok_or("Нет выбранного шаблона")?;
+        self.catalogue.validate_template(t, &army.modifiers, true)?;
+        let mut staged = Vec::new();
+        for id in ids {
+            let d = &self.divisions[id];
+            if d.battle.is_some() {
+                return Err("Сначала выведите дивизии из боя".into());
+            }
+            let stats = self
+                .catalogue
+                .aggregate(t, &army.modifiers, Some(&d.equipment))?;
+            staged.push((*id, stats));
+        }
+        for (id, stats) in staged {
+            let d = self.divisions.get_mut(&id).unwrap();
+            d.template = name.into();
+            d.hp = d.hp.min(stats.stats.hp);
+            d.organization = d.organization.min(stats.stats.organization);
+            d.derived = stats;
+            self.return_surplus(id, production);
+        }
+        Ok(())
+    }
+    pub fn return_surplus(&mut self, id: u64, production: &mut ProductionState) {
+        let Some(d) = self.divisions.get_mut(&id).filter(|d| !d.destroyed) else {
+            return;
+        };
+        let mut remaining: BTreeMap<_, _> = d
+            .derived
+            .equipment
+            .iter()
+            .map(|(k, v)| (k.clone(), v.ceil().max(0.0) as u64))
+            .collect();
+        let mut models: Vec<_> = d
+            .equipment
+            .keys()
+            .filter_map(|id| self.catalogue.equipment.get(id))
+            .collect();
+        models.sort_by(|a, b| b.year.cmp(&a.year).then(a.id.cmp(&b.id)));
+        for def in models {
+            let quantity = d.equipment.get_mut(&def.id).unwrap();
+            let needed = remaining.entry(def.archetype.clone()).or_default();
+            let keep = (*needed).min(u64::from(*quantity)) as u32;
+            let returned = *quantity - keep;
+            *needed -= u64::from(keep);
+            *quantity = keep;
+            if returned > 0 {
+                let stock = production
+                    .country_mut(&d.country)
+                    .model_stockpile
+                    .entry(def.id.clone())
+                    .or_default();
+                *stock = stock.saturating_add(u64::from(returned));
+            }
+        }
+        d.equipment.retain(|_, n| *n > 0);
+        let surplus = d
+            .manpower
+            .saturating_sub(d.derived.stats.manpower.ceil().max(0.0) as u32);
+        d.manpower -= surplus;
+        if surplus > 0 {
+            let army = self.countries.entry(d.country.clone()).or_default();
+            army.manpower_pool = army.manpower_pool.saturating_add(u64::from(surplus));
+        }
+        if let Some(army) = self.countries.get(&d.country) {
+            if let Some(t) = army.templates.get(&d.template) {
+                if let Ok(derived) =
+                    self.catalogue
+                        .aggregate(t, &army.modifiers, Some(&d.equipment))
+                {
+                    d.derived = derived;
+                }
+            }
+        }
+    }
+    fn refit_preferred_equipment(&mut self, id: u64, production: &mut ProductionState) {
+        let Some(d) = self
+            .divisions
+            .get_mut(&id)
+            .filter(|d| !d.destroyed && d.battle.is_none() && d.supply_fraction > 0.0)
+        else {
+            return;
+        };
+        let Some(army) = self.countries.get(&d.country) else {
+            return;
+        };
+        let Some(t) = army.templates.get(&d.template) else {
+            return;
+        };
+        let stock = &mut production.country_mut(&d.country).model_stockpile;
+        for (archetype, preferred) in &t.equipment_preferences {
+            if !self
+                .catalogue
+                .equipment_available(preferred, &army.modifiers)
+            {
+                continue;
+            }
+            if !self
+                .catalogue
+                .equipment
+                .get(preferred)
+                .is_some_and(|e| e.archetype == *archetype)
+            {
+                continue;
+            }
+            let old: Vec<_> = d
+                .equipment
+                .keys()
+                .filter(|id| {
+                    *id != preferred
+                        && self
+                            .catalogue
+                            .equipment
+                            .get(*id)
+                            .is_some_and(|e| e.archetype == *archetype)
+                })
+                .cloned()
+                .collect();
+            for model in old {
+                let count = d.equipment[&model];
+                let replacement = stock
+                    .get(preferred)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(u64::from(count)) as u32;
+                if replacement == 0 {
+                    continue;
+                }
+                *stock.get_mut(preferred).unwrap() -= u64::from(replacement);
+                *stock.entry(model.clone()).or_default() += u64::from(replacement);
+                *d.equipment.get_mut(&model).unwrap() -= replacement;
+                *d.equipment.entry(preferred.clone()).or_default() += replacement;
+            }
+        }
+        d.equipment.retain(|_, n| *n > 0);
     }
     pub fn recruit(
         &mut self,
@@ -577,6 +754,8 @@ impl Warfare {
     pub fn replenish(&mut self, production: &mut ProductionState) {
         let ids: Vec<_> = self.divisions.keys().copied().collect();
         for id in ids {
+            self.return_surplus(id, production);
+            self.refit_preferred_equipment(id, production);
             let Some(d) = self
                 .divisions
                 .get(&id)
@@ -2068,5 +2247,143 @@ mod research_registry_integration {
             )
             .unwrap();
         assert_eq!(once.stats.soft_attack, twice.stats.soft_attack);
+    }
+}
+
+#[cfg(test)]
+mod designer_transactions {
+    use super::*;
+    use crate::military_model::tests::{catalogue, template};
+    #[test]
+    fn editing_and_refilling_conserve_real_equipment_and_manpower() {
+        let mut db = catalogue();
+        db.units
+            .get_mut("infantry")
+            .unwrap()
+            .need
+            .insert("rifles".into(), 100.0);
+        let mut artillery = db.units["infantry"].clone();
+        artillery.id = "artillery".into();
+        artillery.need = BTreeMap::from([("guns".into(), 12.0)]);
+        artillery.stats.insert("combat_width".into(), 3.0);
+        artillery.stats.insert("manpower".into(), 500.0);
+        db.units.insert("artillery".into(), artillery);
+        for (id, archetype, attack) in [("rifle_1", "rifles", 10.0), ("gun_1", "guns", 30.0)] {
+            db.equipment.insert(
+                id.into(),
+                EquipmentDefinition {
+                    id: id.into(),
+                    archetype: archetype.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats: BTreeMap::from([("soft_attack".into(), attack)]),
+                    cost: 1.0,
+                    modular: false,
+                    source: "authored fixture".into(),
+                },
+            );
+        }
+        let mut w = Warfare::new(db);
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                manpower_pool: 1000,
+                ..Default::default()
+            },
+        );
+        let t = template();
+        w.countries
+            .get_mut("A")
+            .unwrap()
+            .templates
+            .insert(t.name.clone(), t.clone());
+        let world = super::tests::world();
+        let id = w
+            .spawn_history("A", &t.name, 1, "Existing", 1.0, 1.0, 0.3, &world)
+            .unwrap();
+        let mut changed = t.clone();
+        changed.name = "Combined".into();
+        changed.line.push(BattalionSlot {
+            unit: "artillery".into(),
+            column: 0,
+            row: 1,
+        });
+        changed.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        assert!(
+            w.save_template("A", Some(&t.name), changed.clone())
+                .is_err()
+        );
+        assert_eq!(w.divisions[&id].template, t.name);
+        w.countries.get_mut("A").unwrap().army_xp = 15.0;
+        w.copy_template("A", &t.name, "Copy").unwrap();
+        assert_eq!(w.countries["A"].army_xp, 15.0);
+        w.save_template("A", Some(&t.name), changed.clone())
+            .unwrap();
+        assert_eq!(w.divisions[&id].template, "Combined");
+        assert_eq!(w.divisions[&id].equipment.get("gun_1"), None);
+        assert_eq!(w.divisions[&id].derived.stats.width, 5.0);
+        let before = w.divisions[&id].derived.stats.soft_attack;
+        let men = w.divisions[&id].derived.stats.manpower.ceil() as u32;
+        let missing = men - w.divisions[&id].manpower;
+        w.countries.get_mut("A").unwrap().manpower_pool = u64::from(missing);
+        let mut production = ProductionState::default();
+        production
+            .country_mut("A")
+            .model_stockpile
+            .insert("gun_1".into(), 12);
+        w.replenish(&mut production);
+        assert_eq!(w.divisions[&id].equipment["gun_1"], 12);
+        assert_eq!(production.country("A").unwrap().model_stockpile["gun_1"], 0);
+        assert_eq!(w.countries["A"].manpower_pool, 0);
+        assert!(w.divisions[&id].derived.stats.soft_attack > before);
+        let mut smaller = changed.clone();
+        smaller.line.retain(|s| s.unit == "infantry");
+        smaller.support.clear();
+        w.countries.get_mut("A").unwrap().army_xp = 15.0;
+        w.save_template("A", Some("Combined"), smaller).unwrap();
+        w.return_surplus(id, &mut production);
+        assert_eq!(
+            production.country("A").unwrap().model_stockpile["gun_1"],
+            12
+        );
+        assert_eq!(w.countries["A"].manpower_pool, u64::from(missing));
+        w.return_surplus(id, &mut production);
+        assert_eq!(
+            production.country("A").unwrap().model_stockpile["gun_1"],
+            12
+        );
+    }
+    #[test]
+    fn moving_battalions_is_free_and_regimental_support_requires_a_verified_cost() {
+        let mut db = catalogue();
+        let t = template();
+        let mut moved = t.clone();
+        moved.line[0].column = 1;
+        assert_eq!(db.edit_cost(&t, &moved).unwrap(), 0.0);
+        db.units.get_mut("engineer").unwrap().regimental = true;
+        let mut reg = t.clone();
+        reg.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: Some(0),
+            row: 0,
+        });
+        assert!(db.edit_cost(&t, &reg).is_err());
+        db.rules.regimental_support_edit_xp = Some(7.0);
+        assert_eq!(db.edit_cost(&t, &reg).unwrap(), 7.0);
+        let mut m = MilitaryModifiers::default();
+        m.country
+            .insert("unit_infantry_design_cost_factor".into(), -1.0);
+        let mut added = t.clone();
+        added.line.push(BattalionSlot {
+            unit: "infantry".into(),
+            column: 0,
+            row: 1,
+        });
+        assert_eq!(db.edit_cost_with_modifiers(&t, &added, &m).unwrap(), 0.0);
     }
 }

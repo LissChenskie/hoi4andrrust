@@ -1,5 +1,5 @@
 //! Army controls and map counters. All orders go through the campaign model.
-use crate::military_model::{BattalionSlot, DivisionOrder, DivisionTemplate, SupportSlot};
+use crate::military_model::DivisionOrder;
 use crate::production::{ProductionRules, ProductionState};
 use crate::warfare::Warfare;
 use crate::world::World;
@@ -44,13 +44,7 @@ pub struct ArmyView {
     page: Page,
     scroll: usize,
     selection_scroll: usize,
-    template: usize,
-    unit: usize,
-    slot: (usize, usize),
-    support: bool,
-    regimental: bool,
-    draft: Option<DivisionTemplate>,
-    editing: Option<String>,
+    pub designer: crate::division_designer_ui::DesignerView,
     pub notice: String,
     model: usize,
     battle: usize,
@@ -60,8 +54,17 @@ impl ArmyView {
     pub fn show_template(&mut self, index: usize) {
         self.open = true;
         self.page = Page::Templates;
-        self.template = index;
-        self.draft = None;
+        self.designer.template_index = index;
+        self.designer.draft = None;
+    }
+    pub fn orders_visible(&self) -> bool {
+        self.selected_army.is_some()
+            && (!self.open || matches!(self.page, Page::Command | Page::Divisions))
+    }
+    pub fn text_input_active(&self) -> bool {
+        self.open
+            && ((self.page == Page::Command && self.edit_army_name)
+                || (self.page == Page::Templates && self.designer.name_active))
     }
     pub fn close(&mut self) {
         self.open = false;
@@ -72,7 +75,7 @@ impl ArmyView {
 }
 pub fn bounds(view: &ArmyView) -> Rect {
     let mut r = crate::ui_layout::Layout::current().primary();
-    if view.selected_army.is_some() {
+    if view.orders_visible() {
         r.h -= (if screen_width() < 760.0 { 134.0 } else { 66.0 });
     }
     r
@@ -118,7 +121,7 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
             (screen_height()
                 - crate::ui_layout::Layout::current().top
                 - 52.0
-                - if view.selected_army.is_some() {
+                - if view.orders_visible() {
                     if screen_width() < 760.0 { 134.0 } else { 66.0 }
                 } else {
                     0.0
@@ -932,234 +935,17 @@ fn draw_templates(
     width: f32,
     bottom: f32,
 ) {
-    let Some(army) = w.countries.get(tag) else {
-        return;
-    };
-    let names: Vec<_> = army.templates.keys().cloned().collect();
-    if names.is_empty() {
-        label(
-            "Шаблоны дивизий не загружены.",
-            x,
-            y,
-            width,
-            12.0,
-            ui::MUTED,
-        );
-        return;
-    }
-    view.template %= names.len();
-    let name = names[view.template].clone();
-    if ui::small_button("<", Rect::new(x, y, 28.0, 26.0), false) {
-        view.template = (view.template + names.len() - 1) % names.len();
-        view.draft = None;
-    }
-    label(&name, x + 35.0, y + 18.0, width - 74.0, 13.0, ui::TEXT);
-    if ui::small_button(">", Rect::new(x + width - 28.0, y, 28.0, 26.0), false) {
-        view.template = (view.template + 1) % names.len();
-        view.draft = None;
-    }
-    y += 34.0;
-    if view.draft.is_none() || view.editing.as_deref() != Some(name.as_str()) {
-        view.draft = Some(army.templates[&name].clone());
-        view.editing = Some(name.clone());
-    }
-    let t = view.draft.as_ref().unwrap().clone();
-    let cell = ((width - 12.0) / 6.0).min(43.0);
-    let grid_height = cell * 5.0;
-    if y + grid_height + 145.0 > bottom {
-        label(
-            "Увеличьте высоту окна для редактора шаблонов.",
-            x,
-            y + 20.0,
-            width,
-            12.0,
-            ui::MUTED,
-        );
-        return;
-    }
-    for c in 0..5 {
-        for r in 0..5 {
-            let unit = t
-                .line
-                .iter()
-                .find(|s| s.column == c && s.row == r)
-                .map(|s| s.unit.as_str())
-                .unwrap_or("+");
-            if ui::small_button(
-                unit,
-                Rect::new(
-                    x + c as f32 * cell,
-                    y + r as f32 * cell,
-                    cell - 2.0,
-                    cell - 2.0,
-                ),
-                !view.support && view.slot == (c, r),
-            ) {
-                view.slot = (c, r);
-                view.support = false;
-            }
-        }
-    }
-    for r in 0..5 {
-        let unit = t
-            .support
-            .iter()
-            .find(|s| {
-                s.regiment
-                    == if view.regimental {
-                        Some(view.slot.0)
-                    } else {
-                        None
-                    }
-                    && s.row == r
-            })
-            .map(|s| s.unit.as_str())
-            .unwrap_or("+");
-        if ui::small_button(
-            unit,
-            Rect::new(
-                x + 5.0 * cell + 8.0,
-                y + r as f32 * cell,
-                cell - 2.0,
-                cell - 2.0,
-            ),
-            view.support && view.slot.1 == r,
-        ) {
-            view.slot.1 = r;
-            view.support = true;
-        }
-    }
-    y += grid_height + 8.0;
-    if ui::small_button(
-        "ПОЛКОВАЯ ПОДДЕРЖКА",
-        Rect::new(x, y, width, 25.0),
-        view.regimental,
-    ) {
-        view.regimental = !view.regimental;
-    }
-    y += 32.0;
-    let options: Vec<_> = w
-        .catalogue
-        .units
-        .values()
-        .filter(|u| {
-            (u.active || army.modifiers.unlocked_units.contains(&u.id))
-                && if view.support {
-                    u.group == "support"
-                        && if view.regimental {
-                            u.regimental
-                        } else {
-                            u.divisional
-                        }
-                } else {
-                    u.group != "support"
-                }
-        })
-        .map(|u| u.id.clone())
-        .collect();
-    if !options.is_empty() {
-        view.unit %= options.len();
-        if ui::small_button("<", Rect::new(x, y, 27.0, 25.0), false) {
-            view.unit = (view.unit + options.len() - 1) % options.len();
-        }
-        label(
-            &options[view.unit],
-            x + 33.0,
-            y + 17.0,
-            width - 178.0,
-            12.0,
-            ui::TEXT,
-        );
-        if ui::small_button(">", Rect::new(x + width - 140.0, y, 27.0, 25.0), false) {
-            view.unit = (view.unit + 1) % options.len();
-        }
-        let mut changed = t.clone();
-        let apply = ui::small_button(
-            "ВЫБРАТЬ",
-            Rect::new(x + width - 106.0, y, 48.0, 25.0),
-            false,
-        );
-        let remove = ui::small_button("УБРАТЬ", Rect::new(x + width - 53.0, y, 48.0, 25.0), false);
-        if apply || remove {
-            if view.support {
-                let regiment = view.regimental.then_some(view.slot.0);
-                changed
-                    .support
-                    .retain(|s| !(s.regiment == regiment && s.row == view.slot.1));
-                if apply {
-                    changed.support.push(SupportSlot {
-                        unit: options[view.unit].clone(),
-                        regiment,
-                        row: view.slot.1,
-                    });
-                }
-            } else {
-                changed
-                    .line
-                    .retain(|s| !(s.column == view.slot.0 && s.row == view.slot.1));
-                if apply {
-                    changed.line.push(BattalionSlot {
-                        unit: options[view.unit].clone(),
-                        column: view.slot.0,
-                        row: view.slot.1,
-                    });
-                }
-            }
-            view.draft = Some(changed);
-        }
-    }
-    y += 34.0;
-    if let Ok(d) = w
-        .catalogue
-        .aggregate(view.draft.as_ref().unwrap(), &army.modifiers, None)
-    {
-        label(
-            &format!(
-                "SA {:.1}  HA {:.1}  DEF {:.1}  BRK {:.1}  W {:.0}",
-                d.stats.soft_attack,
-                d.stats.hard_attack,
-                d.stats.defense,
-                d.stats.breakthrough,
-                d.stats.width
-            ),
-            x,
-            y + 13.0,
-            width,
-            11.0,
-            ui::TEXT,
-        );
-    }
-    y += 22.0;
-    let cost = w
-        .catalogue
-        .edit_cost(&army.templates[&name], view.draft.as_ref().unwrap());
-    if ui::small_button(
-        &format!(
-            "СОХРАНИТЬ · {:.0} ОПЫТА",
-            cost.as_ref().copied().unwrap_or(0.0)
-        ),
-        Rect::new(x, y, width / 2.0 - 4.0, 28.0),
-        false,
-    ) {
-        let r = w.save_template(
-            tag,
-            view.editing.as_deref(),
-            view.draft.as_ref().unwrap().clone(),
-        );
-        result(view, r, "Шаблон сохранён");
-    }
-    if ui::small_button(
-        "РАЗВЕРНУТЬ",
-        Rect::new(x + width / 2.0 + 4.0, y, width / 2.0 - 4.0, 28.0),
-        false,
-    ) {
-        if let Some(province) = province {
-            let r = w.recruit(tag, &name, province, world, production);
-            result(view, r, "Дивизия развёрнута");
-        } else {
-            view.notice = "Сначала выберите свою провинцию на карте".into();
-        }
-    }
+    crate::division_designer_ui::draw(
+        world,
+        tag,
+        w,
+        production,
+        province,
+        &view.selected,
+        &mut view.designer,
+        &mut view.notice,
+        Rect::new(x, y, width, (bottom - y).max(1.0)),
+    );
 }
 
 pub fn draw_counters(
@@ -1224,8 +1010,29 @@ pub fn draw_counters(
         let r = c.rect;
         draw_rectangle(r.x, r.y, r.w, r.h, ui::BASE);
         draw_rectangle_lines(r.x, r.y, r.w, r.h, if selected { 2.0 } else { 1.0 }, color);
-        draw_line(r.x + 5.0, r.y + 6.0, r.x + 15.0, r.y + 15.0, 1.3, color);
-        draw_line(r.x + 15.0, r.y + 6.0, r.x + 5.0, r.y + 15.0, 1.3, color);
+        let icon = c
+            .ids
+            .first()
+            .and_then(|id| w.divisions.get(id))
+            .and_then(|d| {
+                w.countries
+                    .get(&d.country)
+                    .and_then(|a| a.templates.get(&d.template))
+            })
+            .map_or("infantry", |t| t.icon.as_str());
+        match icon {
+            "armor" => draw_rectangle_lines(r.x + 5.0, r.y + 7.0, 12.0, 7.0, 1.3, color),
+            "motorized" => {
+                draw_rectangle_lines(r.x + 5.0, r.y + 6.0, 12.0, 7.0, 1.3, color);
+                draw_circle(r.x + 7.0, r.y + 15.0, 2.0, color);
+                draw_circle(r.x + 15.0, r.y + 15.0, 2.0, color);
+            }
+            "artillery" => draw_circle(r.x + 10.0, r.y + 10.0, 3.0, color),
+            _ => {
+                draw_line(r.x + 5.0, r.y + 6.0, r.x + 15.0, r.y + 15.0, 1.3, color);
+                draw_line(r.x + 15.0, r.y + 6.0, r.x + 5.0, r.y + 15.0, 1.3, color);
+            }
+        }
         draw_ui_text(
             &c.ids.len().to_string(),
             r.x + 23.0,

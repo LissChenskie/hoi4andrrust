@@ -482,6 +482,38 @@ pub fn data_layers(root: &Path) -> Vec<PathBuf> {
     layers
 }
 
+pub fn localisation(layers: &[PathBuf], ids: &BTreeSet<String>) -> BTreeMap<String, String> {
+    let files = layered_files(layers, "localisation", true, "yml");
+    let mut out = BTreeMap::new();
+    for language in ["english", "russian"] {
+        for path in files
+            .iter()
+            .filter(|p| p.to_string_lossy().contains(language))
+        {
+            if let Ok(s) = fs::read_to_string(path) {
+                for line in s.lines() {
+                    let line = line.trim();
+                    let Some((key, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    if !ids.contains(key) {
+                        continue;
+                    }
+                    let Some(start) = value.find('"') else {
+                        continue;
+                    };
+                    let Some(end) = value.rfind('"') else {
+                        continue;
+                    };
+                    if end > start {
+                        out.insert(key.into(), value[start + 1..end].to_owned());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
 pub fn load(root: &Path) -> MilitaryCatalogue {
     let mut db = MilitaryCatalogue::default();
     let layers = data_layers(root);
@@ -659,6 +691,13 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
             }
         }
     }
+    let ids = db
+        .units
+        .keys()
+        .chain(db.equipment.keys())
+        .cloned()
+        .collect();
+    db.localisation = localisation(&layers, &ids);
     if db.units.is_empty() {
         db.diagnostics
             .push("No land unit definitions: add common/units/*.txt to enable armies".into());
@@ -692,6 +731,10 @@ pub fn parse_template(b: &[Entry]) -> Result<DivisionTemplate, String> {
     let mut t = DivisionTemplate {
         name: atom(b, "name").ok_or("Template has no name")?.into(),
         locked: yes(b, "is_locked", false),
+        icon: atom(b, "division_icon")
+            .or_else(|| atom(b, "icon"))
+            .unwrap_or("infantry")
+            .into(),
         ..Default::default()
     };
     for unit in block(b, "regiments").unwrap_or(&[]) {

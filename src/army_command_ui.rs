@@ -145,6 +145,7 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
     ) {
         view.army_name = army.name.clone();
         view.edit_army_name = true;
+        macroquad::miniquad::window::show_keyboard(true);
     }
     if view.edit_army_name {
         while let Some(ch) = get_char_pressed() {
@@ -159,6 +160,7 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
             w.command.armies.get_mut(&id).unwrap().name = view.army_name.trim().into();
             w.command.revision += 1;
             view.edit_army_name = false;
+            macroquad::miniquad::window::show_keyboard(false);
         }
         ui::label(
             &view.army_name,

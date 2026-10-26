@@ -116,6 +116,7 @@ pub struct CombatRules {
     pub support_slots: usize,
     pub line_edit_xp: f64,
     pub support_edit_xp: f64,
+    pub regimental_support_edit_xp: Option<f64>,
     pub new_group_xp: f64,
     pub pixels_to_km: Option<f64>,
     pub strategic_speed: Option<f64>,
@@ -186,6 +187,7 @@ impl Default for CombatRules {
             support_slots: 5,
             line_edit_xp: 5.0,
             support_edit_xp: 10.0,
+            regimental_support_edit_xp: None,
             new_group_xp: 20.0,
             // No invented travel-time calibration when the map define is absent.
             pixels_to_km: None,
@@ -464,6 +466,10 @@ impl CombatRules {
                 }
                 "PLAYER_ORDER_PLANNING_DECAY" => {
                     self.manual_planning_decay = v.max(0.0);
+                    true
+                }
+                "BASE_DIVISION_REGIMENTAL_SUPPORT_SLOT_COST" => {
+                    self.regimental_support_edit_xp = Some(v.max(0.0));
                     true
                 }
                 "BASE_DIVISION_BRIGADE_CHANGE_COST" => {
