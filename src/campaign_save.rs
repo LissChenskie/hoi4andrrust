@@ -129,6 +129,7 @@ impl GameSession {
         {
             return Err("Несовместимый набор провинций/штатов".into());
         }
+        s.military.clean_references();
         s.military.validate_references(&s.world)?;
         for (id, state) in &s.world.states {
             if state.province_ids != self.world.states[id].province_ids {

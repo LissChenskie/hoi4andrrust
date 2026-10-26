@@ -251,7 +251,7 @@ impl Hud {
     pub fn minimap_bounds(&self) -> Rect {
         let mut r = Layout::current().minimap();
         if self.orders_layout {
-            r.y -= 66.0;
+            r.y = crate::battle_plan_ui::toolbar_bounds().y - 42.0 - 8.0 - r.h;
         }
         r
     }
@@ -301,7 +301,9 @@ pub enum Action {
     Open(Panel),
     Select(u64),
     SelectAll,
-    SelectArmy(u64),
+    SelectArmy(u64, bool),
+    AssignArmy(u64),
+    ToggleArmy(u64),
     CreateArmy,
     Commander,
     Designer(usize),
@@ -932,7 +934,7 @@ fn draw_dock(
         ui::tooltip(
             portrait,
             general,
-            "Нажмите портрет, чтобы выбрать командующего этой армии",
+            "ЛКМ: выбрать армию. Генерал назначается через портрет в левой панели. ПКМ по карточке: перевести выделенные дивизии.",
         );
         ui::label(
             &if compact {
@@ -940,7 +942,12 @@ fn draw_dock(
             } else {
                 format!("{} · {}", a.name, w.command.members(a.id).count())
             },
-            Rect::new(b.x + 32.0, b.y + 4.0, b.w - 35.0, 20.0),
+            Rect::new(
+                b.x + 32.0,
+                b.y + if compact { 29.0 } else { 5.0 },
+                b.w - if compact { 35.0 } else { 62.0 },
+                20.0,
+            ),
             11.0,
             ui::TEXT,
         );
@@ -949,11 +956,44 @@ fn draw_dock(
             &a.name,
             &format!("{} дивизий · {general}", w.command.members(a.id).count()),
         );
-        if ui::inside(b) && is_mouse_button_pressed(MouseButton::Left) {
-            actions.push(Action::SelectArmy(a.id));
-            if portrait.contains(vec2(mouse_position().0, mouse_position().1)) {
-                actions.push(Action::Commander);
-            }
+        let active =
+            w.plans.plans.values().any(|p| {
+                p.army == a.id && p.activation == crate::operations::Activation::Executing
+            });
+        let play = Rect::new(b.right() - 24.0, b.y + 3.0, 21.0, 22.0);
+        if ui::small_button(if active { "■" } else { "▶" }, play, active) {
+            actions.push(Action::ToggleArmy(a.id));
+        }
+        ui::tooltip(
+            play,
+            if active {
+                "Остановить планы армии"
+            } else {
+                "Выполнить планы армии"
+            },
+            "Отдельное управление исполнением этой армии. Время идёт после снятия паузы.",
+        );
+        if !compact {
+            ui::label(
+                if active {
+                    "ПЛАНЫ ВКЛЮЧЕНЫ"
+                } else {
+                    "ПЛАНЫ ОСТАНОВЛЕНЫ"
+                },
+                Rect::new(b.x + 32.0, b.y + 29.0, b.w - 35.0, 18.0),
+                9.0,
+                if active { ui::GREEN } else { ui::MUTED },
+            );
+        }
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if ui::inside(b) && !play.contains(mouse) && is_mouse_button_pressed(MouseButton::Left) {
+            actions.push(Action::SelectArmy(
+                a.id,
+                is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift),
+            ));
+        }
+        if ui::inside(b) && is_mouse_button_pressed(MouseButton::Right) {
+            actions.push(Action::AssignArmy(a.id));
         }
     }
     if capacity == 0

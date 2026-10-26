@@ -24,10 +24,16 @@ impl FrontEdge {
 pub struct Boundary {
     pub edges: BTreeSet<FrontEdge>,
     pub adjacent: BTreeMap<FrontEdge, BTreeSet<FrontEdge>>,
+    pub friendly_regions: BTreeMap<u32, u32>,
+    pub enemy_regions: BTreeMap<u32, u32>,
 }
 impl Boundary {
     pub fn build(world: &World, country: &str, enemy: &str) -> Self {
-        let mut b = Self::default();
+        let mut b = Self {
+            friendly_regions: controlled_regions(world, country),
+            enemy_regions: controlled_regions(world, enemy),
+            ..Default::default()
+        };
         let mut vertices = BTreeMap::<(u32, u32), BTreeSet<FrontEdge>>::new();
         for p in world
             .provinces
@@ -60,7 +66,11 @@ impl Boundary {
         for list in vertices.values() {
             for &a in list {
                 for &other in list {
-                    if a != other {
+                    if a != other
+                        && b.friendly_regions.get(&a.friendly)
+                            == b.friendly_regions.get(&other.friendly)
+                        && b.enemy_regions.get(&a.enemy) == b.enemy_regions.get(&other.enemy)
+                    {
                         b.adjacent.entry(a).or_default().insert(other);
                     }
                 }
@@ -97,12 +107,108 @@ impl Boundary {
         path.reverse();
         Ok(path)
     }
+    /// Keep disconnected coast-to-coast sectors and closed pocket contours.
+    pub fn sectors(&self, edges: &[FrontEdge]) -> Vec<Vec<FrontEdge>> {
+        let mut remaining: BTreeSet<_> = edges
+            .iter()
+            .copied()
+            .filter(|e| self.edges.contains(e))
+            .collect();
+        let mut result = Vec::new();
+        while let Some(&first) = remaining.first() {
+            remaining.remove(&first);
+            let mut sector = Vec::new();
+            let mut queue = VecDeque::from([first]);
+            while let Some(e) = queue.pop_front() {
+                sector.push(e);
+                for &next in self.adjacent.get(&e).into_iter().flatten() {
+                    if remaining.remove(&next) {
+                        queue.push_back(next);
+                    }
+                }
+            }
+            result.push(sector);
+        }
+        result
+    }
+    /// Move the *owned edges* through provinces changed since the last tick.
+    /// No nearest-endpoint fallback and no shortest-path jump to another front.
+    fn migrate(&self, world: &World, old: &[FrontEdge], revision: u64) -> Vec<FrontEdge> {
+        let mut kept: BTreeSet<_> = old
+            .iter()
+            .copied()
+            .filter(|e| self.edges.contains(e))
+            .collect();
+        let mut patch = BTreeSet::new();
+        let mut queue = VecDeque::new();
+        for p in old.iter().flat_map(|e| [e.friendly, e.enemy]) {
+            if world
+                .provinces
+                .get(&p)
+                .is_some_and(|p| p.control_revision > revision)
+                && patch.insert(p)
+            {
+                queue.push_back(p);
+            }
+        }
+        while let Some(p) = queue.pop_front() {
+            for e in world.geography.land_neighbors(p) {
+                if world
+                    .provinces
+                    .get(&e.to)
+                    .is_some_and(|p| p.control_revision > revision)
+                    && patch.insert(e.to)
+                {
+                    queue.push_back(e.to);
+                }
+            }
+        }
+        kept.extend(
+            self.edges
+                .iter()
+                .filter(|e| patch.contains(&e.friendly) || patch.contains(&e.enemy))
+                .copied(),
+        );
+        // Retain the player's traversal where it survives, then append new edges.
+        let mut ordered: Vec<_> = old.iter().copied().filter(|e| kept.remove(e)).collect();
+        ordered.extend(kept);
+        ordered
+    }
     pub fn nearest(&self, world: &World, p: MapPosition) -> Option<FrontEdge> {
         self.edges
             .iter()
             .min_by(|a, b| distance(world, **a, p).total_cmp(&distance(world, **b, p)))
             .copied()
     }
+}
+pub fn controlled_regions(world: &World, country: &str) -> BTreeMap<u32, u32> {
+    let mut regions = BTreeMap::new();
+    for p in world
+        .provinces
+        .values()
+        .filter(|p| p.controller.as_deref() == Some(country))
+    {
+        if regions.contains_key(&p.id) {
+            continue;
+        }
+        regions.insert(p.id, p.id);
+        let mut queue = VecDeque::from([p.id]);
+        while let Some(id) = queue.pop_front() {
+            for e in world
+                .geography
+                .land_neighbors(id)
+                .filter(|e| e.kind == CrossingKind::Border)
+            {
+                if world.controller_of_province(e.to) == Some(country)
+                    && !regions.contains_key(&e.to)
+                {
+                    regions.insert(e.to, p.id);
+                    queue.push_back(e.to);
+                }
+            }
+        }
+    }
+    regions
 }
 fn center(world: &World, e: FrontEdge) -> MapPosition {
     let a = world.geography.provinces[&e.friendly]
@@ -131,6 +237,10 @@ pub struct FrontLine {
     pub group: Option<crate::command::GroupId>,
     pub enemy_country: String,
     pub edges: Vec<FrontEdge>,
+    #[serde(default)]
+    pub sectors: Vec<Vec<FrontEdge>>,
+    #[serde(default)]
+    pub anchor_edges: Vec<FrontEdge>,
     pub assigned_divisions: BTreeSet<u64>,
     pub auto_include: bool,
     pub assignments: BTreeMap<u64, u32>,
@@ -165,7 +275,38 @@ impl FrontState {
         self.boundaries.clear();
         self.active_orders.clear();
         for f in self.fronts.values_mut() {
-            f.watched = f.edges.iter().flat_map(|e| [e.friendly, e.enemy]).collect();
+            if f.anchor_edges.is_empty() {
+                f.anchor_edges = f.edges.clone();
+            }
+            let boundary = Boundary::build(world, &f.country, &f.enemy_country);
+            let migrated = boundary.migrate(
+                world,
+                if f.edges.is_empty() {
+                    &f.anchor_edges
+                } else {
+                    &f.edges
+                },
+                f.control_revision,
+            );
+            if migrated != f.edges {
+                f.revision += 1;
+                self.revision += 1;
+                f.command_revision = u64::MAX;
+            }
+            f.edges = migrated;
+            if !f.edges.is_empty() {
+                f.anchor_edges = f.edges.clone();
+            }
+            f.sectors = boundary.sectors(&f.edges);
+            f.control_revision = world.control_revision;
+            f.watched = if f.edges.is_empty() {
+                &f.anchor_edges
+            } else {
+                &f.edges
+            }
+            .iter()
+            .flat_map(|e| [e.friendly, e.enemy])
+            .collect();
             let points: Vec<_> = f.watched.iter().copied().collect();
             for p in points {
                 f.watched
@@ -220,7 +361,12 @@ impl FrontState {
         }
         for front in self.fronts.values_mut().filter(|f| f.army == army) {
             front.assigned_divisions.retain(|id| !assigned.contains(id));
+            front.assignments.retain(|id, _| !assigned.contains(id));
+            front.reserves.retain(|id| !assigned.contains(id));
+            front.command_revision = u64::MAX;
         }
+        self.fronts
+            .retain(|_, f| f.army != army || !f.assigned_divisions.is_empty());
         self.next_id += 1;
         let id = self.next_id;
         self.fronts.insert(
@@ -231,6 +377,8 @@ impl FrontState {
                 army,
                 group: None,
                 enemy_country: enemy,
+                anchor_edges: edges.clone(),
+                sectors: vec![edges.clone()],
                 edges,
                 auto_include: assigned == members,
                 assigned_divisions: assigned,
@@ -292,6 +440,9 @@ impl FrontState {
             .filter(|f| f.id != id && f.country == country)
         {
             other.assigned_divisions.retain(|d| !assigned.contains(d));
+            other.assignments.retain(|d, _| !assigned.contains(d));
+            other.reserves.retain(|d| !assigned.contains(d));
+            other.command_revision = u64::MAX;
         }
         let f = self.fronts.get_mut(&id).unwrap();
         f.group = Some(group);
@@ -325,8 +476,54 @@ impl FrontState {
             return Err("Линия должна идти по непрерывным рёбрам границы".into());
         }
         let id = self.create(w, world, country, army, start, end, selection)?;
-        self.fronts.get_mut(&id).unwrap().edges = path.to_vec();
+        let f = self.fronts.get_mut(&id).unwrap();
+        f.edges = path.to_vec();
+        f.anchor_edges = f.edges.clone();
+        f.sectors = vec![path.to_vec()];
         Ok(id)
+    }
+    pub fn redraw(
+        &mut self,
+        w: &Warfare,
+        world: &World,
+        country: &str,
+        id: FrontId,
+        path: &[FrontEdge],
+    ) -> Result<(), String> {
+        let f = self
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        w.command.own_army(country, f.army)?;
+        let first = *path.first().ok_or("Нарисуйте непрерывный фронт")?;
+        let enemy = world
+            .controller_of_province(first.enemy)
+            .ok_or("Нет страны за фронтом")?
+            .to_owned();
+        let b = self.boundary(world, country, &enemy);
+        if !path.iter().all(|e| b.edges.contains(e))
+            || !path
+                .windows(2)
+                .all(|p| b.adjacent.get(&p[0]).is_some_and(|v| v.contains(&p[1])))
+        {
+            return Err("Фронт должен идти по непрерывной границе".into());
+        }
+        let sectors = b.sectors(path);
+        let f = self.fronts.get_mut(&id).unwrap();
+        f.edges = path.to_vec();
+        f.anchor_edges = f.edges.clone();
+        f.sectors = sectors;
+        f.enemy_country = enemy;
+        f.assignments.clear();
+        f.reserves.clear();
+        f.watched.clear();
+        f.command_revision = u64::MAX;
+        f.revision += 1;
+        f.control_revision = world.control_revision;
+        f.status = "Фронт изменён".into();
+        self.revision += 1;
+        Ok(())
     }
     pub fn edit_end(
         &mut self,
@@ -358,7 +555,9 @@ impl FrontState {
             .boundary(world, country, &f.enemy_country)
             .path(first, last)?;
         let f = self.fronts.get_mut(&id).unwrap();
+        f.sectors = vec![path.clone()];
         f.edges = path;
+        f.anchor_edges = f.edges.clone();
         f.revision += 1;
         f.command_revision = u64::MAX;
         f.watched.clear();
@@ -384,6 +583,14 @@ impl FrontState {
         }
         let mut other = f.clone();
         other.edges = f.edges.split_off(at);
+        f.sectors = vec![f.edges.clone()];
+        f.anchor_edges = f.edges.clone();
+        other.sectors = vec![other.edges.clone()];
+        other.anchor_edges = other.edges.clone();
+        f.revision += 1;
+        other.revision += 1;
+        f.watched.clear();
+        other.watched.clear();
         let ids: Vec<_> = f.assigned_divisions.iter().copied().collect();
         for d in ids.iter().skip(ids.len() / 2) {
             f.assigned_divisions.remove(d);
@@ -433,7 +640,10 @@ impl FrontState {
         )?;
         edges.dedup();
         let f = self.fronts.get_mut(&a).unwrap();
+        f.sectors = vec![edges.clone()];
         f.edges = edges;
+        f.anchor_edges = f.edges.clone();
+        f.revision += 1;
         f.assigned_divisions.extend(right.assigned_divisions);
         f.command_revision = u64::MAX;
         f.watched.clear();
@@ -460,14 +670,21 @@ impl FrontState {
                         .get(p)
                         .is_some_and(|p| p.control_revision > f.control_revision)
                 });
-            if changed && !f.edges.is_empty() {
-                let old_start = center(world, f.edges[0]);
-                let old_end = center(world, *f.edges.last().unwrap());
+            if changed {
                 let b = self.boundary(world, &f.country, &f.enemy_country);
-                f.edges = match b.nearest(world, old_start).zip(b.nearest(world, old_end)) {
-                    Some((a, z)) => b.path(a, z).unwrap_or_else(|_| vec![a]),
-                    None => Vec::new(),
-                };
+                f.edges = b.migrate(
+                    world,
+                    if f.edges.is_empty() {
+                        &f.anchor_edges
+                    } else {
+                        &f.edges
+                    },
+                    f.control_revision,
+                );
+                if !f.edges.is_empty() {
+                    f.anchor_edges = f.edges.clone();
+                }
+                f.sectors = b.sectors(&f.edges);
                 f.command_revision = u64::MAX;
                 f.revision += 1;
                 self.revision += 1;
@@ -517,7 +734,14 @@ impl FrontState {
                 });
                 self.rebalance(&mut f, w, world);
                 f.command_revision = w.command.revision;
-                f.watched = f.edges.iter().flat_map(|e| [e.friendly, e.enemy]).collect();
+                f.watched = if f.edges.is_empty() {
+                    &f.anchor_edges
+                } else {
+                    &f.edges
+                }
+                .iter()
+                .flat_map(|e| [e.friendly, e.enemy])
+                .collect();
                 let p: Vec<_> = f.watched.iter().copied().collect();
                 for p in p {
                     f.watched
@@ -566,74 +790,85 @@ impl FrontState {
             f.status = "На этом участке больше нет границы".into();
             return;
         }
-        let count = units.len().saturating_sub(f.reserve_count.min(units.len()));
-        let mut slots = Vec::new();
-        let mut density = BTreeMap::<u32, f64>::new();
-        // Allied formations already present count toward a province's coverage.
-        for &p in &positions {
-            let allied = w
-                .divisions
-                .values()
-                .filter(|d| {
-                    !d.destroyed
-                        && d.province == p
-                        && !f.assigned_divisions.contains(&d.id)
-                        && w.friendly(&f.country, &d.country)
-                })
-                .map(|d| d.derived.stats.width * d.strength())
-                .sum();
-            density.insert(p, allied);
-        }
-        for _ in 0..count {
-            let p = *positions
-                .iter()
-                .min_by(|a, b| {
-                    let score = |p: &u32| {
-                        density[p] / f.priorities.get(p).copied().unwrap_or(1.0).max(0.01)
-                    };
-                    score(a).total_cmp(&score(b)).then(a.cmp(b))
-                })
-                .unwrap();
-            slots.push(p);
-            *density.get_mut(&p).unwrap() +=
-                units.iter().map(|d| d.derived.stats.width).sum::<f64>()
-                    / units.len().max(1) as f64;
-        }
         let mut distances = BTreeMap::new();
         for d in &units {
             distances
                 .entry(d.province)
                 .or_insert_with(|| w.movement_distances(&f.country, d.province, world));
         }
-        let mut costs = vec![vec![0.0; units.len()]; units.len()];
-        for (i, d) in units.iter().enumerate() {
-            for j in 0..units.len() {
-                costs[i][j] = if j < slots.len() {
+        // Partition by actual friendly reachability: a division inside a pocket
+        // must never consume a slot on a disconnected outer front (or vice versa).
+        let mut groups: BTreeMap<Vec<u32>, Vec<_>> = BTreeMap::new();
+        for d in &units {
+            let reachable = positions
+                .iter()
+                .filter(|p| distances[&d.province].contains_key(p))
+                .copied()
+                .collect();
+            groups.entry(reachable).or_default().push(*d);
+        }
+        let previous = std::mem::take(&mut f.assignments);
+        f.reserves.clear();
+        let mut reserve_left = f.reserve_count.min(units.len());
+        for (positions, units) in groups {
+            if positions.is_empty() {
+                f.reserves.extend(units.iter().map(|d| d.id));
+                continue;
+            }
+            let reserved = reserve_left.min(units.len());
+            reserve_left -= reserved;
+            let count = units.len() - reserved;
+            let mut slots = Vec::new();
+            let mut density = BTreeMap::<u32, f64>::new();
+            for &p in &positions {
+                let allied = w
+                    .divisions
+                    .values()
+                    .filter(|d| {
+                        !d.destroyed
+                            && d.province == p
+                            && !f.assigned_divisions.contains(&d.id)
+                            && w.friendly(&f.country, &d.country)
+                    })
+                    .map(|d| d.derived.stats.width * d.strength())
+                    .sum();
+                density.insert(p, allied);
+            }
+            let average_width = units.iter().map(|d| d.derived.stats.width).sum::<f64>()
+                / units.len().max(1) as f64;
+            for _ in 0..count {
+                let p = *positions
+                    .iter()
+                    .min_by(|a, b| {
+                        let score = |p: &u32| {
+                            density[p] / f.priorities.get(p).copied().unwrap_or(1.0).max(0.01)
+                        };
+                        score(a).total_cmp(&score(b)).then(a.cmp(b))
+                    })
+                    .unwrap();
+                slots.push(p);
+                *density.get_mut(&p).unwrap() += average_width;
+            }
+            let mut costs = vec![vec![0.0; units.len()]; units.len()];
+            for (i, d) in units.iter().enumerate() {
+                for j in 0..slots.len() {
                     let p = slots[j];
-                    let hours = distances[&d.province].get(&p).copied().unwrap_or(1e12)
-                        / d.derived.stats.speed.max(0.01);
-                    // Six travel-hours of hysteresis is an operational policy, not a
-                    // claimed HOI4 combat define. It prevents assignment oscillation.
-                    hours
-                        + if f.assignments.get(&d.id) == Some(&p) {
+                    let hours = distances[&d.province][&p] / d.derived.stats.speed.max(0.01);
+                    costs[i][j] = hours
+                        + (if previous.get(&d.id) == Some(&p) {
                             0.0
                         } else {
                             6.0
-                        }
-                        + (1.0 - d.supply_fraction) * hours
-                } else {
-                    0.0
-                };
+                        })
+                        + (1.0 - d.supply_fraction) * hours;
+                }
             }
-        }
-        let matched = minimum_cost_assignment(&costs);
-        f.reserves.clear();
-        f.assignments.clear();
-        for (i, j) in matched.into_iter().enumerate() {
-            if j < slots.len() && costs[i][j] < 1e11 {
-                f.assignments.insert(units[i].id, slots[j]);
-            } else {
-                f.reserves.insert(units[i].id);
+            for (i, j) in minimum_cost_assignment(&costs).into_iter().enumerate() {
+                if j < slots.len() {
+                    f.assignments.insert(units[i].id, slots[j]);
+                } else {
+                    f.reserves.insert(units[i].id);
+                }
             }
         }
         f.status = format!(
@@ -834,5 +1069,240 @@ pub(crate) mod tests {
         let encoded = serde_json::to_string(&state).unwrap();
         let decoded: FrontState = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.fronts[&f].edges.len(), 8);
+    }
+}
+
+#[cfg(test)]
+mod pocket_regressions {
+    use super::*;
+    use crate::military_model::tests::{catalogue, division};
+    fn grid() -> (World, Warfare, u64) {
+        let mut rgba = Vec::new();
+        let mut defs = String::new();
+        let mut membership = std::collections::HashMap::new();
+        for y in 0..7 {
+            for x in 0..7 {
+                let p = y * 7 + x + 1;
+                rgba.extend([p as u8, 1, 1, 255]);
+                defs += &format!("{p};{p};1;1;land;false;plains;1\n");
+                membership.insert(p, if x < 2 { 1 } else { 2 });
+            }
+        }
+        let mut world = World::from_map_data(
+            &membership,
+            &std::collections::HashMap::from([(1, "A".into()), (2, "B".into())]),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        );
+        world.geography = crate::map_graph::MapGraph::from_rgba(7, 7, &rgba, &defs, false).unwrap();
+        let mut db = catalogue();
+        db.rules.pixels_to_km = Some(1.0);
+        let mut w = Warfare::new(db);
+        w.ai_enabled = false;
+        for id in 1..=12 {
+            w.divisions.insert(id, division(id, "A", 1));
+        }
+        let army = w
+            .create_army("A", &(1..=12).collect::<Vec<_>>(), "")
+            .unwrap();
+        let mut f = FrontState::default();
+        let id = f
+            .create(
+                &w,
+                &world,
+                "A",
+                army,
+                FrontEdge {
+                    friendly: 2,
+                    enemy: 3,
+                },
+                FrontEdge {
+                    friendly: 44,
+                    enemy: 45,
+                },
+                &BTreeSet::new(),
+            )
+            .unwrap();
+        w.fronts = f;
+        (world, w, id)
+    }
+    fn tick(w: &mut Warfare, world: &mut World, h: u64) {
+        w.tick_hour(
+            world,
+            crate::game::GameDate::START,
+            (h % 24) as u8,
+            h,
+            Some("A"),
+        );
+    }
+    #[test]
+    fn closing_and_clearing_a_pocket_preserves_outer_front_and_complete_inner_ring() {
+        let (mut world, mut w, id) = grid();
+        tick(&mut w, &mut world, 1);
+        for y in [1, 5] {
+            for x in 2..=4 {
+                world.set_province_controller(y * 7 + x + 1, Some("A"));
+            }
+        }
+        for y in 1..=5 {
+            world.set_province_controller(y * 7 + 5, Some("A"));
+        }
+        tick(&mut w, &mut world, 2);
+        let f = &w.fronts.fronts[&id];
+        let expected = Boundary::build(&world, "A", "B");
+        assert_eq!(
+            f.edges.iter().copied().collect::<BTreeSet<_>>(),
+            expected.edges
+        );
+        assert_eq!(
+            f.sectors.len(),
+            2,
+            "outer front and closed pocket must both survive"
+        );
+        assert_eq!(f.assigned_divisions.len(), 12);
+        for y in 2..5 {
+            for x in 2..4 {
+                world.set_province_controller(y * 7 + x + 1, Some("A"));
+            }
+        }
+        tick(&mut w, &mut world, 3);
+        let f = &w.fronts.fronts[&id];
+        assert_eq!(f.sectors.len(), 1);
+        assert_eq!(
+            f.edges.iter().copied().collect::<BTreeSet<_>>(),
+            Boundary::build(&world, "A", "B").edges
+        );
+        assert_eq!(w.fronts.fronts.len(), 1);
+        assert_eq!(w.command.members(f.army).count(), 12);
+    }
+    #[test]
+    fn friendly_pockets_never_get_assignments_across_an_enemy_cut() {
+        let (mut world, mut w, id) = grid();
+        tick(&mut w, &mut world, 1);
+        w.divisions.get_mut(&1).unwrap().province = 16;
+        for y in 1..=4 {
+            world.set_province_controller(y * 7 + 1, Some("B"));
+        }
+        for y in [1, 4] {
+            world.set_province_controller(y * 7 + 2, Some("B"));
+        }
+        tick(&mut w, &mut world, 2);
+        let f = &w.fronts.fronts[&id];
+        assert!(f.sectors.len() >= 2);
+        assert!(f.assignments.contains_key(&1));
+        for (&unit, &target) in &f.assignments {
+            assert!(
+                w.movement_distances("A", w.divisions[&unit].province, &world)
+                    .contains_key(&target),
+                "unreachable assignment {unit}->{target}"
+            );
+        }
+    }
+    #[test]
+    fn restoring_before_the_next_front_tick_keeps_new_pocket_sectors() {
+        let (mut world, mut w, id) = grid();
+        tick(&mut w, &mut world, 1);
+        for y in [1, 5] {
+            for x in 2..=4 {
+                world.set_province_controller(y * 7 + x + 1, Some("A"));
+            }
+        }
+        for y in 1..=5 {
+            world.set_province_controller(y * 7 + 5, Some("A"));
+        }
+        // A save can occur after a capture but before the hourly front review.
+        let saved = serde_json::to_string(&w.fronts).unwrap();
+        let mut restored: FrontState = serde_json::from_str(&saved).unwrap();
+        restored.rebuild_after_restore(&world);
+        assert_eq!(restored.fronts[&id].sectors.len(), 2);
+        assert_eq!(
+            restored.fronts[&id]
+                .edges
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            Boundary::build(&world, "A", "B").edges
+        );
+        assert_eq!(
+            restored.fronts[&id].control_revision,
+            world.control_revision
+        );
+        let after = serde_json::to_string(&restored).unwrap();
+        restored.rebuild_after_restore(&world);
+        assert_eq!(serde_json::to_string(&restored).unwrap(), after);
+        restored.tick(&mut w, &world);
+        assert_eq!(restored.fronts[&id].assignments.len(), 12);
+    }
+    #[test]
+    fn dormant_front_can_reacquire_contact_after_save_without_a_ghost_line() {
+        let (mut world, mut w, id) = grid();
+        tick(&mut w, &mut world, 1);
+        for p in 1..=49 {
+            world.set_province_controller(p, Some("A"));
+        }
+        tick(&mut w, &mut world, 2);
+        assert!(w.fronts.fronts[&id].edges.is_empty());
+        assert!(w.fronts.fronts[&id].assignments.is_empty());
+        assert!(!w.fronts.fronts[&id].anchor_edges.is_empty());
+        world.set_province_controller(24, Some("B"));
+        let saved = serde_json::to_string(&w.fronts).unwrap();
+        let mut restored: FrontState = serde_json::from_str(&saved).unwrap();
+        restored.rebuild_after_restore(&world);
+        assert_eq!(restored.fronts[&id].sectors.len(), 1);
+        assert_eq!(
+            restored.fronts[&id]
+                .edges
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            Boundary::build(&world, "A", "B").edges
+        );
+        assert_eq!(restored.fronts[&id].edges.len(), 4);
+        restored.tick(&mut w, &world);
+        assert_eq!(restored.fronts[&id].assignments.len(), 12);
+    }
+    #[test]
+    fn redrawing_reuses_id_and_partial_front_does_not_expand_to_whole_border() {
+        let (world, mut w, id) = grid();
+        let army = w.fronts.fronts[&id].army;
+        let path = vec![
+            FrontEdge {
+                friendly: 16,
+                enemy: 17,
+            },
+            FrontEdge {
+                friendly: 23,
+                enemy: 24,
+            },
+            FrontEdge {
+                friendly: 30,
+                enemy: 31,
+            },
+        ];
+        let mut fronts = std::mem::take(&mut w.fronts);
+        for _ in 0..30 {
+            fronts.redraw(&w, &world, "A", id, &path).unwrap();
+        }
+        assert_eq!(fronts.fronts.len(), 1);
+        assert_eq!(fronts.fronts[&id].army, army);
+        fronts.tick(&mut w, &world);
+        assert_eq!(fronts.fronts[&id].edges, path);
+        let before = fronts.fronts[&id].edges.clone();
+        assert!(
+            fronts
+                .redraw(
+                    &w,
+                    &world,
+                    "A",
+                    id,
+                    &[FrontEdge {
+                        friendly: 1,
+                        enemy: 49
+                    }]
+                )
+                .is_err()
+        );
+        assert_eq!(fronts.fronts[&id].edges, before);
     }
 }

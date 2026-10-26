@@ -90,14 +90,36 @@ impl Warfare {
         }
     }
     pub fn clean_references(&mut self) {
+        let abandoned: Vec<_> = self
+            .fronts
+            .fronts
+            .values()
+            .filter(|f| {
+                f.auto_include
+                    && f.assigned_divisions.is_empty()
+                    && self.fronts.fronts.values().any(|other| {
+                        other.id != f.id
+                            && other.army == f.army
+                            && !other.assigned_divisions.is_empty()
+                    })
+            })
+            .map(|f| f.id)
+            .collect();
+        if !abandoned.is_empty() {
+            for id in abandoned {
+                self.fronts.fronts.remove(&id);
+            }
+            self.fronts.revision += 1;
+        }
+        for f in self.fronts.fronts.values_mut() {
+            f.assignments
+                .retain(|id, _| f.assigned_divisions.contains(id));
+            f.reserves.retain(|id| f.assigned_divisions.contains(id));
+        }
         self.fronts
             .fronts
             .retain(|_, f| self.command.armies.contains_key(&f.army));
-        self.plans.plans.retain(|_, p| {
-            self.command.armies.contains_key(&p.army)
-                && p.source_front
-                    .is_none_or(|f| self.fronts.fronts.contains_key(&f))
-        });
+        self.plans.normalize(&self.command, &self.fronts);
         self.abilities
             .headquarters
             .retain(|_, h| self.command.armies.contains_key(&h.army));
@@ -497,6 +519,286 @@ impl Warfare {
             ));
         }
         Ok(id)
+    }
+    pub fn draw_front(
+        &mut self,
+        world: &World,
+        country: &str,
+        army: u64,
+        existing: Option<u64>,
+        path: &[crate::frontline::FrontEdge],
+        selection: &BTreeSet<u64>,
+        group: bool,
+    ) -> Result<u64, String> {
+        if group && self.command.own_army(country, army)?.group.is_none() {
+            return Err("Сначала назначьте армию в группу".into());
+        }
+        let mut fronts = std::mem::take(&mut self.fronts);
+        let result = if let Some(id) = existing.filter(|id| {
+            fronts
+                .fronts
+                .get(id)
+                .is_some_and(|f| f.army == army && f.country == country)
+        }) {
+            fronts.redraw(self, world, country, id, path).map(|_| id)
+        } else {
+            fronts.create_drawn(self, world, country, army, path, selection)
+        }
+        .and_then(|id| {
+            if group {
+                fronts.assign_group(self, country, id, selection)?;
+            }
+            Ok(id)
+        });
+        self.fronts = fronts;
+        if let Ok(id) = result {
+            let members = self.fronts.fronts[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            for p in self
+                .plans
+                .plans
+                .values_mut()
+                .filter(|p| p.source_front == Some(id))
+            {
+                p.last_review = 0;
+                p.source_revision = u64::MAX;
+            }
+            self.clean_references();
+        }
+        result
+    }
+    pub fn edit_front_sector(
+        &mut self,
+        world: &World,
+        country: &str,
+        id: u64,
+        sector: usize,
+        path: &[crate::frontline::FrontEdge],
+    ) -> Result<(), String> {
+        let f = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        let mut sectors = if f.sectors.is_empty() {
+            vec![f.edges.clone()]
+        } else {
+            f.sectors.clone()
+        };
+        if sector >= sectors.len() {
+            return Err("Участок фронта уже изменился".into());
+        }
+        let army = f.army;
+        let mut fronts = std::mem::take(&mut self.fronts);
+        let result = fronts.redraw(self, world, country, id, path);
+        if result.is_ok() {
+            sectors[sector] = path.to_vec();
+            let edges: Vec<_> = sectors.into_iter().flatten().collect();
+            let enemy = fronts.fronts[&id].enemy_country.clone();
+            let sectors = fronts.boundary(world, country, &enemy).sectors(&edges);
+            let f = fronts.fronts.get_mut(&id).unwrap();
+            f.edges = edges;
+            f.anchor_edges = f.edges.clone();
+            f.sectors = sectors;
+        }
+        self.fronts = fronts;
+        if result.is_ok() {
+            let members = self.fronts.fronts[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            for p in self.plans.plans.values_mut().filter(|p| p.army == army) {
+                p.source_revision = u64::MAX;
+                p.last_review = 0;
+            }
+        }
+        result
+    }
+    pub fn set_army_execution(
+        &mut self,
+        country: &str,
+        army: u64,
+        active: bool,
+    ) -> Result<(), String> {
+        self.command.own_army(country, army)?;
+        let ids: Vec<_> = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| {
+                p.army == army
+                    && p.country == country
+                    && p.activation != crate::operations::Activation::Completed
+            })
+            .map(|p| p.id)
+            .collect();
+        if ids.is_empty() {
+            return Err("Сначала нарисуйте фронт и линию наступления".into());
+        }
+        for id in ids {
+            self.plans.activate(country, id, active)?;
+        }
+        Ok(())
+    }
+    pub fn draw_plan(
+        &mut self,
+        world: &World,
+        country: &str,
+        army: u64,
+        source: Option<u64>,
+        kind: crate::operations::OrderType,
+        line: Vec<u32>,
+        edit: Option<u64>,
+    ) -> Result<u64, String> {
+        let mut plans = std::mem::take(&mut self.plans);
+        let result = if let Some(id) = edit {
+            plans.edit_line(country, id, line, world).map(|_| id)
+        } else {
+            plans.draw_order(self, world, country, army, source, kind, line)
+        };
+        self.plans = plans;
+        if let Ok(id) = result {
+            let members = self.plans.plans[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            self.clean_references();
+        }
+        result
+    }
+    pub fn assign_front(
+        &mut self,
+        country: &str,
+        id: u64,
+        selection: &BTreeSet<u64>,
+    ) -> Result<(), String> {
+        self.validate_selection(country, &selection.iter().copied().collect::<Vec<_>>())?;
+        let f = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        let army = f.army;
+        let group = f.group;
+        if selection.iter().any(|d| {
+            !self.command.membership.get(d).is_some_and(|a| {
+                *a == army
+                    || group.is_some_and(|g| {
+                        self.command
+                            .armies
+                            .get(a)
+                            .is_some_and(|a| a.group == Some(g))
+                    })
+            })
+        }) {
+            return Err("Выбранные дивизии должны принадлежать этой армии или группе".into());
+        }
+        for f in self
+            .fronts
+            .fronts
+            .values_mut()
+            .filter(|f| f.country == country)
+        {
+            f.assigned_divisions.retain(|d| !selection.contains(d));
+            f.assignments.retain(|d, _| !selection.contains(d));
+            f.reserves.retain(|d| !selection.contains(d));
+            f.command_revision = u64::MAX;
+            f.revision += 1;
+        }
+        let f = self.fronts.fronts.get_mut(&id).unwrap();
+        f.assigned_divisions.extend(selection);
+        f.auto_include = false;
+        self.fronts.revision += 1;
+        self.resume_plans(country, &selection.iter().copied().collect::<Vec<_>>())?;
+        self.clean_references();
+        Ok(())
+    }
+    pub fn refresh_automatic_orders(&mut self, ids: &BTreeSet<u64>) {
+        for id in ids {
+            if self.fronts.manual.contains(id) || self.fronts.detached.contains(id) {
+                continue;
+            }
+            if let Some(d) = self.divisions.get_mut(id).filter(|d| {
+                d.battle.is_none()
+                    && !matches!(
+                        d.order,
+                        DivisionOrder::Retreat { .. } | DivisionOrder::Train { .. }
+                    )
+            }) {
+                d.order = DivisionOrder::Hold;
+                d.destination = None;
+                d.waypoints.clear();
+            }
+        }
+    }
+    pub fn merge_fronts(
+        &mut self,
+        world: &World,
+        country: &str,
+        a: u64,
+        b: u64,
+    ) -> Result<(), String> {
+        self.fronts.merge(world, country, a, b)?;
+        let primary: BTreeSet<_> = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| p.source_front == Some(a))
+            .map(|p| match p.order_type {
+                crate::operations::OrderType::Offensive
+                | crate::operations::OrderType::Spearhead => 0,
+                crate::operations::OrderType::Fallback => 1,
+                crate::operations::OrderType::AreaDefense => 2,
+            })
+            .collect();
+        self.plans.plans.retain(|_, p| {
+            p.source_front != Some(b)
+                || !primary.contains(&match p.order_type {
+                    crate::operations::OrderType::Offensive
+                    | crate::operations::OrderType::Spearhead => 0,
+                    crate::operations::OrderType::Fallback => 1,
+                    crate::operations::OrderType::AreaDefense => 2,
+                })
+        });
+        for p in self
+            .plans
+            .plans
+            .values_mut()
+            .filter(|p| p.source_front == Some(b))
+        {
+            p.source_front = Some(a);
+            p.source_revision = u64::MAX;
+            p.last_review = 0;
+        }
+        self.plans.revision += 1;
+        self.clean_references();
+        Ok(())
+    }
+    pub fn delete_front(&mut self, country: &str, id: u64) -> Result<(), String> {
+        let members = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?
+            .assigned_divisions
+            .clone();
+        self.fronts.delete(country, id)?;
+        self.refresh_automatic_orders(&members);
+        self.clean_references();
+        Ok(())
+    }
+    pub fn delete_plan(&mut self, country: &str, id: u64) -> Result<(), String> {
+        let members = self
+            .plans
+            .plans
+            .get(&id)
+            .filter(|p| p.country == country)
+            .ok_or("Выберите свой план")?
+            .assigned_divisions
+            .clone();
+        self.plans.delete(country, id)?;
+        self.refresh_automatic_orders(&members);
+        self.clean_references();
+        Ok(())
     }
     pub fn resume_plans(&mut self, country: &str, ids: &[u64]) -> Result<(), String> {
         self.validate_selection(country, ids)?;

@@ -11,6 +11,7 @@ mod construction_map;
 mod construction_ui;
 mod division_designer_ui;
 pub use hoi4_mobile::game;
+mod battle_plan_render;
 mod battle_plan_ui;
 mod battle_ui;
 mod frontline;
@@ -2056,10 +2057,48 @@ fn handle_hud_action(
                 .collect();
             army.sync_selection(military);
         }
-        Action::SelectArmy(id) => {
+        Action::SelectArmy(id, add) => {
+            let selected = if add {
+                army.selected.clone()
+            } else {
+                Default::default()
+            };
             hud.open(None, construction, production, research, army);
             army.show_army(id, military);
+            army.selected.extend(selected);
         }
+        Action::AssignArmy(id) => {
+            if let Some(tag) = tag {
+                let ids = army.selected.iter().copied().collect::<Vec<_>>();
+                match military.assign_army(tag, id, &ids) {
+                    Ok(()) => {
+                        army.sync_selection(military);
+                        army.notice = "Дивизии переведены в армию".into();
+                    }
+                    Err(e) => army.notice = e,
+                }
+            }
+        }
+        Action::ToggleArmy(id) => {
+            if let Some(tag) = tag {
+                let active = military
+                    .plans
+                    .plans
+                    .values()
+                    .any(|p| p.army == id && p.activation == operations::Activation::Executing);
+                army.notice = military.set_army_execution(tag, id, !active).map_or_else(
+                    |e| e,
+                    |_| {
+                        if active {
+                            "Выполнение планов армии остановлено".into()
+                        } else {
+                            "Планы армии включены · снимите паузу для исполнения".into()
+                        }
+                    },
+                );
+            }
+        }
+
         Action::CreateArmy => {
             if let Some(tag) = tag {
                 let ids: Vec<_> = army.selected.iter().copied().collect();
@@ -2333,7 +2372,15 @@ fn draw_map_viewer(
                 ..Default::default()
             },
         );
-        battle_plan_ui::draw_map(world, military, army_view, source_rect, rect);
+        battle_plan_ui::draw_map(
+            world,
+            military,
+            army_view,
+            player_country,
+            source_rect,
+            rect,
+            game.paused,
+        );
         army_ui::draw_counters(
             world,
             military,
@@ -3417,6 +3464,54 @@ async fn main() {
                         && !production_view.open
                         && !research_view.open
                         && !research_before_ui;
+                    army_view.order_hover = if inside_map && military_mode {
+                        army_view.order_map.hit(
+                            world,
+                            military,
+                            current_map.source_rect(),
+                            rect,
+                            mouse,
+                            army_view.selected_plan,
+                        )
+                    } else {
+                        None
+                    };
+                    if military_mode
+                        && !army_view.text_input_active()
+                        && is_key_pressed(KeyCode::Delete)
+                    {
+                        if let Some(tag) = selected_country.as_deref() {
+                            army_view.notice =
+                                battle_plan_ui::delete_selected(&mut army_view, military, tag)
+                                    .map_or_else(|e| e, |_| "Приказ удалён".into());
+                        }
+                    }
+                    if military_mode
+                        && inside_map
+                        && army_view.plan_tool.is_none()
+                        && is_mouse_button_pressed(MouseButton::Left)
+                    {
+                        if let Some(tag) = selected_country.as_deref() {
+                            let counters = army_controls::counters(
+                                world,
+                                military,
+                                current_map.source_rect(),
+                                rect,
+                            );
+                            if army_controls::hit(&counters, tag, mouse).is_none() {
+                                if let Some(handle) = army_view.order_map.handle(
+                                    world,
+                                    current_map.source_rect(),
+                                    rect,
+                                    mouse,
+                                    army_view.selected_front,
+                                    army_view.selected_plan,
+                                ) {
+                                    battle_plan_ui::begin_handle(&mut army_view, handle, military);
+                                }
+                            }
+                        }
+                    }
                     let mut drawing_plan = army_view.plan_tool.is_some() && military_mode;
                     if drawing_plan && inside_map && is_mouse_button_pressed(MouseButton::Left) {
                         if let Some(tag) = selected_country.as_deref() {
@@ -3602,6 +3697,26 @@ async fn main() {
                                         control,
                                     );
                                     army_view.sync_selection(military);
+                                    hud.open(
+                                        None,
+                                        &mut construction_view,
+                                        &mut production_view,
+                                        &mut research_view,
+                                        &mut army_view,
+                                    );
+                                } else if (!drag.touch || army_view.selected.is_empty())
+                                    && battle_plan_ui::choose_order(
+                                        &mut army_view,
+                                        military,
+                                        world,
+                                        tag,
+                                        source,
+                                        rect,
+                                        mouse,
+                                        control,
+                                        drag.add,
+                                    )
+                                {
                                     hud.open(
                                         None,
                                         &mut construction_view,

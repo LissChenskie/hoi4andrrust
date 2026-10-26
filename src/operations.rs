@@ -101,6 +101,8 @@ pub struct BattlePlan {
     pub country: String,
     pub army: ArmyId,
     pub source_front: Option<FrontId>,
+    #[serde(default)]
+    pub source_revision: u64,
     pub assigned_divisions: BTreeSet<u64>,
     pub destination_line: Vec<u32>,
     pub area_states: BTreeSet<u32>,
@@ -193,6 +195,7 @@ impl OperationalState {
                 country: country.into(),
                 army,
                 source_front: source,
+                source_revision: 0,
                 assigned_divisions: units,
                 destination_line: line,
                 area_states,
@@ -249,6 +252,17 @@ impl OperationalState {
             } else {
                 replacement.status = "Цель изменена; план готов к запуску".into();
             }
+            self.plans.retain(|other, p| {
+                *other == id
+                    || !(p.country == country
+                        && p.army == army
+                        && p.source_front == source
+                        && (p.order_type == kind
+                            || (matches!(
+                                p.order_type,
+                                OrderType::Offensive | OrderType::Spearhead
+                            ) && matches!(kind, OrderType::Offensive | OrderType::Spearhead))))
+            });
             self.plans.insert(id, replacement);
             Ok(id)
         } else {
@@ -275,7 +289,39 @@ impl OperationalState {
         {
             return Err("Нужна линия из существующих провинций".into());
         }
-        p.destination_line = line;
+        if line.iter().any(|id| {
+            !world
+                .geography
+                .provinces
+                .get(id)
+                .is_some_and(|p| p.definition.kind == crate::map_graph::ProvinceKind::Land)
+        }) {
+            return Err("Линия должна лежать на суше".into());
+        }
+        if matches!(p.order_type, OrderType::Fallback | OrderType::AreaDefense)
+            && line
+                .iter()
+                .any(|id| world.controller_of_province(*id) != Some(country))
+        {
+            return Err("Линия обороны должна находиться на своей территории".into());
+        }
+        if p.order_type != OrderType::AreaDefense
+            && !line
+                .windows(2)
+                .all(|p| p[0] == p[1] || world.geography.land_neighbors(p[0]).any(|e| e.to == p[1]))
+        {
+            return Err("Конечная линия должна быть непрерывной".into());
+        }
+        p.destination_line = if p.order_type == OrderType::Spearhead {
+            vec![*line.last().unwrap()]
+        } else {
+            line
+        };
+        p.assignments.clear();
+        if p.activation == Activation::Completed {
+            p.activation = Activation::Preparing;
+            p.status = "Цель изменена; план готов к запуску".into();
+        }
         p.distance.clear();
         p.cached_route.clear();
         p.control_revision = u64::MAX;
@@ -331,6 +377,32 @@ impl OperationalState {
         self.revision += 1;
         Ok(())
     }
+    pub fn normalize(
+        &mut self,
+        w: &crate::command::CommandState,
+        fronts: &crate::frontline::FrontState,
+    ) {
+        let before = self.plans.len();
+        self.plans.retain(|_, p| {
+            w.armies.contains_key(&p.army)
+                && p.source_front
+                    .is_none_or(|id| fronts.fronts.contains_key(&id))
+        });
+        let mut latest = BTreeMap::new();
+        for (&id, p) in &self.plans {
+            let family = match p.order_type {
+                OrderType::Offensive | OrderType::Spearhead => 0,
+                OrderType::Fallback => 1,
+                OrderType::AreaDefense => 2,
+            };
+            latest.insert((p.country.clone(), p.army, p.source_front, family), id);
+        }
+        let keep: BTreeSet<_> = latest.into_values().collect();
+        self.plans.retain(|id, _| keep.contains(id));
+        if before != self.plans.len() {
+            self.revision += 1;
+        }
+    }
     pub fn active_divisions(&self) -> BTreeSet<u64> {
         self.plans
             .values()
@@ -339,12 +411,7 @@ impl OperationalState {
             .collect()
     }
     pub fn tick(&mut self, w: &mut Warfare, world: &World, elapsed: u64) {
-        self.plans.retain(|_, p| {
-            w.command
-                .armies
-                .get(&p.army)
-                .is_some_and(|a| a.country == p.country)
-        });
+        self.normalize(&w.command, &w.fronts);
         let ids: Vec<_> = self.plans.keys().copied().collect();
         for id in ids {
             let Some(mut p) = self.plans.remove(&id) else {
@@ -389,13 +456,20 @@ impl OperationalState {
                 self.plans.insert(id, p);
                 continue;
             }
-            let topology = p.control_revision != world.control_revision || p.distance.is_empty();
+            let source_revision = p
+                .source_front
+                .and_then(|id| w.fronts.fronts.get(&id))
+                .map_or(0, |f| f.revision);
+            let topology = p.control_revision != world.control_revision
+                || p.distance.is_empty()
+                || source_revision != p.source_revision;
             if topology {
                 p.distance = goal_distances(w, world, &p.country, &p.destination_line);
                 if p.order_type == OrderType::Spearhead {
                     p.cached_route = spearhead_corridor(w, world, &p);
                 }
                 p.control_revision = world.control_revision;
+                p.source_revision = source_revision;
             }
             // Event invalidation plus a bounded operational interval. Rendering
             // never invokes this solver.
@@ -488,6 +562,33 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
         p.status = format!("Нет войны с {neutral}. Объявите войну в дипломатии");
         return;
     }
+    let Some(front) = p.source_front.and_then(|id| w.fronts.fronts.get(&id)) else {
+        p.status = "У приказа больше нет исходного фронта".into();
+        return;
+    };
+    if front.edges.is_empty() {
+        p.status = "На исходном фронте больше нет границы".into();
+        return;
+    }
+    let enemy_regions = crate::frontline::controlled_regions(world, &front.enemy_country);
+    let goal_regions: BTreeSet<_> = p
+        .destination_line
+        .iter()
+        .filter_map(|id| enemy_regions.get(id).copied())
+        .collect();
+    let enclosed: BTreeSet<_> = front
+        .edges
+        .iter()
+        .filter(|e| !goal_regions.contains(enemy_regions.get(&e.enemy).unwrap_or(&e.enemy)))
+        .filter(|e| {
+            let region = enemy_regions.get(&e.enemy);
+            world.geography.land_neighbors(e.enemy).all(|n| {
+                enemy_regions.get(&n.to) == region
+                    || world.controller_of_province(n.to) == Some(p.country.as_str())
+            })
+        })
+        .map(|e| e.enemy)
+        .collect();
     let (_, _, risk) = p.mode.policy();
     let mut attacks = BTreeMap::<u32, Vec<u64>>::new();
     let mut origins = BTreeMap::<u32, BTreeSet<u32>>::new();
@@ -526,7 +627,10 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                     .controller_of_province(e.to)
                     .is_some_and(|c| w.at_war(&p.country, c))
             })
-            .filter(|e| p.distance.get(&e.to).is_some_and(|n| *n < here))
+            .filter(|e| {
+                p.distance.get(&e.to).is_some_and(|n| *n < here)
+                    || (p.order_type == OrderType::Offensive && enclosed.contains(&e.to))
+            })
             .filter(|e| p.order_type != OrderType::Spearhead || p.cached_route.contains(&e.to))
             .collect();
         let target = targets
@@ -551,7 +655,10 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                         _ => 0.0,
                     };
                     let forts = w.conditions.get(&target).map_or(0, |c| c.fort_level) as f64;
-                    p.distance[&target] as f64 + base.movement_cost + forts - river
+                    p.distance.get(&target).copied().unwrap_or(0) as f64
+                        + base.movement_cost
+                        + forts
+                        - river
                         + planned_targets.get(&target).copied().unwrap_or(0) as f64
                 };
                 score(a.to).total_cmp(&score(b.to)).then(a.to.cmp(&b.to))
@@ -1030,5 +1137,98 @@ mod interaction_regressions {
             );
         }
         assert_eq!(w.plans.plans[&plan].activation, Activation::Completed);
+    }
+}
+
+#[cfg(test)]
+mod order_lifecycle {
+    use super::*;
+    #[test]
+    fn edit_and_delete_clear_automatic_routes_but_preserve_manual_control() {
+        let (world, mut w, front, plan) = super::tests::configured(OrderType::Offensive);
+        w.issue_move("A", &[1], 2, &world, false, false).unwrap();
+        w.automatic_order = true;
+        w.issue_move("A", &[2], 3, &world, false, false).unwrap();
+        w.automatic_order = false;
+        let manual = w.divisions[&1].destination;
+        let army = w.plans.plans[&plan].army;
+        w.draw_plan(
+            &world,
+            "A",
+            army,
+            Some(front),
+            OrderType::Offensive,
+            vec![18, 19],
+            None,
+        )
+        .unwrap();
+        assert_eq!(w.divisions[&1].destination, manual);
+        assert!(w.fronts.manual.contains(&1));
+        assert!(w.divisions[&2].destination.is_none());
+        assert_eq!(w.plans.plans.len(), 1);
+        let edges = w.fronts.fronts[&front].edges.clone();
+        assert_eq!(
+            w.draw_front(
+                &world,
+                "A",
+                army,
+                Some(front),
+                &edges,
+                &BTreeSet::new(),
+                false
+            )
+            .unwrap(),
+            front
+        );
+        assert_eq!(w.fronts.fronts.len(), 1);
+        assert_eq!(w.plans.plans[&plan].source_front, Some(front));
+        w.delete_front("A", front).unwrap();
+        assert!(w.fronts.fronts.is_empty());
+        assert!(w.plans.plans.is_empty());
+        assert_eq!(w.divisions[&1].destination, manual);
+    }
+    #[test]
+    fn legacy_duplicates_are_removed_and_editing_a_completed_goal_makes_it_preparable() {
+        let (world, mut w, front, plan) = super::tests::configured(OrderType::Offensive);
+        let army = w.plans.plans[&plan].army;
+        let mut ops = std::mem::take(&mut w.plans);
+        let newer = ops
+            .create(
+                &w,
+                &world,
+                "A",
+                army,
+                Some(front),
+                OrderType::Spearhead,
+                vec![24],
+            )
+            .unwrap();
+        w.plans = ops;
+        w.clean_references();
+        assert_eq!(w.plans.plans.len(), 1);
+        assert!(w.plans.plans.contains_key(&newer));
+        w.plans.plans.get_mut(&newer).unwrap().activation = Activation::Completed;
+        w.plans.edit_line("A", newer, vec![23], &world).unwrap();
+        assert_eq!(w.plans.plans[&newer].activation, Activation::Preparing);
+        let mut view = crate::army_ui::ArmyView::default();
+        view.selected_army = Some(army);
+        view.selected_front = Some(front);
+        view.selected_plan = Some(newer);
+        view.selected_order = Some(crate::battle_plan_render::OrderRef::Front(front));
+        crate::battle_plan_ui::delete_selected(&mut view, &mut w, "A").unwrap();
+        assert!(w.plans.plans.is_empty());
+        view.order_map.sync(&world, &w, "A");
+        assert!(view.order_map.shapes.is_empty());
+    }
+    #[test]
+    fn army_play_controls_all_its_disjoint_orders_and_does_not_touch_another_army() {
+        let (world, mut w, front, plan) = super::tests::configured(OrderType::Offensive);
+        let army = w.fronts.fronts[&front].army;
+        w.set_army_execution("A", army, true).unwrap();
+        assert_eq!(w.plans.plans[&plan].activation, Activation::Executing);
+        w.set_army_execution("A", army, false).unwrap();
+        assert_eq!(w.plans.plans[&plan].activation, Activation::Paused);
+        assert!(w.set_army_execution("B", army, true).is_err());
+        let _ = world;
     }
 }

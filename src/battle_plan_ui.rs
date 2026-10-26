@@ -14,12 +14,13 @@ pub enum Tool {
     Fallback,
     AreaDefense,
     EditPlan,
+    DeleteOrder,
 }
 pub fn toolbar_bounds() -> Rect {
     if screen_width() < 760.0 {
-        Rect::new(5.0, screen_height() - 154.0, screen_width() - 10.0, 106.0)
+        Rect::new(5.0, screen_height() - 178.0, screen_width() - 10.0, 106.0)
     } else {
-        Rect::new(5.0, screen_height() - 86.0, screen_width() - 10.0, 34.0)
+        Rect::new(5.0, screen_height() - 110.0, screen_width() - 10.0, 34.0)
     }
 }
 pub fn blocked(view: &ArmyView, p: Vec2) -> bool {
@@ -42,10 +43,13 @@ pub fn begin_tool(view: &mut ArmyView, w: &mut Warfare, tag: &str, tool: Tool) {
     view.cancel_tool();
     view.plan_advanced = false;
     view.plan_tool = Some(tool);
+    view.draw_new_front = tool == Tool::Front
+        && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift));
     view.open = false;
     view.notice = match tool {
         Tool::Front | Tool::EditStart | Tool::EditEnd => "Протяните по границе. ПКМ / Esc — отмена",
         Tool::AreaDefense => "Проведите по своим областям. ПКМ / Esc — отмена",
+        Tool::DeleteOrder => "Нажмите приказ на карте для удаления. ПКМ / Esc — отмена",
         _ => "Нарисуйте конечную линию. Повторный рисунок меняет цель. ПКМ / Esc — отмена",
     }
     .into();
@@ -79,8 +83,16 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         .filter(|p| p.country == tag && p.army == army)
         .map(|p| p.id)
         .collect();
-    if !view.selected_plan.is_some_and(|id| plans.contains(&id)) {
-        view.selected_plan = plans.first().copied();
+    if !view.selected_plan.is_some_and(|id| {
+        plans.contains(&id)
+            && w.plans.plans[&id]
+                .source_front
+                .is_none_or(|f| Some(f) == view.selected_front)
+    }) {
+        view.selected_plan = plans
+            .iter()
+            .copied()
+            .find(|id| w.plans.plans[id].source_front == view.selected_front);
     }
     let actions = [
         "Фронт",
@@ -94,7 +106,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         "К плану",
         "Исключить",
         "Следующий план",
-        "Удалить план",
+        "Удалить",
         "Начало фронта",
         "Конец фронта",
         "Разделить фронт",
@@ -104,6 +116,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         "Удалить фронт",
         "Изменить цель",
         "Группа армий",
+        "Новый участок",
     ];
     let compact = screen_width() < 760.0;
     let primary = [0usize, 1, 2, 3, 5, 6, 7, 11];
@@ -155,6 +168,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             12 => Some(Tool::EditStart),
             13 => Some(Tool::EditEnd),
             19 => Some(Tool::EditPlan),
+            11 => Some(Tool::DeleteOrder),
             _ => None,
         };
         let mode = view
@@ -177,6 +191,12 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             continue;
         }
         let result = match i {
+            21 => {
+                view.cancel_tool();
+                begin_tool(view, w, tag, Tool::Front);
+                view.draw_new_front = true;
+                Ok(())
+            }
             20 => {
                 if w.command.armies[&army].group.is_some() {
                     view.group_orders = !view.group_orders;
@@ -218,7 +238,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             11 => view
                 .selected_plan
                 .ok_or_else(|| "Выберите план".into())
-                .and_then(|id| w.plans.delete(tag, id)),
+                .and_then(|id| w.delete_plan(tag, id)),
             14 => view
                 .selected_front
                 .ok_or_else(|| "Выберите фронт".into())
@@ -236,7 +256,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
                         .find(|id| Some(*id) != view.selected_front),
                 )
                 .ok_or_else(|| "Нужны два фронта".into())
-                .and_then(|(a, b)| w.fronts.merge(world, tag, a, b)),
+                .and_then(|(a, b)| w.merge_fronts(world, tag, a, b)),
             16 | 17 => view
                 .selected_front
                 .ok_or_else(|| "Выберите фронт".into())
@@ -252,11 +272,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
             18 => view
                 .selected_front
                 .ok_or_else(|| "Выберите фронт".into())
-                .and_then(|id| {
-                    w.fronts.delete(tag, id)?;
-                    w.clean_references();
-                    Ok(())
-                }),
+                .and_then(|id| w.delete_front(tag, id)),
             _ => Ok(()),
         };
         view.notice = result.map_or_else(|e| e, |_| "Приказ обновлён".into());
@@ -373,10 +389,27 @@ pub fn pointer(
         view.cancel_tool();
         return;
     }
+    if view.order_handle.is_some() {
+        handle_pointer(view, w, world, tag, province, point, max_distance, inside);
+        return;
+    }
     let Some(tool) = view.plan_tool else {
         view.front_hover = None;
         return;
     };
+    if tool == Tool::DeleteOrder {
+        if inside && is_mouse_button_pressed(MouseButton::Left) {
+            if let Some(order) = view.order_hover {
+                view.selected_order = Some(order);
+                view.notice =
+                    delete_selected(view, w, tag).map_or_else(|e| e, |_| "Приказ удалён".into());
+            } else {
+                view.notice = "Нажмите линию фронта или наступления".into();
+            }
+            view.cancel_tool();
+        }
+        return;
+    }
     if matches!(
         tool,
         Tool::Offensive | Tool::Spearhead | Tool::Fallback | Tool::AreaDefense | Tool::EditPlan
@@ -414,38 +447,36 @@ pub fn pointer(
     if is_mouse_button_released(MouseButton::Left) {
         if let Some((_start, end)) = view.front_start.take().zip(view.front_hover) {
             if let Some(army) = view.selected_army {
-                let mut fronts = std::mem::take(&mut w.fronts);
-                let empty_selection = std::collections::BTreeSet::new();
                 let result = match tool {
-                    Tool::Front => fronts
-                        .create_drawn(
-                            w,
+                    Tool::Front => w
+                        .draw_front(
                             world,
                             tag,
                             army,
-                            &view.front_preview,
-                            if view.group_orders {
-                                &empty_selection
+                            if view.draw_new_front {
+                                None
                             } else {
-                                &view.selected
+                                view.selected_front
                             },
+                            &view.front_preview,
+                            &view.selected,
+                            view.group_orders,
                         )
-                        .and_then(|id| {
-                            if view.group_orders {
-                                fronts.assign_group(w, tag, id, &view.selected)?;
-                            }
+                        .map(|id| {
                             view.selected_front = Some(id);
-                            Ok(())
                         }),
                     Tool::EditStart | Tool::EditEnd => view
                         .selected_front
                         .ok_or_else(|| "Выберите фронт".into())
                         .and_then(|id| {
-                            fronts.edit_end(w, world, tag, id, end, tool == Tool::EditStart)
+                            let mut fronts = std::mem::take(&mut w.fronts);
+                            let r =
+                                fronts.edit_end(w, world, tag, id, end, tool == Tool::EditStart);
+                            w.fronts = fronts;
+                            r
                         }),
                     _ => Err("Выберите инструмент фронта".into()),
                 };
-                w.fronts = fronts;
                 view.notice = result.map_or_else(|e| e, |_| "Приказ сохранён".into());
                 view.plan_tool = None;
             }
@@ -510,23 +541,27 @@ fn inland_pointer(
         } else {
             view.line_preview.clone()
         };
-        let mut plans = std::mem::take(&mut w.plans);
-        let result = if tool == Tool::EditPlan {
-            view.selected_plan
-                .ok_or_else(|| "Выберите план".into())
-                .and_then(|id| plans.edit_line(tag, id, line, world))
-        } else {
-            view.selected_army
-                .ok_or_else(|| "Выберите армию".into())
-                .and_then(|army| {
-                    plans
-                        .draw_order(w, world, tag, army, view.selected_front, kind, line)
-                        .map(|id| {
-                            view.selected_plan = Some(id);
-                        })
+        let result = view
+            .selected_army
+            .ok_or_else(|| "Выберите армию".into())
+            .and_then(|army| {
+                w.draw_plan(
+                    world,
+                    tag,
+                    army,
+                    view.selected_front,
+                    kind,
+                    line,
+                    if tool == Tool::EditPlan {
+                        view.selected_plan
+                    } else {
+                        None
+                    },
+                )
+                .map(|id| {
+                    view.selected_plan = Some(id);
                 })
-        };
-        w.plans = plans;
+            });
         view.notice = result.map_or_else(
             |e| e,
             |_| "План сохранён; нажмите ▶ Начать и снимите паузу".into(),
@@ -536,15 +571,26 @@ fn inland_pointer(
         view.line_preview_end = None;
     }
 }
-pub fn draw_map(world: &World, w: &Warfare, view: &ArmyView, source: Rect, area: Rect) {
-    let _clip = ui::clip(area);
+pub fn draw_map(
+    world: &World,
+    w: &Warfare,
+    view: &mut ArmyView,
+    tag: Option<&str>,
+    source: Rect,
+    area: Rect,
+    paused: bool,
+) {
+    if let Some(tag) = tag {
+        crate::battle_plan_render::draw(world, w, view, tag, source, area, get_time(), paused);
+    }
     let project = |x: u32, y: u32| {
         vec2(
             area.x + (x as f32 - source.x) / source.w * area.w,
             area.y + (y as f32 - source.y) / source.h * area.h,
         )
     };
-    let draw_edge = |edge: FrontEdge, color: Color, thickness: f32| {
+    let _clip = ui::clip(area);
+    for edge in view.front_preview.iter().copied().chain(view.front_hover) {
         for s in world
             .geography
             .border_segments
@@ -554,104 +600,221 @@ pub fn draw_map(world: &World, w: &Warfare, view: &ArmyView, source: Rect, area:
         {
             let a = project(s[0], s[1]);
             let b = project(s[2], s[3]);
-            if a.x.max(b.x) < area.x
-                || a.x.min(b.x) > area.right()
-                || a.y.max(b.y) < area.y
-                || a.y.min(b.y) > area.bottom()
-            {
-                continue;
-            }
-            draw_line(a.x, a.y, b.x, b.y, thickness + 2.0, BLACK);
-            draw_line(a.x, a.y, b.x, b.y, thickness, color);
-        }
-    };
-    for f in w.fronts.fronts.values() {
-        if let Some(army) = w.command.armies.get(&f.army) {
-            let color = Color::from_rgba(army.color[0], army.color[1], army.color[2], 255);
-            for &edge in &f.edges {
-                draw_edge(
-                    edge,
-                    color,
-                    if view.selected_front == Some(f.id) {
-                        4.0
-                    } else {
-                        2.0
-                    },
-                );
-            }
+            draw_line(a.x, a.y, b.x, b.y, 6.0, BLACK);
+            draw_line(a.x, a.y, b.x, b.y, 3.0, WHITE);
         }
     }
-    for &edge in &view.front_preview {
-        draw_edge(edge, ui::GOLD, 4.0);
+    for p in view.line_preview.windows(2) {
+        if let Some((a, b)) = crate::army_controls::project(world, p[0], source, area)
+            .zip(crate::army_controls::project(world, p[1], source, area))
+        {
+            draw_line(a.x, a.y, b.x, b.y, 8.0, BLACK);
+            draw_line(a.x, a.y, b.x, b.y, 4.0, WHITE);
+        }
     }
-    if let Some(edge) = view.front_hover {
-        draw_edge(edge, WHITE, 4.0);
-    }
-    let point = |id: u32| crate::army_controls::project(world, id, source, area);
-    let arrow = |a: Vec2, b: Vec2, color: Color| {
-        draw_line(a.x, a.y, b.x, b.y, 5.0, BLACK);
-        draw_line(a.x, a.y, b.x, b.y, 2.5, color);
-        let direction = (b - a).normalize_or_zero();
-        let side = vec2(-direction.y, direction.x);
-        let left = b - direction * 12.0 + side * 6.0;
-        let right = b - direction * 12.0 - side * 6.0;
-        draw_triangle(b, left, right, color);
+}
+
+pub fn choose_order(
+    view: &mut ArmyView,
+    w: &mut Warfare,
+    world: &World,
+    tag: &str,
+    source: Rect,
+    area: Rect,
+    point: Vec2,
+    assign: bool,
+    add: bool,
+) -> bool {
+    let Some(order) = view
+        .order_map
+        .hit(world, w, source, area, point, view.selected_plan)
+    else {
+        return false;
     };
-    for p in w.plans.plans.values() {
-        let color = if matches!(
-            p.order_type,
-            crate::operations::OrderType::Fallback | crate::operations::OrderType::AreaDefense
-        ) {
-            ui::GREEN
-        } else {
-            ui::GOLD
+    if assign && !view.selected.is_empty() {
+        let front = match order {
+            crate::battle_plan_render::OrderRef::Front(id) => Some(id),
+            crate::battle_plan_render::OrderRef::Plan(id) => {
+                w.plans.plans.get(&id).and_then(|p| p.source_front)
+            }
         };
-        for pair in p.destination_line.windows(2) {
-            if let Some((a, b)) = point(pair[0]).zip(point(pair[1])) {
-                draw_line(a.x, a.y, b.x, b.y, 5.0, BLACK);
-                draw_line(a.x, a.y, b.x, b.y, 2.5, color);
+        view.notice = front
+            .ok_or_else(|| "Для назначения выберите фронт или связанное наступление".into())
+            .and_then(|id| w.assign_front(tag, id, &view.selected))
+            .map_or_else(|e| e, |_| "Дивизии назначены на выбранный приказ".into());
+    } else {
+        let (army, front, plan, members) = match order {
+            crate::battle_plan_render::OrderRef::Front(id) => {
+                let f = &w.fronts.fronts[&id];
+                (
+                    f.army,
+                    Some(id),
+                    w.plans
+                        .plans
+                        .values()
+                        .find(|p| p.source_front == Some(id))
+                        .map(|p| p.id),
+                    f.assigned_divisions.clone(),
+                )
             }
+            crate::battle_plan_render::OrderRef::Plan(id) => {
+                let p = &w.plans.plans[&id];
+                (
+                    p.army,
+                    p.source_front,
+                    Some(id),
+                    p.assigned_divisions.clone(),
+                )
+            }
+        };
+        view.cancel_tool();
+        view.selected_army = Some(army);
+        view.selected_front = front;
+        view.selected_plan = plan;
+        if !add {
+            view.selected.clear();
         }
-        if matches!(
-            p.order_type,
-            crate::operations::OrderType::Offensive | crate::operations::OrderType::Spearhead
-        ) {
-            if let Some(front) = p.source_front.and_then(|id| w.fronts.fronts.get(&id)) {
-                if let Some((a, b)) = front
-                    .edges
-                    .get(front.edges.len() / 2)
-                    .and_then(|e| point(e.friendly))
-                    .zip(
-                        p.destination_line
-                            .get(p.destination_line.len() / 2)
-                            .and_then(|id| point(*id)),
-                    )
+        view.selected.extend(members);
+        view.open = false;
+        view.notice="Приказ выбран · перетащите белые концы · Del: удалить · Ctrl+клик: назначить выделенные".into();
+    }
+    view.selected_order = Some(order);
+    true
+}
+pub fn delete_selected(view: &mut ArmyView, w: &mut Warfare, tag: &str) -> Result<(), String> {
+    use crate::battle_plan_render::OrderRef;
+    let order = view
+        .selected_order
+        .or(view.selected_plan.map(OrderRef::Plan))
+        .or(view.selected_front.map(OrderRef::Front))
+        .ok_or("Нажмите на приказ на карте")?;
+    match order {
+        OrderRef::Front(id) => w.delete_front(tag, id)?,
+        OrderRef::Plan(id) => w.delete_plan(tag, id)?,
+    }
+    view.selected_order = None;
+    view.selected_plan = None;
+    if matches!(order, OrderRef::Front(_)) {
+        view.selected_front = None;
+    }
+    view.order_map = Default::default();
+    Ok(())
+}
+pub fn begin_handle(view: &mut ArmyView, h: crate::battle_plan_render::Handle, w: &Warfare) {
+    use crate::battle_plan_render::OrderRef;
+    view.cancel_tool();
+    view.order_handle = Some(h);
+    view.selected_order = Some(h.order);
+    match h.order {
+        OrderRef::Front(id) => {
+            view.selected_front = Some(id);
+            view.plan_tool = Some(if h.start {
+                Tool::EditStart
+            } else {
+                Tool::EditEnd
+            });
+        }
+        OrderRef::Plan(id) => {
+            view.selected_plan = Some(id);
+            view.plan_tool = Some(Tool::EditPlan);
+            view.line_preview = w.plans.plans[&id].destination_line.clone();
+        }
+    }
+}
+fn handle_pointer(
+    view: &mut ArmyView,
+    w: &mut Warfare,
+    world: &World,
+    tag: &str,
+    province: Option<u32>,
+    point: MapPosition,
+    max_distance: f64,
+    inside: bool,
+) {
+    use crate::battle_plan_render::OrderRef;
+    let Some(h) = view.order_handle else {
+        return;
+    };
+    if inside
+        && is_mouse_button_down(MouseButton::Left)
+        && !is_mouse_button_pressed(MouseButton::Left)
+    {
+        match h.order {
+            OrderRef::Front(id) => {
+                if let Some((edge, fixed)) = province
+                    .and_then(|p| nearest_edge(world, tag, p, point, max_distance))
+                    .zip(h.fixed)
                 {
-                    arrow(a, b, color);
+                    let enemy = w.fronts.fronts[&id].enemy_country.clone();
+                    if let Ok(path) = w.fronts.boundary(world, tag, &enemy).path(
+                        if h.start { edge } else { fixed },
+                        if h.start { fixed } else { edge },
+                    ) {
+                        view.front_preview = path;
+                    }
                 }
             }
-        } else if p.order_type == crate::operations::OrderType::AreaDefense {
-            for state in p.area_states.iter().filter_map(|id| world.states.get(id)) {
-                for &province in &state.province_ids {
-                    for edge in world.geography.land_neighbors(province) {
-                        if !state.province_ids.contains(&edge.to) {
-                            draw_edge(
-                                FrontEdge {
-                                    friendly: province,
-                                    enemy: edge.to,
-                                },
-                                color,
-                                2.0,
-                            );
+            OrderRef::Plan(id) => {
+                let p = &w.plans.plans[&id];
+                if let Some(moving) = province {
+                    if p.order_type == crate::operations::OrderType::Spearhead {
+                        view.line_preview = vec![moving];
+                    } else {
+                        let fixed = if h.start {
+                            *p.destination_line.last().unwrap()
+                        } else {
+                            p.destination_line[0]
+                        };
+                        let foreign = if matches!(
+                            p.order_type,
+                            crate::operations::OrderType::Fallback
+                                | crate::operations::OrderType::AreaDefense
+                        ) {
+                            None
+                        } else {
+                            p.source_front
+                                .and_then(|id| w.fronts.fronts.get(&id))
+                                .map(|f| f.enemy_country.as_str())
+                                .or_else(|| world.controller_of_province(moving))
+                        };
+                        if let Ok(path) = crate::operations::province_line(
+                            world,
+                            if h.start { moving } else { fixed },
+                            if h.start { fixed } else { moving },
+                            tag,
+                            foreign,
+                        ) {
+                            view.line_preview = path;
                         }
                     }
                 }
             }
         }
     }
-    for pair in view.line_preview.windows(2) {
-        if let Some((a, b)) = point(pair[0]).zip(point(pair[1])) {
-            arrow(a, b, WHITE);
-        }
+    if is_mouse_button_released(MouseButton::Left) {
+        let result = match h.order {
+            OrderRef::Front(id) => {
+                if view.front_preview.is_empty() {
+                    Ok(())
+                } else {
+                    w.edit_front_sector(world, tag, id, h.sector, &view.front_preview)
+                }
+            }
+            OrderRef::Plan(id) => {
+                let p = &w.plans.plans[&id];
+                w.draw_plan(
+                    world,
+                    tag,
+                    p.army,
+                    p.source_front,
+                    p.order_type,
+                    view.line_preview.clone(),
+                    Some(id),
+                )
+                .map(|_| ())
+            }
+        };
+        view.notice = result.map_or_else(|e| e, |_| "Геометрия приказа изменена".into());
+        view.cancel_tool();
     }
 }

@@ -35,6 +35,11 @@ pub struct ArmyView {
     pub selected_front: Option<crate::frontline::FrontId>,
     pub selected_plan: Option<crate::operations::PlanId>,
     pub plan_advanced: bool,
+    pub draw_new_front: bool,
+    pub order_map: crate::battle_plan_render::OrderMap,
+    pub order_hover: Option<crate::battle_plan_render::OrderRef>,
+    pub selected_order: Option<crate::battle_plan_render::OrderRef>,
+    pub order_handle: Option<crate::battle_plan_render::Handle>,
     pub group_orders: bool,
     pub ability_marshal: bool,
     pub name_target: u8,
@@ -70,6 +75,7 @@ pub struct ArmyView {
 impl ArmyView {
     pub fn cancel_tool(&mut self) {
         self.plan_tool = None;
+        self.order_handle = None;
         self.plan_advanced = false;
         self.front_start = None;
         self.front_hover = None;
@@ -79,6 +85,7 @@ impl ArmyView {
         self.line_preview_end = None;
     }
     pub fn sync_selection(&mut self, w: &Warfare) {
+        let previous = self.selected_army;
         let armies: BTreeSet<_> = self
             .selected
             .iter()
@@ -89,8 +96,11 @@ impl ArmyView {
         } else {
             None
         };
-        self.selected_front = None;
-        self.selected_plan = None;
+        if previous != self.selected_army {
+            self.selected_front = None;
+            self.selected_plan = None;
+            self.selected_order = None;
+        }
     }
     pub fn ensure_army(&mut self, tag: &str, w: &mut Warfare) -> Result<u64, String> {
         let army = crate::army_command_ui::selected_army(self, w)
@@ -111,10 +121,14 @@ impl ArmyView {
     }
     pub fn show_army(&mut self, id: u64, w: &Warfare) {
         self.cancel_tool();
+        let changed = self.selected_army != Some(id);
         self.selected_army = Some(id);
         self.selected = w.command.members(id).collect();
-        self.selected_front = None;
-        self.selected_plan = None;
+        if changed {
+            self.selected_front = None;
+            self.selected_plan = None;
+            self.selected_order = None;
+        }
         self.open = false;
     }
     pub fn show_command(&mut self, picker: bool) {
@@ -229,7 +243,8 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
             (screen_width() - 10.0).min(310.0).max(1.0),
             (screen_height()
                 - crate::ui_layout::Layout::current().top
-                - 52.0
+                - crate::ui_layout::Layout::current().bottom
+                - 4.0
                 - if view.orders_visible() {
                     if screen_width() < 760.0 { 154.0 } else { 86.0 }
                 } else {
