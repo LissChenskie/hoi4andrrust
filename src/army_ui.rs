@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 enum Page {
     #[default]
     Divisions,
+    Command,
     Templates,
     Equipment,
     Battles,
@@ -24,6 +25,11 @@ pub struct ArmyView {
     pub pan_last: Option<Vec2>,
     pub right_down: Option<Vec2>,
     pub strategic: bool,
+    pub selected_army: Option<crate::command::ArmyId>,
+    pub commander_picker: Option<bool>,
+    pub command_scroll: usize,
+    pub edit_army_name: bool,
+    pub army_name: String,
     page: Page,
     scroll: usize,
     selection_scroll: usize,
@@ -163,10 +169,27 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
         Rect::new(x + 8.0, a.y + 73.0, 45.0, 54.0),
         ui::MUTED,
     );
-    ui::placeholder(
+    let army = crate::army_command_ui::selected_army(view, w);
+    let name = army
+        .and_then(|id| w.command.armies.get(&id))
+        .map_or("Объединить в армию", |a| a.name.as_str());
+    if ui::small_button(
+        name,
         Rect::new(x + 72.0, a.y + 69.0, width - 72.0, 29.0),
-        "Назначить командира",
-    );
+        false,
+    ) {
+        if army.is_none() {
+            let ids: Vec<_> = view.selected.iter().copied().collect();
+            match w.create_army(tag, &ids, "") {
+                Ok(id) => view.selected_army = Some(id),
+                Err(e) => view.notice = e,
+            }
+        } else {
+            view.selected_army = army;
+        }
+        view.page = Page::Command;
+        view.open = true;
+    }
     label(
         "ПКМ: движение / атака",
         x + 72.0,
@@ -309,9 +332,10 @@ pub fn draw(
     let x = a.x + 10.0;
     let width = a.w - 20.0;
     let mut y = a.y + 51.0;
-    let tabw = width / 5.0;
+    let tabw = width / 6.0;
     for (i, (p, title)) in [
         (Page::Divisions, "ДИВИЗИИ"),
+        (Page::Command, "АРМИИ"),
         (Page::Templates, "ШАБЛОНЫ"),
         (Page::Equipment, "ТЕХНИКА"),
         (Page::Battles, "БОИ"),
@@ -349,6 +373,14 @@ pub fn draw(
     y += 25.0;
     let bottom = a.y + a.h - 47.0;
     match view.page {
+        Page::Command => {
+            crate::army_command_ui::draw(
+                tag,
+                w,
+                view,
+                Rect::new(x, y, width, (bottom - y).max(1.0)),
+            );
+        }
         Page::Divisions => {
             let count = w
                 .divisions
@@ -1148,10 +1180,16 @@ pub fn draw_counters(
     for c in crate::army_controls::counters(world, w, source, area) {
         let selected = c.ids.iter().any(|id| view.selected.contains(id));
         let battle = c.ids.iter().any(|id| w.divisions[id].battle.is_some());
+        let army_color = c
+            .ids
+            .iter()
+            .find_map(|id| w.command.membership.get(id))
+            .and_then(|id| w.command.armies.get(id))
+            .map(|a| Color::from_rgba(a.color[0], a.color[1], a.color[2], 255));
         let color = if selected {
             ui::GOLD
         } else if Some(c.country.as_str()) == tag {
-            Color::from_rgba(89, 155, 75, 255)
+            army_color.unwrap_or(Color::from_rgba(89, 155, 75, 255))
         } else if tag.is_some_and(|t| w.at_war(t, &c.country)) {
             Color::from_rgba(190, 66, 58, 255)
         } else {

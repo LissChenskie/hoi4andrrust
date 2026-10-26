@@ -507,6 +507,7 @@ pub fn initialize(
             }
         }
     }
+    warfare.command = crate::command::load(root, &warfare, today);
     warfare
 }
 

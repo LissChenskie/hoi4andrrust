@@ -21,6 +21,7 @@ pub struct ProvinceConditions {
 }
 #[derive(Debug)]
 pub struct Warfare {
+    pub command: crate::command::CommandState,
     pub catalogue: Arc<MilitaryCatalogue>,
     pub countries: BTreeMap<String, CountryArmy>,
     pub divisions: BTreeMap<DivisionId, Division>,
@@ -47,6 +48,7 @@ impl Warfare {
     pub fn new(catalogue: MilitaryCatalogue) -> Self {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
+            command: Default::default(),
             catalogue: Arc::new(catalogue),
             countries: BTreeMap::new(),
             divisions: BTreeMap::new(),
@@ -309,6 +311,7 @@ impl Warfare {
                 planning: 0.0,
                 supply_fraction: 1.0,
                 fuel_fraction: 1.0,
+                command: Default::default(),
                 commander_attack: 0.0,
                 commander_defense: 0.0,
                 reinforce_bonus: 0.0,
@@ -329,6 +332,28 @@ impl Warfare {
             ));
         }
         Ok(id)
+    }
+    pub fn create_army(&mut self, country: &str, ids: &[u64], name: &str) -> Result<u64, String> {
+        self.validate_selection(country, ids)?;
+        Ok(self.command.create_army(country, name, ids))
+    }
+    pub fn assign_army(&mut self, country: &str, army: u64, ids: &[u64]) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        self.command.assign(country, army, ids)
+    }
+    fn validate_selection(&self, country: &str, ids: &[u64]) -> Result<(), String> {
+        if ids.is_empty() {
+            return Err("Сначала выделите дивизии".into());
+        }
+        if ids.iter().any(|id| {
+            !self
+                .divisions
+                .get(id)
+                .is_some_and(|d| d.country == country && !d.destroyed)
+        }) {
+            return Err("В выделении есть чужая или отсутствующая дивизия".into());
+        }
+        Ok(())
     }
     pub fn save_template(
         &mut self,
@@ -1423,6 +1448,12 @@ impl Warfare {
         player: Option<&str>,
     ) {
         self.simulated_hours = elapsed;
+        self.command
+            .membership
+            .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
+        for d in self.divisions.values_mut() {
+            d.command = self.command.bonuses(d.id);
+        }
         if self.divisions.is_empty() {
             return;
         }
@@ -1466,6 +1497,14 @@ impl Warfare {
             .collect();
         for id in battle_ids {
             let mut battle = self.battles.remove(&id).unwrap();
+            let active: Vec<_> = battle
+                .attackers
+                .active
+                .iter()
+                .chain(&battle.defenders.active)
+                .copied()
+                .collect();
+            self.command.gain_combat_xp(&active);
             let env = self.environment(&battle, world, hour);
             if let Some(trace) = battle.step(
                 &mut self.divisions,

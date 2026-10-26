@@ -427,8 +427,8 @@ impl LandBattle {
         );
         f.multiply(
             "commander",
-            1.0 + division.commander_attack,
-            1.0 + division.commander_defense,
+            1.0 + division.commander_attack + division.command.attack,
+            1.0 + division.commander_defense + division.command.defense,
         );
         let terrain = division
             .derived
