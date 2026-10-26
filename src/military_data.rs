@@ -533,8 +533,23 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
             let parsed = hoi4_mobile::defines::read(&source);
             for key in parsed.unresolved {
                 db.literal_defines.remove(&key);
+                db.literal_arrays.remove(&key);
             }
             db.literal_defines.extend(parsed.values);
+            db.literal_arrays.extend(parsed.arrays);
+        }
+    }
+    for path in layered_files(&layers, "common/buildings", false, "txt") {
+        if let Ok((entries, vars)) = read_file(&path, &mut db) {
+            if let Some(b) = block(
+                block(&entries, "buildings").unwrap_or(&entries),
+                "infrastructure",
+            ) {
+                db.infrastructure_max = atom(b, "max_level")
+                    .and_then(|v| scalar_value(v, &vars, 0))
+                    .filter(|v| *v > 0.0)
+                    .map(|v| v as u16);
+            }
         }
     }
     let mut modules = BTreeMap::new();

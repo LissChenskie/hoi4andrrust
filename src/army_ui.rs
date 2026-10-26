@@ -25,6 +25,7 @@ pub struct ArmyView {
     pub pan_last: Option<Vec2>,
     pub right_down: Option<Vec2>,
     pub strategic: bool,
+    pub support_attack: bool,
     pub selected_army: Option<crate::command::ArmyId>,
     pub selected_front: Option<crate::frontline::FrontId>,
     pub selected_plan: Option<crate::operations::PlanId>,
@@ -95,6 +96,7 @@ fn order(d: &DivisionOrder) -> &'static str {
         DivisionOrder::Hold => "ОБОРОНА",
         DivisionOrder::Move { .. } => "ДВИЖЕНИЕ",
         DivisionOrder::Attack { .. } => "АТАКА",
+        DivisionOrder::SupportAttack { .. } => "ПОДДЕРЖКА АТАКИ",
         DivisionOrder::Retreat { .. } => "ОТСТУПЛЕНИЕ",
         DivisionOrder::StrategicRedeployment { .. } => "ПЕРЕБРОСКА",
         DivisionOrder::Train { .. } => "УЧЕНИЯ",
@@ -140,6 +142,20 @@ pub fn issue_order(
     province: u32,
     append: bool,
 ) {
+    if view.support_attack
+        || is_key_down(KeyCode::LeftControl)
+        || is_key_down(KeyCode::RightControl)
+    {
+        let mut report = crate::army_controls::OrderReport::default();
+        for id in view.selected.clone() {
+            match w.support_attack(tag, &[id], province, world) {
+                Ok(_) => report.accepted += 1,
+                Err(e) => report.errors.push(e),
+            }
+        }
+        view.notice = report.message();
+        return;
+    }
     let report = crate::army_controls::order_selection(
         w,
         world,
@@ -310,10 +326,22 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
     }
     if ui::small_button(
         "Переброска",
-        Rect::new(x + 101.0, a.bottom() - 76.0, width - 101.0, 29.0),
+        Rect::new(x + 101.0, a.bottom() - 76.0, (width - 104.0) / 2.0, 29.0),
         view.strategic,
     ) {
         view.strategic = !view.strategic;
+    }
+    if ui::small_button(
+        "Поддержка",
+        Rect::new(
+            x + 101.0 + (width - 104.0) / 2.0 + 3.0,
+            a.bottom() - 76.0,
+            (width - 104.0) / 2.0,
+            29.0,
+        ),
+        view.support_attack,
+    ) {
+        view.support_attack = !view.support_attack;
     }
     if ui::small_button(
         "Управление дивизиями",
@@ -649,6 +677,15 @@ pub fn draw(
             bottom,
         ),
         Page::Battles => {
+            if ui::small_button("Выгрузить журнал JSON", Rect::new(x, y, width, 26.0), false)
+            {
+                result(
+                    view,
+                    w.export_combat_log(std::path::Path::new("combat-debug.json")),
+                    "Журнал сохранён: combat-debug.json",
+                );
+            }
+            y += 34.0;
             let battles: Vec<_> = w.battles.keys().copied().collect();
             if battles.is_empty() {
                 label(
@@ -807,8 +844,10 @@ pub fn draw(
                         {
                             label(
                                 &format!(
-                                    "{}: attack x{:.3}, defense x{:.3}",
-                                    m.source, m.attack, m.defense
+                                    "{} · {} ×{:.3}",
+                                    m.source,
+                                    format!("{:?}", m.stat),
+                                    m.factor
                                 ),
                                 x,
                                 y,
@@ -966,7 +1005,9 @@ pub fn draw_counters(
         let mut path = match &d.order {
             DivisionOrder::Move { path, .. }
             | DivisionOrder::StrategicRedeployment { path, .. } => path.clone(),
-            DivisionOrder::Attack { province } => vec![*province],
+            DivisionOrder::Attack { province } | DivisionOrder::SupportAttack { province } => {
+                vec![*province]
+            }
             DivisionOrder::Retreat { destination, .. } => vec![*destination],
             _ => Vec::new(),
         };

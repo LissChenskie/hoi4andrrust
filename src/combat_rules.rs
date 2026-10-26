@@ -1,9 +1,13 @@
 //! Versioned exposed constants; defaults follow the supplied 1.19.3 brief.
 //! The profile is a reconstruction, not proof of binary-identical engine behavior.
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub trait CombatRandom {
     fn next_u64(&mut self) -> u64;
+    fn checkpoint(&self) -> Option<u64> {
+        None
+    }
     fn unit(&mut self) -> f64 {
         (self.next_u64() >> 11) as f64 * (1.0 / 9007199254740992.0)
     }
@@ -40,7 +44,7 @@ pub trait CombatRandom {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SeededRandom {
     pub state: u64,
 }
@@ -50,6 +54,9 @@ impl SeededRandom {
     }
 }
 impl CombatRandom for SeededRandom {
+    fn checkpoint(&self) -> Option<u64> {
+        Some(self.state)
+    }
     fn next_u64(&mut self) -> u64 {
         self.state = self.state.wrapping_add(0x9e3779b97f4a7c15);
         let mut z = self.state;
@@ -59,7 +66,7 @@ impl CombatRandom for SeededRandom {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CombatRules {
     pub target_version: String,
     pub attack_scale: f64,
@@ -121,7 +128,9 @@ pub struct CombatRules {
     pub pixels_to_km: Option<f64>,
     pub strategic_speed: Option<f64>,
     pub attack_delay: u32,
-    pub movement_org_loss: f64,
+    pub movement_recovery: f64,
+    pub fuel_attack_penalty: Option<f64>,
+    pub fuel_speed_penalty: Option<f64>,
     pub zero_org_speed: f64,
     pub retreat_speed: f64,
     pub strategic_org: f64,
@@ -193,7 +202,9 @@ impl Default for CombatRules {
             pixels_to_km: None,
             strategic_speed: None,
             attack_delay: 24,
-            movement_org_loss: -0.2,
+            movement_recovery: -0.4,
+            fuel_attack_penalty: None,
+            fuel_speed_penalty: None,
             zero_org_speed: -0.8,
             retreat_speed: 0.25,
             strategic_org: 0.1,
@@ -232,6 +243,38 @@ impl CombatRules {
         (count.saturating_sub(free) as f64 * self.stacking_penalty).min(1.0)
     }
     pub fn import_defines(&mut self, source: &str, path: &str) {
+        // Parse namespaces and literal arrays once. Never interpret Lua expressions.
+        let parsed = hoi4_mobile::defines::read(source);
+        let allowed = |key: &str| {
+            key.starts_with("NDefines.NMilitary.")
+                || key == "NDefines.NGame.MAP_SCALE_PIXEL_TO_KM"
+                || !key.contains('.')
+        };
+        let mut normalized = String::new();
+        for (key, value) in parsed.values.iter().filter(|(k, _)| allowed(k)) {
+            normalized.push_str(&format!("{key} = {value}\n"));
+        }
+        for (key, values) in parsed.arrays.iter().filter(|(k, _)| allowed(k)) {
+            normalized.push_str(&format!(
+                "{key} = {{{}}}\n",
+                values
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ));
+        }
+        self.import_literals(&normalized, path);
+        for key in parsed.unresolved.iter().filter(|k| allowed(k)) {
+            let name = key.rsplit('.').next().unwrap_or(key);
+            if self.provenance.remove(name).is_some() {
+                self.diagnostics.push(format!(
+                    "{path}: {key} has a non-literal override; preceding value is unverified"
+                ));
+            }
+        }
+    }
+    fn import_literals(&mut self, source: &str, path: &str) {
         let mut lines = source.lines();
         let mut depth = 0i32;
         let mut scope: Option<(String, i32)> = None;
@@ -527,8 +570,16 @@ impl CombatRules {
                     self.support_slots = v.clamp(0.0, 64.0) as usize;
                     true
                 }
+                "OUT_OF_FUEL_EQUIPMENT_MULT" => {
+                    self.fuel_attack_penalty = Some(v);
+                    true
+                }
+                "OUT_OF_FUEL_SPEED_MULT" => {
+                    self.fuel_speed_penalty = Some(v);
+                    true
+                }
                 "HOURLY_ORG_MOVEMENT_IMPACT" => {
-                    self.movement_org_loss = v;
+                    self.movement_recovery = v;
                     true
                 }
                 "ZERO_ORG_MOVEMENT_MODIFIER" => {

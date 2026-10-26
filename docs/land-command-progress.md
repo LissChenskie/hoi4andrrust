@@ -51,3 +51,11 @@
 Применение к существующим дивизиям сохраняет людей/технику; пополнение берёт доступное со склада, смена модели обменивает реальные экземпляры, излишки возвращаются однократно. Сенсорный scroll, clipping и Android soft keyboard. Иконка шаблона отображается на карте.
 
 Проверки: `cargo check --all-targets`, 223 теста, включая атомарный отказ при недостатке XP, копирование, изменение используемого шаблона, пополнение/возврат, региментальные ограничения и модификаторы стоимости. Числа fixtures авторские и проверяют арифметику; это не golden captures оригинальной 1.19.3. Далее — боевое ядро и журналы.
+
+## Этап 6
+
+`combat_modifiers.rs`, `combat_rules.rs`, `land_combat.rs`, `warfare.rs`, `military_model.rs`, `military_data.rs`, `defines.rs`, `research_import.rs`, `command.rs`, `army_ui.rs`, `operations.rs`, `main.rs`: типизированные Soft/Hard Attack, Defense, Breakthrough и damage scopes; настоящий Support Attack без занятия провинции, полный 12-часовой интервал тактик; qualified literal arrays без выполнения Lua. Движение меняет восстановление Org вместо ошибочного плоского списания. Imported infrastructure и fuel coefficients; топливный штраф применяется к вкладам расходующих топливо компонентов.
+
+JSON combat log содержит источник версии, правила, RNG до/после часа, frontline/reserves, отдельные width/stacking penalties, остаток общей защиты, попадания и конкретные HP/Org dice. Выгрузка доступна во вкладке боёв. Имена/числа тактик читаются из данных. Дополнительный источник навыков — https://hoi4.paradoxwikis.com/Commander (attack: SA/HA; defense: Defense/Breakthrough), без предположения, что Attack повышает Breakthrough.
+
+Проверки: 227 тестов, включая статистическое среднее 25 попаданий, границы piercing, роли защиты, независимость weather breakthrough от SA, интервалы 1/13/25, одинаковый seed и trace, поддержку атаки и восстановление в движении. Первый параллельный build встретил нулевой object file; повторная чистая пересборка объекта с `-j 1` успешна. Supply fraction и resolved CAS пока поступают через существующий вход условий; полноценной сети rail/convoy и симуляции air missions нет. Закрытый recon counter-picker не объявляется точной копией. Далее — command power, способности и условная поддержка штабов.

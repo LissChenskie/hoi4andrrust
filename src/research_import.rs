@@ -497,6 +497,7 @@ impl ResearchDataset {
             let one = crate::defines::LiteralDefines {
                 values: BTreeMap::from([(path.clone(), *value)]),
                 unresolved: BTreeSet::new(),
+                arrays: BTreeMap::new(),
             };
             for key in crate::research_data::update_rules_from_define_values(&one, &mut data.rules)
             {

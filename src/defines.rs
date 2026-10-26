@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Debug, Clone, Default)]
 pub struct LiteralDefines {
     pub values: BTreeMap<String, f64>,
+    pub arrays: BTreeMap<String, Vec<f64>>,
     pub unresolved: BTreeSet<String>,
 }
 #[derive(Debug, Clone, PartialEq)]
@@ -131,7 +132,46 @@ pub fn read(source: &str) -> LiteralDefines {
             let path = qualified(scope, &key);
             if t.get(*pos) == Some(&Token::Symbol('{')) {
                 *pos += 1;
-                table(t, pos, &path, depth + 1, out);
+                let first = t[*pos..].iter().find(|v| **v != Token::Newline);
+                if matches!(first, Some(Token::Symbol('}')))
+                    || matches!(first, Some(Token::Atom(s)) if s.parse::<f64>().is_ok())
+                {
+                    let mut values = Vec::new();
+                    let mut valid = true;
+                    let mut need_number = true;
+                    while *pos < t.len() && t[*pos] != Token::Symbol('}') {
+                        match &t[*pos] {
+                            Token::Newline => {}
+                            Token::Symbol(',') if !need_number => need_number = true,
+                            Token::Atom(s) if need_number => {
+                                if let Ok(v) = s.parse::<f64>() {
+                                    if v.is_finite() {
+                                        values.push(v);
+                                    } else {
+                                        valid = false;
+                                    }
+                                } else {
+                                    valid = false;
+                                }
+                                need_number = false;
+                            }
+                            _ => valid = false,
+                        }
+                        *pos += 1;
+                    }
+                    valid &= t.get(*pos) == Some(&Token::Symbol('}'));
+                    *pos += usize::from(*pos < t.len());
+                    out.values.remove(&path);
+                    if valid {
+                        out.arrays.insert(path.clone(), values);
+                        out.unresolved.remove(&path);
+                    } else {
+                        out.arrays.remove(&path);
+                        out.unresolved.insert(path);
+                    }
+                } else {
+                    table(t, pos, &path, depth + 1, out);
+                }
                 continue;
             }
             let value = t.get(*pos).and_then(|v| match v {
@@ -143,11 +183,13 @@ pub fn read(source: &str) -> LiteralDefines {
                 None | Some(Token::Newline) | Some(Token::Symbol(',' | ';' | '}'))
             );
             if let Some(value) = value.filter(|_| literal_end) {
+                out.arrays.remove(&path);
                 out.values.insert(path.clone(), value);
                 out.unresolved.remove(&path);
             } else {
                 out.unresolved.insert(path.clone());
                 out.values.remove(&path);
+                out.arrays.remove(&path);
             }
             while *pos < t.len()
                 && !matches!(
@@ -174,6 +216,18 @@ mod tests {
         assert_eq!(d.values["NDefines.NTechnology.BASE_TECH_COST"], 100.0);
         assert_eq!(d.values["NDefines.NMilitary.BASE_TECH_COST"], 60.0);
         assert_eq!(d.values["NDefines.NCountry.BASE_RESEARCH_SLOTS"], 2.0);
+    }
+    #[test]
+    fn arrays_are_literal_qualified_and_overridden_atomically() {
+        let d = read(
+            "NDefines={NMilitary={VALUES={1,0.75,0.5,0},OTHER={1,2}}}\nNDefines.NMilitary.OTHER={1,2*3}",
+        );
+        assert_eq!(
+            d.arrays["NDefines.NMilitary.VALUES"],
+            vec![1.0, 0.75, 0.5, 0.0]
+        );
+        assert!(!d.arrays.contains_key("NDefines.NMilitary.OTHER"));
+        assert!(d.unresolved.contains("NDefines.NMilitary.OTHER"));
     }
     #[test]
     fn unresolved_override_removes_an_earlier_literal() {

@@ -1,12 +1,13 @@
 //! Units, equipment, templates and runtime divisions. Independent from graphics.
 use crate::combat_rules::CombatRules;
 use crate::research_data::Entry;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type DivisionId = u64;
 pub type StatBlock = BTreeMap<String, f64>;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
     pub soft_attack: f64,
     pub hard_attack: f64,
@@ -70,7 +71,7 @@ impl Stats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainAdjustment {
     pub attack: f64,
     pub defense: f64,
@@ -86,7 +87,7 @@ impl TerrainAdjustment {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EquipmentDefinition {
     pub id: String,
     pub archetype: String,
@@ -99,7 +100,7 @@ pub struct EquipmentDefinition {
     pub source: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattalionDefinition {
     pub id: String,
     pub group: String,
@@ -115,19 +116,19 @@ pub struct BattalionDefinition {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BattalionSlot {
     pub unit: String,
     pub column: usize,
     pub row: usize,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportSlot {
     pub unit: String,
     pub regiment: Option<usize>,
     pub row: usize,
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DivisionTemplate {
     pub name: String,
     pub line: Vec<BattalionSlot>,
@@ -138,7 +139,7 @@ pub struct DivisionTemplate {
     pub equipment_preferences: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TechnologyEffects {
     pub units: BTreeMap<String, StatBlock>,
     pub equipment: BTreeMap<String, StatBlock>,
@@ -149,19 +150,19 @@ pub struct TechnologyEffects {
     pub conditional_unlocks: Vec<ConditionalUnlock>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UnlockKind {
     Unit,
     Equipment,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConditionalUnlock {
     pub kind: UnlockKind,
     pub conditions: Vec<Entry>,
     pub ids: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerrainDefinition {
     pub width: f64,
     pub extra_width: f64,
@@ -183,7 +184,7 @@ impl Default for TerrainDefinition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tactic {
     pub id: String,
     pub attacker: bool,
@@ -202,12 +203,14 @@ pub struct Tactic {
     pub movement: f64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MilitaryCatalogue {
     pub rules: CombatRules,
     pub source_version: Option<String>,
+    pub infrastructure_max: Option<u16>,
     pub source_checksum: Option<String>,
     pub literal_defines: BTreeMap<String, f64>,
+    pub literal_arrays: BTreeMap<String, Vec<f64>>,
     pub localisation: BTreeMap<String, String>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
@@ -219,7 +222,7 @@ pub struct MilitaryCatalogue {
     pub source_files: BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MilitaryModifiers {
     pub country: StatBlock,
     pub unit: BTreeMap<String, StatBlock>,
@@ -270,8 +273,9 @@ impl MilitaryModifiers {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DerivedTemplate {
+    pub fuel_stats: Stats,
     pub stats: Stats,
     pub equipment: BTreeMap<String, f64>,
     pub model_requirements: BTreeMap<String, f64>,
@@ -597,6 +601,12 @@ impl MilitaryCatalogue {
                 }
                 s.reliability = eq.get("reliability").copied().unwrap_or(0.0);
             }
+            if s.fuel > 0.0 {
+                result.fuel_stats.soft_attack += s.soft_attack;
+                result.fuel_stats.hard_attack += s.hard_attack;
+                result.fuel_stats.defense += s.defense;
+                result.fuel_stats.breakthrough += s.breakthrough;
+            }
             let a = &mut result.stats;
             a.soft_attack += s.soft_attack;
             a.hard_attack += s.hard_attack;
@@ -671,12 +681,18 @@ impl MilitaryCatalogue {
         a.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
         a.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
         a.defense *= (1.0 + m.value("army_defence_factor")).max(0.0);
-        a.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        a.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0)
+            * (1.0 + m.value("breakthrough_factor")).max(0.0);
+        result.fuel_stats.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        result.fuel_stats.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        result.fuel_stats.defense *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        result.fuel_stats.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0)
+            * (1.0 + m.value("breakthrough_factor")).max(0.0);
         Ok(result)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExperienceLevel {
     Green,
     Trained,
@@ -696,23 +712,24 @@ impl ExperienceLevel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DivisionOrder {
     Hold,
     Move { path: Vec<u32>, progress_km: f64 },
     Attack { province: u32 },
+    SupportAttack { province: u32 },
     Retreat { destination: u32, progress_km: f64 },
     StrategicRedeployment { path: Vec<u32>, progress_km: f64 },
     Train { hours: f64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveObjective {
     pub province: u32,
     pub strategic: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Division {
     pub id: DivisionId,
     pub name: String,
@@ -788,7 +805,7 @@ impl Division {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CountryArmy {
     pub templates: BTreeMap<String, DivisionTemplate>,
     pub manpower_pool: u64,

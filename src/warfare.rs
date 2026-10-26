@@ -76,6 +76,15 @@ impl Warfare {
             ai_enabled: true,
         }
     }
+    pub fn export_combat_log(&self, path: &std::path::Path) -> Result<(), String> {
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        serde_json::to_writer_pretty(std::io::BufWriter::new(file), &serde_json::json!({
+            "schema":1,"target":self.catalogue.rules.target_version,
+            "source_version":self.catalogue.source_version,"source_checksum":self.catalogue.source_checksum,
+            "simulated_hours":self.simulated_hours,"rng_state":self.rng.state,
+            "rules":self.catalogue.rules,"battles":self.battles
+        })).map_err(|e|e.to_string())
+    }
     pub fn notice(&mut self, text: impl Into<String>) {
         self.notices.push_back(text.into());
         while self.notices.len() > 100 {
@@ -1256,6 +1265,34 @@ impl Warfare {
         }
         env
     }
+    pub fn support_attack(
+        &mut self,
+        country: &str,
+        ids: &[u64],
+        province: u32,
+        world: &World,
+    ) -> Result<u64, String> {
+        let occupied = self.divisions.values().any(|d| {
+            d.province == province
+                && self.at_war(country, &d.country)
+                && d.fighting()
+                && !matches!(d.order, DivisionOrder::Retreat { .. })
+        });
+        if !occupied {
+            return Err(
+                "Поддержка атаки требует действительного противника в целевой провинции".into(),
+            );
+        }
+        let battle = self.attack(country, ids, province, world)?;
+        for id in ids {
+            let d = self.divisions.get_mut(id).unwrap();
+            d.order = DivisionOrder::SupportAttack { province };
+            d.destination = None;
+            d.waypoints.clear();
+        }
+        Ok(battle)
+    }
+
     pub fn attack(
         &mut self,
         country: &str,
@@ -1487,7 +1524,11 @@ impl Warfare {
             let d = self.divisions.get_mut(&id).unwrap();
             d.battle = None;
             d.attack_delay = self.catalogue.rules.attack_delay;
-            if was_attacker && outcome == BattleOutcome::AttackerWon && !d.destroyed {
+            if was_attacker
+                && outcome == BattleOutcome::AttackerWon
+                && !d.destroyed
+                && !matches!(d.order, DivisionOrder::SupportAttack { .. })
+            {
                 d.order = DivisionOrder::Move {
                     path: vec![battle.province],
                     progress_km: 0.0,
@@ -1581,8 +1622,29 @@ impl Warfare {
                 let mut speed =
                     d.derived.stats.speed * (1.0 + adjust).max(0.0) / terrain.movement_cost;
                 if d.derived.stats.fuel > 0.0 {
-                    speed *= d.fuel_fraction.clamp(0.0, 1.0);
+                    let fuel = d.fuel_fraction.clamp(0.0, 1.0);
+                    speed *= self
+                        .catalogue
+                        .rules
+                        .fuel_speed_penalty
+                        .map_or(fuel, |minimum| minimum + (1.0 - minimum) * fuel);
                 }
+                if let (Some(maximum), Some(impact)) = (
+                    self.catalogue.infrastructure_max,
+                    self.catalogue
+                        .literal_defines
+                        .get("NDefines.NMilitary.INFRASTRUCTURE_MOVEMENT_SPEED_IMPACT"),
+                ) {
+                    let infrastructure = world
+                        .provinces
+                        .get(&next)
+                        .and_then(|p| p.state_id)
+                        .and_then(|id| world.states.get(&id))
+                        .map_or(0, |s| s.economy.infrastructure);
+                    speed *=
+                        (1.0 + impact * f64::from(maximum.saturating_sub(infrastructure))).max(0.0);
+                }
+                speed *= (1.0 + d.command.movement).max(0.0);
                 speed *= d.supply_fraction.clamp(0.0, 1.0);
                 let org_fraction =
                     (d.organization / d.derived.stats.organization.max(1e-9)).clamp(0.0, 1.0);
@@ -1628,11 +1690,11 @@ impl Warfare {
                     * scale;
                 let needed = (distance - progress).max(0.0) / speed;
                 let spent = needed.min(time_left);
+
                 let tag = d.country.clone();
                 let previous = d.province;
                 let d = self.divisions.get_mut(&id).unwrap();
-                d.organization =
-                    (d.organization + self.catalogue.rules.movement_org_loss * spent).max(0.0);
+
                 if strategic {
                     d.organization = d
                         .organization
@@ -1749,7 +1811,18 @@ impl Warfare {
                 let supply = 1.0
                     + (1.0 - d.supply_fraction.clamp(0.0, 1.0))
                         * self.catalogue.rules.out_of_supply_recovery;
-                d.organization = (d.organization + d.derived.stats.recovery * supply)
+                let moving = matches!(
+                    d.order,
+                    DivisionOrder::Move { .. }
+                        | DivisionOrder::Retreat { .. }
+                        | DivisionOrder::StrategicRedeployment { .. }
+                );
+                let movement = if moving {
+                    (1.0 + self.catalogue.rules.movement_recovery).max(0.0)
+                } else {
+                    1.0
+                };
+                d.organization = (d.organization + d.derived.stats.recovery * supply * movement)
                     .min(d.derived.stats.organization);
                 if matches!(d.order, DivisionOrder::Hold) {
                     d.entrenchment = (d.entrenchment + self.catalogue.rules.dig_in_daily / 24.0)
@@ -1901,6 +1974,36 @@ pub(crate) mod tests {
         w
     }
     #[test]
+    fn support_attack_never_occupies_and_movement_modifies_regain_instead_of_draining_org() {
+        let mut world = world();
+        let mut w = army();
+        let a = division(1, "A", 1);
+        let mut support = division(2, "A", 1);
+        let b = division(3, "B", 2);
+        support.organization = 20.0;
+        support.derived.stats.recovery = 1.0;
+        support.derived.stats.speed = 0.01;
+        w.divisions = BTreeMap::from([(1, a), (2, support), (3, b)]);
+        w.declare_war("A", "B", &world).unwrap();
+        let id = w.attack("A", &[1], 2, &world).unwrap();
+        assert_eq!(w.support_attack("A", &[2], 2, &world).unwrap(), id);
+        let mut battle = w.battles[&id].clone();
+        battle.outcome = Some(BattleOutcome::AttackerWon);
+        w.finish_battle(&battle, &world);
+        assert!(matches!(w.divisions[&2].order, DivisionOrder::Hold));
+        assert!(matches!(w.divisions[&1].order, DivisionOrder::Move { .. }));
+        assert_eq!(w.divisions[&2].province, 1);
+        w.battles.clear();
+        w.divisions.remove(&1);
+        w.divisions.remove(&3);
+        world.set_province_controller(2, Some("A"));
+        w.issue_move("A", &[2], 2, &world, false, false).unwrap();
+        w.tick_hour(&mut world, GameDate::START, 12, 1, Some("A"));
+        assert!((w.divisions[&2].organization - 20.6).abs() < 1e-9);
+        assert_eq!(w.divisions[&2].province, 1);
+        assert!(w.support_attack("A", &[2], 3, &world).is_err());
+    }
+    #[test]
     fn replacing_a_move_cancels_the_previous_waypoints_and_stop_clears_intent() {
         let mut world = world();
         world.set_province_controller(2, Some("A"));
@@ -2023,7 +2126,7 @@ pub(crate) mod tests {
         w.move_to("A", &[1], 3, &world, false).unwrap();
         w.movement_step(&mut world);
         assert_eq!(w.divisions[&1].province, 3);
-        assert!(w.divisions[&1].organization < 60.0);
+        assert_eq!(w.divisions[&1].organization, 60.0);
     }
     #[test]
     fn defending_withdrawal_obeys_minimum_time_and_uses_a_friendly_retreat_route() {

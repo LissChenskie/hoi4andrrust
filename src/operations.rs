@@ -112,7 +112,7 @@ impl OperationalState {
         army: ArmyId,
         source: Option<FrontId>,
         kind: OrderType,
-        line: Vec<u32>,
+        mut line: Vec<u32>,
     ) -> Result<PlanId, String> {
         w.command.own_army(country, army)?;
         if line.is_empty() {
@@ -126,6 +126,9 @@ impl OperationalState {
                 .is_some_and(|p| p.definition.kind == crate::map_graph::ProvinceKind::Land)
         }) {
             return Err("Приказ должен лежать на суше".into());
+        }
+        if kind == OrderType::Spearhead {
+            line = vec![*line.last().unwrap()];
         }
         let units = if matches!(kind, OrderType::Offensive | OrderType::Spearhead) {
             let f = source

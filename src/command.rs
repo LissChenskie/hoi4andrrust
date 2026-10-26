@@ -56,6 +56,7 @@ pub struct Army {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct CommanderBonuses {
     pub attack: f64,
+    pub breakthrough: f64,
     pub defense: f64,
     pub planning_speed: f64,
     pub planning_max: f64,
@@ -67,6 +68,7 @@ pub struct CommanderBonuses {
 impl CommanderBonuses {
     fn add(&mut self, other: Self, scale: f64) {
         self.attack += other.attack * scale;
+        self.breakthrough += other.breakthrough * scale;
         self.defense += other.defense * scale;
         self.planning_speed += other.planning_speed * scale;
         self.planning_max += other.planning_max * scale;
@@ -79,6 +81,7 @@ impl CommanderBonuses {
         let get = |key: &str| m.get(key).copied().unwrap_or(0.0);
         Self {
             attack: get("army_attack_factor"),
+            breakthrough: get("army_defence_factor") + get("breakthrough_factor"),
             defense: get("army_defence_factor"),
             planning_speed: get("planning_speed"),
             planning_max: get("max_planning"),
@@ -411,6 +414,7 @@ impl CommandState {
         let mut b = CommanderBonuses {
             attack: c.attack as f64 * self.rules.attack_per_skill.unwrap_or(0.0),
             defense: c.defense as f64 * self.rules.defense_per_skill.unwrap_or(0.0),
+            breakthrough: c.defense as f64 * self.rules.defense_per_skill.unwrap_or(0.0),
             planning_speed: c.planning as f64 * self.rules.planning_per_skill.unwrap_or(0.0),
             supply: c.logistics as f64 * self.rules.logistics_per_skill.unwrap_or(0.0),
             tactic_skill: c.skill as f64,

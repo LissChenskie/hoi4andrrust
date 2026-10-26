@@ -2,6 +2,7 @@ mod army_command_ui;
 mod army_controls;
 mod army_ui;
 mod campaign_ui;
+mod combat_modifiers;
 mod combat_rules;
 mod command;
 mod construction;
