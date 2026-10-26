@@ -109,6 +109,8 @@ pub struct BattalionDefinition {
     pub divisional: bool,
     pub regimental: bool,
     pub affects_speed: bool,
+    #[serde(default)]
+    pub equipment_speed_multiplier: bool,
     pub stats: StatBlock,
     pub need: BTreeMap<String, f64>,
     pub terrain: BTreeMap<String, TerrainAdjustment>,
@@ -507,6 +509,8 @@ impl MilitaryCatalogue {
         let mut hardness = 0.0;
         let mut speed = f64::INFINITY;
         let mut count = 0usize;
+        let mut supply_factor = m.value("supply_consumption_factor");
+        let mut fuel_factor = m.value("fuel_consumption_factor");
         for (id, is_support) in t
             .line
             .iter()
@@ -522,6 +526,7 @@ impl MilitaryCatalogue {
             }
             let mut s = Stats::from_block(&values);
             let mut eq = StatBlock::new();
+            let mut equipment_speed: f64 = 0.0;
             for (archetype, need) in &u.need {
                 *result.equipment.entry(archetype.clone()).or_default() += *need;
                 let selected: Vec<(&EquipmentDefinition, f64)> = if let Some(inventory) = inventory
@@ -556,6 +561,11 @@ impl MilitaryCatalogue {
                 if selected.is_empty() && inventory.is_none() {
                     return Err(format!("No usable equipment for {archetype}"));
                 }
+                let archetype_speed: f64 = selected
+                    .iter()
+                    .map(|(e, w)| e.stats.get("maximum_speed").copied().unwrap_or(0.0) * w)
+                    .sum();
+                equipment_speed = equipment_speed.max(archetype_speed);
                 for (e, weight) in selected {
                     result.equipment_cost += need * e.cost * weight;
                     *result.model_requirements.entry(e.id.clone()).or_default() += need * weight;
@@ -591,16 +601,34 @@ impl MilitaryCatalogue {
                 s.air_attack = adjusted("air_attack");
                 s.hardness =
                     (s.hardness + eq.get("hardness").copied().unwrap_or(0.0)).clamp(0.0, 1.0);
-                let equipment_speed = eq.get("maximum_speed").copied().unwrap_or(0.0);
                 if equipment_speed > 0.0 {
-                    s.speed = if s.speed > 0.0 {
+                    s.speed = if u.equipment_speed_multiplier {
+                        equipment_speed
+                            * (1.0 + values.get("maximum_speed").copied().unwrap_or(0.0)).max(0.0)
+                    } else if s.speed > 0.0 {
                         s.speed.min(equipment_speed)
                     } else {
                         equipment_speed
                     };
                 }
+                if u.equipment_speed_multiplier {
+                    s.fuel = adjusted("fuel_consumption")
+                        * values
+                            .get("own_equipment_fuel_consumption_mult")
+                            .copied()
+                            .unwrap_or(1.0)
+                            .max(0.0);
+                }
                 s.reliability = eq.get("reliability").copied().unwrap_or(0.0);
             }
+            supply_factor += values
+                .get("supply_consumption_factor")
+                .copied()
+                .unwrap_or(0.0);
+            fuel_factor += values
+                .get("fuel_consumption_factor")
+                .copied()
+                .unwrap_or(0.0);
             if s.fuel > 0.0 {
                 result.fuel_stats.soft_attack += s.soft_attack;
                 result.fuel_stats.hard_attack += s.hard_attack;
@@ -676,7 +704,8 @@ impl MilitaryCatalogue {
             0.0
         };
         a.speed = if speed.is_finite() { speed } else { 0.0 };
-        a.supply *= (1.0 + m.value("supply_consumption_factor")).max(0.0);
+        a.supply *= (1.0 + supply_factor).max(0.0);
+        a.fuel *= (1.0 + fuel_factor).max(0.0);
         a.organization *= (1.0 + m.value("army_org_factor")).max(0.0);
         a.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
         a.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
@@ -948,6 +977,7 @@ pub(crate) mod tests {
                     divisional: true,
                     regimental: false,
                     affects_speed: group != "support",
+                    equipment_speed_multiplier: false,
                     stats: StatBlock::from([
                         ("max_strength".into(), hp),
                         ("max_organisation".into(), org),

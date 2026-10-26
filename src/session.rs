@@ -12,7 +12,7 @@ use crate::production::{ProductionRules, ProductionState};
 use crate::research::{ResearchCatalogue, ResearchRules, ResearchWorld};
 use crate::world::World;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct CountryConstruction {
     pub order: ConstructionOrder,
     /// Retained for the state-inspector controls; global scheduling uses order.
@@ -21,7 +21,7 @@ pub struct CountryConstruction {
     pub law: EconomicLawPreset,
 }
 
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GameSession {
     pub world: World,
     pub clock: GameState,

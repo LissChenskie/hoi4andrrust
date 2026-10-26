@@ -157,6 +157,21 @@ pub struct FrontState {
     pub boundaries: BTreeMap<(String, String), (u64, Boundary)>,
 }
 impl FrontState {
+    pub fn rebuild_after_restore(&mut self, world: &World) {
+        self.boundaries.clear();
+        self.active_orders.clear();
+        for f in self.fronts.values_mut() {
+            f.watched = f.edges.iter().flat_map(|e| [e.friendly, e.enemy]).collect();
+            let points: Vec<_> = f.watched.iter().copied().collect();
+            for p in points {
+                f.watched
+                    .extend(world.geography.land_neighbors(p).map(|e| e.to));
+            }
+        }
+    }
+    pub fn identifiers_valid(&self) -> bool {
+        self.fronts.keys().all(|id| *id <= self.next_id)
+    }
     pub fn boundary(&mut self, world: &World, country: &str, enemy: &str) -> &Boundary {
         let key = (country.to_owned(), enemy.to_owned());
         if !self

@@ -8,6 +8,8 @@
 
 ## Этап 1
 
+Файлы: `combat_rules.rs`, `military_data.rs`, `military_history.rs`, `military_model.rs`, `research_import.rs`, `lib.rs`, `session.rs`; нормализация форматирования существующих construction/production/map/state/world модулей.
+
 Импорт армий получает тот же порядок слоёв, что исследования. Сохраняются версия источника, checksum, квалифицированные defines и происхождение правил. Приватный research-review теперь включает units, OOB, terrain, traits, abilities и диагностику армии, не меняя отпечаток исследований из-за посторонних файлов.
 
 ## Проверенные внешние реализации
@@ -71,3 +73,21 @@ JSON combat log содержит источник версии, правила, 
 Изучен синтаксис `common/abilities/generic_leader_abilities.txt` MillenniumDawn (CC BY-SA 4.0) исключительно как дополнительный пример схемы; код/названия/числа мода в проект не копировались и не считаются vanilla.
 
 Проверки: `cargo check --all-targets`, 231 тест: CP/атомарный отказ/cooldown/expiry, scope фельдмаршала, imported level progression, HQ manual/distance/уничтожение без удаления армии и общий фронт двух армий. Далее — сохранение состояния, сквозные сценарии, проверка UI и платформ.
+
+## Этап 8
+
+Файлы: `campaign_save.rs`, `platform_storage.rs`, `session.rs`, `game.rs`, `world.rs`, `state.rs`, `construction.rs`, `production.rs`, `warfare.rs`, `command.rs`, `frontline.rs`, `operations.rs`, `map_graph.rs`, `military_model.rs`, `military_data.rs`, `army_ui.rs`, `battle_plan_ui.rs`, `campaign_ui.rs`, `main.rs`, `research_import.rs`, `Cargo.toml`; style-only упрощение скобок в history/research conditions; `.github/workflows/land-command-check.yml`, `docs/land-command-guide.md`.
+
+Единый campaign save включает экономику, исследования, запасы, календарь, контроль провинций, дивизии, командование, фронты, планы, сражения и RNG. Перед атомарным восстановлением проверяются карта, registry/game definitions, ID и ссылки. Перестройка кэшей сохраняет cadence ИИ и воспроизводимость после загрузки. Float roundtrip включён. Android JNI получает приватный files directory приложения; desktop сохраняет в `data`. Добавлены сенсорные режимы add/box и отмена незавершённого рисунка при pinch.
+
+В расчёте оснащения исправлены motorized equipment speed (выбор архетипа вместо суммы скоростей), топливо оборудования и факторы логистической поддержки; legacy программные fixtures сохраняют абсолютный speed. Добавлен самостоятельный arithmetic test. Приватный review переносит version-pinned command profile.
+
+Автоматические проверки: **236 тестов** (65 library + 169 game + 2 exporter), `cargo fmt --all -- --check`, `cargo check --all-targets`, `cargo clippy --all-targets`, `cargo build --release --bin hoi4-mobile` и `cargo check --all-targets --target aarch64-linux-android` завершились с кодом 0. Clippy содержит style/dead_code warnings; строгий `-D warnings` не заявляется. Из-за повреждённых кэшированных object files проверки тестов повторены в отдельном target с `CARGO_PROFILE_TEST_OPT_LEVEL=0`, `CARGO_PROFILE_TEST_DEBUG=0`, `CARGO_PROFILE_TEST_CODEGEN_UNITS=1`. Release проверен с обычными LTO/opt-level из Cargo.toml. SDK/NDK здесь отсутствуют: APK и запуск на Android-устройстве не проверялись.
+
+Сквозной тест: редактирование → реальное пополнение → армия/генерал → фронт → боевой план → бой → захват → новый фронт. Продолжение 96 часов до/после загрузки даёт одинаковые дивизии, контроль, бои и RNG. Дополнительно: окружение без невозможного отхода, атомарный отказ повреждённого save, совместное восстановление фабрик/склада/исследований.
+
+Нативная UI-проверка release через Xvfb: 1280×720 и 360×640. Авторский OOB загрузил 12 FRA / 9 GER, рамка выбрала все 12, создана армия и назначен генерал. Нарисованы физический фронт из 3 рёбер и offensive line с реальными ID `[5,13,21]`; сохранение и загрузка прошли через меню. После запуска часов части перемещались, создавались бои, менялся контроль/геометрия. Конструктор добавил артиллерию и списал 5 XP (100 → 95), preview ширины вырос с 6 до 9. Минимальный срок отхода действительно отклонил преждевременный ручной приказ; допустимый manual override отдельно покрыт тестом D.
+
+Найдены и исправлены две реальные UI ошибки: toolbar скрывался при открытой панели армии, а миникарта перекрывала его правые кнопки. Финальная геометрия и hit regions согласованы. Две lossless записи статичного состояния по 40 кадров (desktop/phone) дали **1 уникальный кадр каждая**. Это проверка стабильности этих состояний, а не обещание отсутствия любых графических ошибок.
+
+Ограничения остаются в guide: исходные данные 1.19.3/OOB Франции отсутствуют, original-engine golden comparisons не выполнены; supply network/air missions/doctrine redesign/получение traits/точный recon picker и неизвестные 1.19 HQ/regimental edges не объявляются готовой копией. Следующий проверяемый шаг — полный экспорт фактической установки 1.19.3, проверка французского import report и differential fixtures оригинала.

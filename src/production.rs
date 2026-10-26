@@ -6,9 +6,10 @@
 //! be imported later. Defaults below are explicit prototypes, not hidden
 //! guesses about a country's historical production.
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Equipment {
     InfantryKit,
     SupportKit,
@@ -55,7 +56,7 @@ impl Equipment {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ProductionRules {
     pub base_factory_output: f64,
     pub powered_factory_output: f64,
@@ -122,7 +123,7 @@ impl ProductionRules {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionLine {
     pub id: u64,
     pub equipment: Equipment,
@@ -137,13 +138,13 @@ pub struct ProductionLine {
     pub last_day_ic: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allocation {
     pub assigned: u32,
     pub requested: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CountryProduction {
     pub lines: Vec<ProductionLine>,
     pub stockpile: BTreeMap<Equipment, u64>,
@@ -337,7 +338,7 @@ impl CountryProduction {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ProductionState {
     pub by_country: BTreeMap<String, CountryProduction>,
 }

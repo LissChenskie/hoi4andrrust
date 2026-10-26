@@ -104,6 +104,14 @@ pub struct OperationalState {
     next_id: u64,
 }
 impl OperationalState {
+    pub fn rebuild_after_restore(&mut self, w: &Warfare, world: &World) {
+        for p in self.plans.values_mut() {
+            p.distance = goal_distances(w, world, &p.country, &p.destination_line);
+        }
+    }
+    pub fn identifiers_valid(&self) -> bool {
+        self.plans.keys().all(|id| *id <= self.next_id)
+    }
     pub fn create(
         &mut self,
         w: &Warfare,
@@ -689,13 +697,13 @@ pub fn province_line(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         frontline::{FrontEdge, FrontState},
         game::GameDate,
     };
-    fn configured(kind: OrderType) -> (World, Warfare, u64, u64) {
+    pub fn configured(kind: OrderType) -> (World, Warfare, u64, u64) {
         let (world, mut w) = crate::frontline::tests::scenario();
         let ids: Vec<_> = (1..=12).collect();
         let a = w.create_army("A", &ids, "").unwrap();

@@ -340,7 +340,7 @@ pub fn pointer(
         }
     }
     if is_mouse_button_released(MouseButton::Left) {
-        if let Some((start, end)) = view.front_start.take().zip(view.front_hover) {
+        if let Some((_start, end)) = view.front_start.take().zip(view.front_hover) {
             if let Some(army) = view.selected_army {
                 let mut fronts = std::mem::take(&mut w.fronts);
                 let empty_selection = std::collections::BTreeSet::new();

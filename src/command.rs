@@ -194,6 +194,13 @@ impl CommandState {
         self.next_id = self.next_id.checked_add(1).expect("command ID exhausted");
         self.next_id
     }
+    pub fn identifiers_valid(&self) -> bool {
+        self.armies
+            .keys()
+            .chain(self.groups.keys())
+            .chain(self.theaters.keys())
+            .all(|id| *id <= self.next_id)
+    }
     pub fn members(&self, army: ArmyId) -> impl Iterator<Item = DivisionId> + '_ {
         self.membership
             .iter()

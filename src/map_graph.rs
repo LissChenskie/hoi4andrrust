@@ -173,6 +173,14 @@ impl MapGraph {
         h.finish()
     }
 
+    pub fn snapshot_fingerprint(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.source_fingerprint.hash(&mut h);
+        self.wrap_x.hash(&mut h);
+        format!("{:?}", self.connections).hash(&mut h);
+        self.adjacency_rules_source.hash(&mut h);
+        h.finish()
+    }
     pub fn matches_source(&self, width: u32, height: u32, rgba: &[u8], definition: &str) -> bool {
         self.source_fingerprint == Self::fingerprint(width, height, rgba, definition)
     }

@@ -22,7 +22,7 @@ enum Entry {
     Bare(String),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateEconomy {
     pub infrastructure: u16,
     pub civilian_factories: u16,

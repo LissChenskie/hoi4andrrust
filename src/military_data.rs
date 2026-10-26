@@ -222,6 +222,7 @@ pub fn import_units(source: &str, path: &str, db: &mut MilitaryCatalogue) -> Res
                 divisional: yes(b, "divisional", !yes(b, "regimental", false)),
                 regimental: yes(b, "regimental", false),
                 affects_speed: yes(b, "affects_speed", group != "support"),
+                equipment_speed_multiplier: true,
                 stats: raw,
                 need,
                 terrain,
@@ -738,7 +739,7 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
     );
     db.diagnostics.push("Supply, fuel, weather and air are resolved scenario inputs; no upstream logistics/air simulation yet".into());
     db.diagnostics.push("1.19 mastery/doctrines, battalion_mult, custom variants and attrition require further import/validation".into());
-    db.diagnostics.push("Operations: manual orders and basic AI; outgoing attacks are interrupted when their origin is attacked".into());
+    db.diagnostics.push("Operations: army/group front assignments and plan policies issue ordinary movement/combat orders; outgoing attacks are interrupted when their origin is attacked".into());
     db
 }
 
@@ -970,5 +971,55 @@ mod tests {
         let m = MilitaryModifiers::from_research(&db, &BTreeSet::from(["radio".into()]));
         assert_eq!(m.value("reinforce_rate"), 0.05);
         assert!(m.unlocked_equipment.contains("rifle"));
+    }
+}
+
+#[cfg(test)]
+mod equipment_movement_tests {
+    use super::*;
+    #[test]
+    fn motorized_speed_is_fastest_equipment_archetype_not_sum_and_logistics_reduces_demand() {
+        let mut db = MilitaryCatalogue::default();
+        import_units("sub_units={ mot={group=motorized active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 supply_consumption=1 need={rifles=100 trucks=50}} logistics={group=support active=yes type=support max_strength=1 max_organisation=20 supply_consumption_factor=-0.2 fuel_consumption_factor=-0.1} }","authored fixture",&mut db).unwrap();
+        for (id, arch, speed, fuel) in [
+            ("rifle", "rifles", 4.0, 0.0),
+            ("truck", "trucks", 12.0, 1.2),
+        ] {
+            db.equipment.insert(
+                id.into(),
+                EquipmentDefinition {
+                    id: id.into(),
+                    archetype: arch.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats: BTreeMap::from([
+                        ("maximum_speed".into(), speed),
+                        ("fuel_consumption".into(), fuel),
+                    ]),
+                    cost: 1.0,
+                    modular: false,
+                    source: "authored fixture".into(),
+                },
+            );
+        }
+        let t = DivisionTemplate {
+            name: "Mot".into(),
+            line: vec![BattalionSlot {
+                unit: "mot".into(),
+                column: 0,
+                row: 0,
+            }],
+            support: vec![SupportSlot {
+                unit: "logistics".into(),
+                regiment: None,
+                row: 0,
+            }],
+            ..Default::default()
+        };
+        let d = db.aggregate(&t, &Default::default(), None).unwrap();
+        assert_eq!(d.stats.speed, 12.0);
+        assert!((d.stats.fuel - 1.08).abs() < 1e-9);
+        assert_eq!(d.stats.supply, 0.8);
     }
 }

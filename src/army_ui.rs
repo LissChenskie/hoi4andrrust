@@ -20,12 +20,15 @@ enum Page {
 #[derive(Debug, Default)]
 pub struct ArmyView {
     pub open: bool,
+    pub orders_enabled: bool,
     pub selected: BTreeSet<u64>,
     pub map_drag: Option<crate::army_controls::Drag>,
     pub pan_last: Option<Vec2>,
     pub right_down: Option<Vec2>,
     pub strategic: bool,
     pub support_attack: bool,
+    pub touch_add: bool,
+    pub touch_box: bool,
     pub selected_army: Option<crate::command::ArmyId>,
     pub selected_front: Option<crate::frontline::FrontId>,
     pub selected_plan: Option<crate::operations::PlanId>,
@@ -64,7 +67,8 @@ impl ArmyView {
         self.designer.draft = None;
     }
     pub fn orders_visible(&self) -> bool {
-        self.selected_army.is_some()
+        self.orders_enabled
+            && self.selected_army.is_some()
             && (!self.open || matches!(self.page, Page::Command | Page::Divisions))
     }
     pub fn text_input_active(&self) -> bool {
@@ -82,7 +86,7 @@ impl ArmyView {
 pub fn bounds(view: &ArmyView) -> Rect {
     let mut r = crate::ui_layout::Layout::current().primary();
     if view.orders_visible() {
-        r.h -= (if screen_width() < 760.0 { 134.0 } else { 66.0 });
+        r.h -= if screen_width() < 760.0 { 134.0 } else { 66.0 };
     }
     r
 }
@@ -256,7 +260,7 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
         11.0,
         ui::MUTED,
     );
-    let list = Rect::new(x, a.y + 151.0, width, (a.h - 252.0).max(45.0));
+    let list = Rect::new(x, a.y + 151.0, width, (a.h - 286.0).max(45.0));
     let ids: Vec<_> = view.selected.iter().copied().collect();
     let rows = (list.h / 48.0).max(1.0) as usize;
     let max = ids.len().saturating_sub(rows);
@@ -321,7 +325,26 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
             view.selected.insert(*id);
         }
     }
-    label(&view.notice, x, a.bottom() - 89.0, width, 10.0, ui::GOLD);
+    label(&view.notice, x, a.bottom() - 122.0, width, 10.0, ui::GOLD);
+    if ui::small_button(
+        "+ Выделение",
+        Rect::new(x, a.bottom() - 112.0, (width - 5.0) / 2.0, 27.0),
+        view.touch_add,
+    ) {
+        view.touch_add = !view.touch_add;
+    }
+    if ui::small_button(
+        "Рамка",
+        Rect::new(
+            x + (width + 5.0) / 2.0,
+            a.bottom() - 112.0,
+            (width - 5.0) / 2.0,
+            27.0,
+        ),
+        view.touch_box,
+    ) {
+        view.touch_box = !view.touch_box;
+    }
     if ui::small_button(
         "Стоп · H",
         Rect::new(x, a.bottom() - 76.0, 95.0, 29.0),
@@ -500,6 +523,21 @@ pub fn draw(
                 }
             }
             y += 36.0;
+            if ui::small_button(
+                "Добавлять к выделению",
+                Rect::new(x, y, (width - 5.0) / 2.0, 28.0),
+                view.touch_add,
+            ) {
+                view.touch_add = !view.touch_add;
+            }
+            if ui::small_button(
+                "Выделение рамкой",
+                Rect::new(x + (width + 5.0) / 2.0, y, (width - 5.0) / 2.0, 28.0),
+                view.touch_box,
+            ) {
+                view.touch_box = !view.touch_box;
+            }
+            y += 35.0;
             if let Some(province) = selected_province {
                 let controller = world.controller_of_province(province).unwrap_or("---");
                 label(
@@ -689,7 +727,8 @@ pub fn draw(
             {
                 result(
                     view,
-                    w.export_combat_log(std::path::Path::new("combat-debug.json")),
+                    crate::platform_storage::game_file("combat-debug.json")
+                        .and_then(|path| w.export_combat_log(&path)),
                     "Журнал сохранён: combat-debug.json",
                 );
             }
@@ -978,7 +1017,7 @@ fn draw_templates(
     province: Option<u32>,
     view: &mut ArmyView,
     x: f32,
-    mut y: f32,
+    y: f32,
     width: f32,
     bottom: f32,
 ) {

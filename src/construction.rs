@@ -2,6 +2,7 @@
 //! Construction costs are loaded from common/buildings and the base factory speed
 //! from common/defines when the local HOI4 data directory is available.
 use crate::world::World;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::Path;
@@ -16,7 +17,7 @@ pub const DEFINES_DIRECTORY: &str = "data/hoi4/common/defines";
 pub const DEFAULT_INFRA_MAX_CONSTRUCTION_COST_EFFECT: f32 = 1.0;
 pub const MAX_INFRASTRUCTURE_LEVEL: u16 = 5;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BuildingType {
     Infrastructure,
     CivilianFactory,
@@ -162,7 +163,7 @@ impl BuildingType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BuildingDefinition {
     pub base_cost: f32,
     pub per_level_extra_cost: f32,
@@ -170,7 +171,7 @@ pub struct BuildingDefinition {
     pub infrastructure_construction_effect: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildingRules {
     definitions: HashMap<BuildingType, BuildingDefinition>,
     state_level_caps: HashMap<BuildingType, u16>,
@@ -588,7 +589,7 @@ fn top_level_yes_no(block: &str, field: &str) -> Option<bool> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstructionProject {
     pub building: BuildingType,
     pub progress: f32,
@@ -612,7 +613,7 @@ impl ConstructionProject {
 /// Parameters for independently stacking national, per-building and state speed
 /// modifiers. Additive bonuses are combined BEFORE the infrastructure multiplier.
 /// These are CONSTRUCTION bonuses, not military equipment production efficiency.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConstructionModifiers {
     pub national_bonus: f32,
     pub building_bonuses: HashMap<BuildingType, f32>,
@@ -662,7 +663,7 @@ impl ConstructionModifiers {
 
 /// Two presets explicitly documented in the user's research. Unset keeps the
 /// preexisting no-law fallback until real national laws are imported.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum EconomicLawPreset {
     #[default]
     Unset,
@@ -700,7 +701,7 @@ pub type ConstructionQueues = HashMap<u32, VecDeque<ConstructionProject>>;
 
 /// Country-specific economy inputs. Zeroed by default until economic laws/trade
 /// are loaded; we must not invent starting laws for imported countries.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct CountryConstructionPolicy {
     pub consumer_goods_fraction: f32,
     pub trade_civilian_factories: u32,
@@ -717,7 +718,7 @@ impl Default for CountryConstructionPolicy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstructionCapacity {
     pub total_civilian: u32,
     pub consumer_goods: u32,
@@ -875,7 +876,7 @@ pub fn cancel_project(queues: &mut ConstructionQueues, state_id: u32, index: usi
 
 /// Stable *within a queue mutation* reference for one construction order.
 /// When projects are removed, ConstructionOrder updates all subsequent indices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ProjectRef {
     pub state_id: u32,
     pub project_index: usize,
@@ -883,7 +884,7 @@ pub struct ProjectRef {
 
 /// National HOI4-style queue: every project has its own global priority, even
 /// when two projects are located in the same state.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConstructionOrder {
     pub lines: Vec<ProjectRef>,
 }
@@ -1083,7 +1084,7 @@ pub fn advance_day_by_order(
 
 /// One independently scheduled project. Up to 15 CIV are assigned per line.
 /// Two queued projects in the same state can use separate lines concurrently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineAllocation {
     pub state_id: u32,
     pub project_index: usize,

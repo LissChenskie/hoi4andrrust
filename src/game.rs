@@ -66,7 +66,7 @@ fn is_leap_year(year: u32) -> bool {
 }
 
 /// Core simulation clock. Rendering code can read this state but does not own time rules.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GameState {
     pub date: GameDate,
     pub hour: u8,
@@ -74,6 +74,7 @@ pub struct GameState {
     pub paused: bool,
     /// Simulation speed: one in-game day every SECONDS_PER_DAY / speed real seconds.
     pub speed: u8,
+    #[serde(skip)]
     accumulator: f64,
 }
 

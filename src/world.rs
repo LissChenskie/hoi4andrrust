@@ -1,14 +1,15 @@
 //! Authoritative world model, independent from Macroquad rendering.
 use crate::state::StateEconomy;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Country {
     pub tag: String,
     pub state_ids: BTreeSet<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub id: u32,
     pub name: Option<String>,
@@ -18,7 +19,7 @@ pub struct State {
     pub economy: StateEconomy,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CountryEconomy {
     pub states: u32,
     pub infrastructure_total: u32,
@@ -31,7 +32,7 @@ pub struct CountryEconomy {
     pub nuclear_reactors: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Province {
     pub id: u32,
     pub state_id: Option<u32>,
@@ -40,11 +41,12 @@ pub struct Province {
     pub control_revision: u64,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct World {
     pub countries: BTreeMap<String, Country>,
     pub states: BTreeMap<u32, State>,
     pub provinces: BTreeMap<u32, Province>,
+    #[serde(skip)]
     pub geography: crate::map_graph::MapGraph,
     pub control_revision: u64,
 }

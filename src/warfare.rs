@@ -11,7 +11,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProvinceConditions {
     pub weather: Option<String>,
     pub night_override: Option<bool>,
@@ -22,13 +22,15 @@ pub struct ProvinceConditions {
     pub attacker_air: AirSupport,
     pub defender_air: AirSupport,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
     pub command: crate::command::CommandState,
     pub abilities: crate::command_abilities::AbilityState,
     pub fronts: crate::frontline::FrontState,
     pub plans: crate::operations::OperationalState,
+    #[serde(skip)]
     pub automatic_order: bool,
+    #[serde(skip)]
     pub catalogue: Arc<MilitaryCatalogue>,
     pub countries: BTreeMap<String, CountryArmy>,
     pub divisions: BTreeMap<DivisionId, Division>,
@@ -77,6 +79,121 @@ impl Warfare {
             simulated_hours: 0,
             ai_enabled: true,
         }
+    }
+    pub fn clean_references(&mut self) {
+        self.fronts
+            .fronts
+            .retain(|_, f| self.command.armies.contains_key(&f.army));
+        self.plans.plans.retain(|_, p| {
+            self.command.armies.contains_key(&p.army)
+                && p.source_front
+                    .is_none_or(|f| self.fronts.fronts.contains_key(&f))
+        });
+        self.abilities
+            .headquarters
+            .retain(|_, h| self.command.armies.contains_key(&h.army));
+        for h in self.abilities.headquarters.values_mut() {
+            if h.plan.is_some_and(|p| !self.plans.plans.contains_key(&p)) {
+                h.plan = None;
+            }
+        }
+    }
+    pub fn validate_references(&self, world: &World) -> Result<(), String> {
+        if !self.command.identifiers_valid()
+            || !self.fronts.identifiers_valid()
+            || !self.plans.identifiers_valid()
+            || self.divisions.keys().any(|id| *id >= self.next_division_id)
+            || self.battles.keys().any(|id| *id >= self.next_battle_id)
+        {
+            return Err("Повреждены устойчивые идентификаторы армии".into());
+        }
+        for (&id, d) in &self.divisions {
+            if id != d.id
+                || !world.provinces.contains_key(&d.province)
+                || !self
+                    .countries
+                    .get(&d.country)
+                    .is_some_and(|c| c.templates.contains_key(&d.template))
+                || d.battle.is_some_and(|b| !self.battles.contains_key(&b))
+            {
+                return Err(format!("Повреждена ссылка дивизии {id}"));
+            }
+            let path = match &d.order {
+                DivisionOrder::Move { path, .. }
+                | DivisionOrder::StrategicRedeployment { path, .. } => path.clone(),
+                DivisionOrder::Retreat { destination, .. } => vec![*destination],
+                _ => Vec::new(),
+            };
+            if path.iter().any(|p| !world.provinces.contains_key(p)) {
+                return Err("Маршрут ссылается на отсутствующую провинцию".into());
+            }
+        }
+        if self.command.membership.iter().any(|(d, a)| {
+            !self.divisions.contains_key(d)
+                || !self
+                    .command
+                    .armies
+                    .get(a)
+                    .is_some_and(|a| a.country == self.divisions[d].country)
+        }) {
+            return Err("Повреждён состав армии".into());
+        }
+        for a in self.command.armies.values() {
+            if !self.command.theaters.contains_key(&a.theater)
+                || a.group
+                    .is_some_and(|g| !self.command.groups.contains_key(&g))
+                || a.general.as_ref().is_some_and(|c| {
+                    !self
+                        .command
+                        .commanders
+                        .get(c)
+                        .is_some_and(|c| c.country == a.country)
+                })
+            {
+                return Err("Повреждена структура командования".into());
+            }
+        }
+        for f in self.fronts.fronts.values() {
+            if !self.command.armies.contains_key(&f.army)
+                || f.assigned_divisions
+                    .iter()
+                    .any(|id| !self.divisions.contains_key(id))
+                || f.edges.iter().any(|e| {
+                    !world.provinces.contains_key(&e.friendly)
+                        || !world.provinces.contains_key(&e.enemy)
+                })
+            {
+                return Err("Повреждён фронт".into());
+            }
+        }
+        for p in self.plans.plans.values() {
+            if !self.command.armies.contains_key(&p.army)
+                || p.assigned_divisions
+                    .iter()
+                    .any(|id| !self.divisions.contains_key(id))
+                || p.destination_line
+                    .iter()
+                    .any(|id| !world.provinces.contains_key(id))
+                || p.source_front
+                    .is_some_and(|f| !self.fronts.fronts.contains_key(&f))
+            {
+                return Err("Повреждён план".into());
+            }
+        }
+        for b in self.battles.values() {
+            if !world.provinces.contains_key(&b.province)
+                || b.attackers
+                    .active
+                    .iter()
+                    .chain(&b.defenders.active)
+                    .chain(&b.attackers.reserves)
+                    .chain(&b.defenders.reserves)
+                    .any(|id| !self.divisions.contains_key(id))
+            {
+                return Err("Повреждён состав сражения".into());
+            }
+        }
+        Ok(())
     }
     pub fn export_combat_log(&self, path: &std::path::Path) -> Result<(), String> {
         let file = std::fs::File::create(path).map_err(|e| e.to_string())?;

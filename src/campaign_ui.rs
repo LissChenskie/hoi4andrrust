@@ -144,10 +144,13 @@ pub struct Hud {
     pub diplomacy_country: Option<String>,
     pub outliner: bool,
     pub minimap: bool,
+    pub orders_layout: bool,
     pub map_palette: bool,
     pub menu: bool,
     pub menu_was_paused: bool,
     pub reload_requested: bool,
+    pub save_requested: bool,
+    pub load_requested: bool,
     pub detail: Option<String>,
     pub scroll: usize,
     pub outliner_scroll: usize,
@@ -160,10 +163,13 @@ impl Default for Hud {
             diplomacy_country: None,
             outliner: true,
             minimap: true,
+            orders_layout: false,
             map_palette: false,
             menu: false,
             menu_was_paused: true,
             reload_requested: false,
+            save_requested: false,
+            load_requested: false,
             detail: None,
             scroll: 0,
             outliner_scroll: 0,
@@ -238,6 +244,13 @@ impl Hud {
             self.active = None;
         }
     }
+    pub fn minimap_bounds(&self) -> Rect {
+        let mut r = Layout::current().minimap();
+        if self.orders_layout {
+            r.y -= 66.0;
+        }
+        r
+    }
     pub fn regions(&self) -> Vec<Rect> {
         let l = Layout::current();
         let mut out = vec![
@@ -270,7 +283,7 @@ impl Hud {
         }
         out.push(Rect::new(l.width - 33.0, l.top + 5.0, 28.0, 28.0));
         if self.minimap && !l.compact {
-            out.push(l.minimap());
+            out.push(self.minimap_bounds());
         }
         out
     }
@@ -293,6 +306,8 @@ pub enum Action {
     Menu,
     Resume,
     MainMenu,
+    Save,
+    Load,
     Reload,
     DeclareWar(String),
 }
@@ -1734,15 +1749,21 @@ pub fn draw_modal(h: &mut Hud) -> Option<Action> {
             return Some(Action::Resume);
         }
         yy += 45.0;
-        ui::placeholder(
-            Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+        if ui::small_button(
             "Сохранить игру",
-        );
-        yy += 43.0;
-        ui::placeholder(
             Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+            false,
+        ) {
+            return Some(Action::Save);
+        }
+        yy += 43.0;
+        if ui::small_button(
             "Загрузить игру",
-        );
+            Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+            false,
+        ) {
+            return Some(Action::Load);
+        }
         yy += 43.0;
         if ui::small_button(
             "Перезагрузить отображение карты",

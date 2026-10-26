@@ -864,6 +864,7 @@ impl ResearchDataset {
                 "version.txt",
                 "research-runtime-evidence.json",
                 "military_profile.txt",
+                "military-command-profile.json",
                 "military-import-report.json",
             ] {
                 if root.join(name).is_file()
