@@ -104,6 +104,7 @@ pub struct CombatRules {
     pub planning_cap: f64,
     pub planning_daily: f64,
     pub planning_decay: f64,
+    pub manual_planning_decay: f64,
     pub night_attack: f64,
     pub air_superiority: f64,
     pub aa_max_reduction: f64,
@@ -173,6 +174,7 @@ impl Default for CombatRules {
             planning_cap: 0.3,
             planning_daily: 0.02,
             planning_decay: 0.01,
+            manual_planning_decay: 0.03,
             night_attack: -0.5,
             air_superiority: -0.35,
             aa_max_reduction: 0.75,
@@ -458,6 +460,22 @@ impl CombatRules {
                 }
                 "PLANNING_GAIN" => {
                     self.planning_daily = v.max(0.0);
+                    true
+                }
+                "PLAYER_ORDER_PLANNING_DECAY" => {
+                    self.manual_planning_decay = v.max(0.0);
+                    true
+                }
+                "BASE_DIVISION_BRIGADE_CHANGE_COST" => {
+                    self.line_edit_xp = v.max(0.0);
+                    true
+                }
+                "BASE_DIVISION_SUPPORT_SLOT_COST" => {
+                    self.support_edit_xp = v.max(0.0);
+                    true
+                }
+                "BASE_DIVISION_BRIGADE_GROUP_COST" => {
+                    self.new_group_xp = v.max(0.0);
                     true
                 }
                 "PLANNING_DECAY" => {

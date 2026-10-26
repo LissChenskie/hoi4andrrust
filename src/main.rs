@@ -20,6 +20,7 @@ mod map_pixels;
 mod military_data;
 mod military_history;
 mod military_model;
+mod operations;
 mod production;
 mod production_ui;
 pub use hoi4_mobile::pdx;

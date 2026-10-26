@@ -27,6 +27,10 @@ pub struct ArmyView {
     pub strategic: bool,
     pub selected_army: Option<crate::command::ArmyId>,
     pub selected_front: Option<crate::frontline::FrontId>,
+    pub selected_plan: Option<crate::operations::PlanId>,
+    pub plan_page: usize,
+    pub line_preview: Vec<u32>,
+    pub line_preview_end: Option<u32>,
     pub plan_tool: Option<crate::battle_plan_ui::Tool>,
     pub front_start: Option<crate::frontline::FrontEdge>,
     pub front_hover: Option<crate::frontline::FrontEdge>,
@@ -69,7 +73,7 @@ impl ArmyView {
 pub fn bounds(view: &ArmyView) -> Rect {
     let mut r = crate::ui_layout::Layout::current().primary();
     if view.selected_army.is_some() {
-        r.h -= (if screen_width() < 760.0 { 110.0 } else { 42.0 });
+        r.h -= (if screen_width() < 760.0 { 134.0 } else { 66.0 });
     }
     r
 }
@@ -115,7 +119,7 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
                 - crate::ui_layout::Layout::current().top
                 - 52.0
                 - if view.selected_army.is_some() {
-                    if screen_width() < 760.0 { 110.0 } else { 42.0 }
+                    if screen_width() < 760.0 { 134.0 } else { 66.0 }
                 } else {
                     0.0
                 })

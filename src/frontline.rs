@@ -146,6 +146,9 @@ pub struct FrontLine {
 pub struct FrontState {
     pub fronts: BTreeMap<FrontId, FrontLine>,
     pub manual: BTreeSet<u64>,
+    pub detached: BTreeSet<u64>,
+    #[serde(skip)]
+    pub active_orders: BTreeSet<u64>,
     pub revision: u64,
     next_id: u64,
     #[serde(skip)]
@@ -422,7 +425,10 @@ impl FrontState {
                 }
             }
             for (&d, &target) in &f.assignments {
-                if self.manual.contains(&d) {
+                if self.manual.contains(&d)
+                    || self.detached.contains(&d)
+                    || self.active_orders.contains(&d)
+                {
                     continue;
                 }
                 let Some(unit) = w.divisions.get(&d) else {
@@ -453,7 +459,7 @@ impl FrontState {
             .assigned_divisions
             .iter()
             .filter_map(|id| w.divisions.get(id))
-            .filter(|d| !self.manual.contains(&d.id))
+            .filter(|d| !self.manual.contains(&d.id) && !self.detached.contains(&d.id))
             .collect();
         if positions.is_empty() {
             f.assignments.clear();

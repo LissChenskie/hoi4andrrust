@@ -205,10 +205,25 @@ pub fn initialize(
                         number(state, "manpower", 0.0).max(0.0) as u64;
                 }
             }
+            for vp in h
+                .iter()
+                .filter(|e| e.key == "victory_points")
+                .filter_map(Entry::block)
+            {
+                for pair in vp.chunks_exact(2) {
+                    if let (Ok(id), Ok(value)) =
+                        (pair[0].key.parse::<u32>(), pair[1].key.parse::<f64>())
+                    {
+                        warfare.conditions.entry(id).or_default().victory_points = value.max(0.0);
+                    }
+                }
+            }
             for province in block(h, "buildings").unwrap_or(&[]) {
                 if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
-                    warfare.conditions.entry(id).or_default().fort_level =
-                        number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
+                    let c = warfare.conditions.entry(id).or_default();
+                    c.fort_level = number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
+                    c.naval_base = number(b, "naval_base", 0.0).clamp(0.0, 100.0) as u16;
+                    c.supply_node = number(b, "supply_node", 0.0) > 0.0;
                 }
             }
         }
