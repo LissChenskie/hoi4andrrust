@@ -61,6 +61,9 @@ pub struct World {
     /// Non-stockpiled daily deposits, keyed by state then game-defined resource ID.
     #[serde(default)]
     pub resources_by_state: BTreeMap<u32, BTreeMap<String, u32>>,
+    /// Rented civilian factories from completed foreign resource imports.
+    #[serde(default)]
+    pub trade_factory_income: BTreeMap<String, u32>,
     pub provinces: BTreeMap<u32, Province>,
     #[serde(skip)]
     pub geography: crate::map_graph::MapGraph,
@@ -175,6 +178,8 @@ impl World {
             totals.rocket_sites += u32::from(state.economy.rocket_sites);
             totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
         }
+        totals.civilian_factories = totals.civilian_factories
+            .saturating_add(self.trade_factory_income.get(country_tag).copied().unwrap_or(0));
         Some(totals)
     }
 
