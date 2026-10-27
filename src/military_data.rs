@@ -613,14 +613,23 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
                                 buildable: yes(b, "is_buildable", true),
                                 year: number(b, "year", 0.0).max(0.0) as u32,
                                 stats: stats(b, &vars),
-                                resources: block(b, "resources").map(|values| values
-                                    .iter()
-                                    .filter_map(|entry| {
-                                        let n = entry.atom().and_then(|a| scalar_value(a, &vars, 0))?;
-                                        if !n.is_finite() || n < 0.0 { return None; }
-                                        Some((entry.key.clone(), n.floor().min(u32::MAX as f64) as u32))
-                                    })
-                                    .collect()),
+                                resources: block(b, "resources").map(|values| {
+                                    values
+                                        .iter()
+                                        .filter_map(|entry| {
+                                            let n = entry
+                                                .atom()
+                                                .and_then(|a| scalar_value(a, &vars, 0))?;
+                                            if !n.is_finite() || n < 0.0 {
+                                                return None;
+                                            }
+                                            Some((
+                                                entry.key.clone(),
+                                                n.floor().min(u32::MAX as f64) as u32,
+                                            ))
+                                        })
+                                        .collect()
+                                }),
                                 modules: module_values,
                                 requires_modules: find(b, "module_slots")
                                     .is_some_and(|e| e.atom() != Some("none")),
@@ -647,10 +656,14 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
         raw: &BTreeMap<String, RawEquipment>,
         visited: &mut BTreeSet<String>,
     ) -> BTreeMap<String, u32> {
-        if !visited.insert(id.into()) { return BTreeMap::new(); }
+        if !visited.insert(id.into()) {
+            return BTreeMap::new();
+        }
         let result = raw.get(id).map_or_else(BTreeMap::new, |e| {
             e.resources.clone().unwrap_or_else(|| {
-                e.archetype.as_deref().map_or_else(BTreeMap::new, |p| inherited_resources(p, raw, visited))
+                e.archetype
+                    .as_deref()
+                    .map_or_else(BTreeMap::new, |p| inherited_resources(p, raw, visited))
             })
         });
         visited.remove(id);
