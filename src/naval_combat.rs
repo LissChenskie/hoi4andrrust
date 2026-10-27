@@ -38,12 +38,11 @@ fn line(ship: &EquipmentDefinition) -> Line {
     }
 }
 fn stat(def: &EquipmentDefinition, key: &str) -> f64 {
-    def.stats
-        .get(key)
-        .copied()
-        .filter(|v| v.is_finite())
-        .unwrap_or(0.)
-        .max(0.)
+    def.stats.get(key).copied().filter(|v|v.is_finite()).unwrap_or(0.).max(0.)
+}
+fn ship_stat(nav:&NavalState, ship:&crate::naval_warfare::NavalShip,w:&Warfare,key:&str)->f64 {
+    nav.ship_stats(ship,w).and_then(|v|v.get(key)).copied()
+        .filter(|v|v.is_finite()).unwrap_or(0.).max(0.)
 }
 fn ship_strength(nav: &NavalState, id: u64, idx: usize) -> f64 {
     nav.task_forces
@@ -79,6 +78,10 @@ impl Default for ShipCondition {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NavalBattleReport {
+    #[serde(default)]
+    pub carrier_sorties: u32,
+    #[serde(default)]
+    pub aircraft_losses: u32,
     pub hour: u64,
     pub region: u32,
     pub attacker: String,
@@ -188,12 +191,11 @@ fn targets(nav: &NavalState, tf: u64, w: &Warfare) -> Vec<Target> {
             task_force: tf,
             index: idx,
             group: line(def),
-            visibility: stat(def, "surface_visibility")
-                .max(stat(def, "sub_visibility"))
-                .max(1.),
-            speed: stat(def, "maximum_speed"),
-            armor: stat(def, "armor_value"),
-            max_hp: stat(def, "max_strength").max(1.),
+            visibility: ship_stat(nav,ship,w,"surface_visibility")
+                .max(ship_stat(nav,ship,w,"sub_visibility")).max(1.),
+            speed: ship_stat(nav,ship,w,"maximum_speed"),
+            armor: ship_stat(nav,ship,w,"armor_value"),
+            max_hp: ship_stat(nav,ship,w,"max_strength").max(1.),
         });
     }
     result
@@ -267,11 +269,8 @@ impl NavalState {
                 .iter()
                 .filter(|s| s.strength > 0.)
                 .filter_map(|s| {
-                    warfare
-                        .catalogue
-                        .equipment
-                        .get(&s.model)
-                        .map(|def| stat(def, "fuel_consumption") * s.strength)
+                    self.ship_stats(s,warfare)
+                        .map(|def| def.get("fuel_consumption").copied().unwrap_or(0.) * s.strength)
                 })
                 .sum::<f64>()
                 .max(0.)
@@ -332,9 +331,9 @@ impl NavalState {
                         .ships
                         .iter()
                         .filter_map(|s| {
-                            warfare.catalogue.equipment.get(&s.model).map(|d| {
-                                (stat(d, "surface_detection") + stat(d, "sub_detection"))
-                                    * s.strength
+                            self.ship_stats(s,warfare).map(|d| {
+                                (d.get("surface_detection").copied().unwrap_or(0.)
+                                    + d.get("sub_detection").copied().unwrap_or(0.)) * s.strength
                             })
                         })
                         .sum::<f64>()
@@ -416,10 +415,8 @@ impl NavalState {
         ] {
             let country = &self.task_forces[&src].country;
             for ship in own {
-                let model = &self.task_forces[&src].ships[ship.index].model;
-                let Some(def) = w.catalogue.equipment.get(model) else {
-                    continue;
-                };
+                let ship_model = &self.task_forces[&src].ships[ship.index];
+                if w.catalogue.equipment.get(&ship_model.model).is_none() {continue;}
                 let impairment = self
                     .conditions
                     .get(&(src, ship.index))
@@ -431,16 +428,16 @@ impl NavalState {
                 let base =
                     (ship_strength(self, src, ship.index) * org * (1. - impairment) * fuel).max(0.);
                 for (weapon, category, power, profile, interval) in [
-                    (0_u8, 0_u8, stat(def, "light_attack"), 45., 1_u64),
-                    (1, 1, stat(def, "heavy_attack"), 70., 1),
+                    (0_u8, 0_u8, ship_stat(self,ship_model,w,"light_attack"), 45., 1_u64),
+                    (1, 1, ship_stat(self,ship_model,w,"heavy_attack"), 70., 1),
                     (
                         2,
                         3,
-                        stat(def, "torpedo_attack"),
+                        ship_stat(self,ship_model,w,"torpedo_attack"),
                         100.,
                         rules.torpedo_interval,
                     ),
-                    (3, 2, stat(def, "sub_attack"), 100., 1),
+                    (3, 2, ship_stat(self,ship_model,w,"sub_attack"), 100., 1),
                 ] {
                     if power <= 0. || base <= 0. || hour % interval != 0 {
                         continue;
@@ -473,9 +470,9 @@ impl NavalState {
                         continue;
                     }
                     let pierce = if weapon == 2 {
-                        stat(def, "torpedo_piercing")
+                        ship_stat(self,ship_model,w,"torpedo_piercing")
                     } else {
-                        stat(def, "ap_attack") + stat(def, "hg_armor_piercing")
+                        ship_stat(self,ship_model,w,"ap_attack") + ship_stat(self,ship_model,w,"hg_armor_piercing")
                     };
                     let armor_effect = if target.armor > pierce && weapon != 2 {
                         0.5
@@ -491,6 +488,20 @@ impl NavalState {
                         critical,
                     });
                 }
+            }
+        }
+        // Carrier sorties run after surface shots are collected but before
+        // the simultaneous damage snapshot is committed.
+        let mut sorties=0_u32;
+        let mut plane_losses=0_u32;
+        for (src,dst) in [(a,b),(b,a)] {
+            for strike in self.carrier_air_strike(src,dst,w,hour) {
+                sorties=sorties.saturating_add(strike.aircraft_launched);
+                plane_losses=plane_losses.saturating_add(strike.aircraft_losses);
+                impacts.push(Hit {
+                    target:(strike.target_force,strike.target_index),
+                    damage:strike.relative_damage,org:strike.relative_damage,critical:false,
+                });
             }
         }
         let mut summed = BTreeMap::<(u64, usize), (f64, f64, bool)>::new();
@@ -546,6 +557,7 @@ impl NavalState {
             }
         }
         NavalBattleReport {
+            carrier_sorties:sorties,aircraft_losses:plane_losses,
             hour,
             region,
             attacker: ca,
