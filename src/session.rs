@@ -439,7 +439,7 @@ impl GameSession {
         // Carriers draw aircraft from the same real equipment stockpile as
         // land airfields and never receive free replacement aircraft.
         let mut navy = std::mem::take(&mut self.military.naval);
-        navy.replenish_carriers(&self.military, &mut self.production);
+        navy.replenish_carriers(&self.world, &self.military, &mut self.production);
         self.military.naval = navy;
         self.military.replenish(&mut self.production);
         for tag in &tags {
