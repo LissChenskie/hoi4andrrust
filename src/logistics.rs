@@ -228,7 +228,9 @@ impl LogisticsState {
         world: &World,
         catalogue: &crate::military_model::MilitaryCatalogue,
     ) {
+        let mut reservation_changed = false;
         for (tag, c) in &mut self.countries {
+            let before = c.truck_count();
             let hubs = self
                 .motorized_hubs
                 .iter()
@@ -257,6 +259,11 @@ impl LogisticsState {
                 excess -= returned;
                 *stock.entry(model.clone()).or_default() += returned;
             }
+            reservation_changed |= c.truck_count() != before;
+        }
+        if reservation_changed {
+            // Newly allocated trucks change the effective motorization range.
+            self.network_key = None;
         }
     }
     pub fn validate(&self, world: &World) -> Result<(), String> {
@@ -818,6 +825,7 @@ mod integration_regressions {
             .countries
             .insert("A".into(), CountryLogistics::default());
         logistics.motorized_hubs.insert(1);
+        logistics.network_key = Some((1, 0));
         let mut production = ProductionState::default();
         production
             .country_mut("A")
@@ -839,6 +847,7 @@ mod integration_regressions {
             },
         );
         logistics.reserve_trucks(&mut production, &world, &db);
+        assert_eq!(logistics.network_key, None);
         assert_eq!(
             production.country("A").unwrap().model_stockpile["truck_test"],
             15
