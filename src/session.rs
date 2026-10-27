@@ -248,6 +248,9 @@ impl GameSession {
         // and air forces. Hull types are never manufactured as placeholders.
         self.military.naval =
             crate::naval_warfare::import_naval_oob(root, &self.world, &self.military);
+        let mut navy = std::mem::take(&mut self.military.naval);
+        crate::naval_warfare::import_navy_leaders(root, &self.military, self.clock.date, &mut navy);
+        self.military.naval = navy;
         if let Some(speed) = self
             .military
             .catalogue
