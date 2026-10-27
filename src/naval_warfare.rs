@@ -625,6 +625,97 @@ mod tests {
         assert_eq!(m, NavalMission::Hold);
     }
     #[test]
+    fn dockyards_reject_locked_hulls_then_commission_researched_ships() {
+        use crate::military_model::{CountryArmy, EquipmentDefinition};
+        use crate::state::StateEconomy;
+        use std::collections::HashMap;
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1)]), &HashMap::from([(1, "A".into())]),
+            &HashMap::new(),
+            &HashMap::from([(1, StateEconomy {
+                dockyards: 2, ..Default::default()
+            })]), &HashMap::new(),
+        );
+        let mut db = MilitaryCatalogue::default();
+        db.equipment.insert("ship_hull_light_1".into(), EquipmentDefinition {
+            id: "ship_hull_light_1".into(), archetype: "ship_hull_light".into(),
+            year: 1936, active: false, buildable: true,
+            stats: BTreeMap::new(), cost: 5.0, modular: false, source: "fixture".into(),
+        });
+        db.equipment_resources.insert("ship_hull_light_1".into(),
+            BTreeMap::from([("steel".into(), 1)]));
+        let mut warfare = Warfare::new(db);
+        warfare.countries.insert("A".into(), CountryArmy::default());
+        warfare.conditions.insert(1, crate::warfare::ProvinceConditions {
+            naval_base: 1, ..Default::default()
+        });
+        let mut navy = NavalState::default();
+        assert!(navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare).is_err());
+        warfare.countries.get_mut("A").unwrap().modifiers
+            .unlocked_equipment.insert("ship_hull_light_1".into());
+        navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare).unwrap();
+        let mut materials = BTreeMap::from([("steel".into(), 2)]);
+        navy.tick_shipbuilding("A", 2, &world, &warfare, &mut materials, 0.05);
+        assert_eq!(materials["steel"], 0);
+        assert_eq!(navy.shipbuilding["A"][0].completed, 1);
+        assert_eq!(navy.task_forces.values().map(|tf| tf.ships.len()).sum::<usize>(), 1);
+        let before = navy.shipbuilding["A"][0].completed;
+        // Fewer imported steel deposits produces a per-dockyard penalty;
+        // finishing a ship still requires enough actual IC.
+        navy.shipbuilding.get_mut("A").unwrap()[0].partial_ic = 0.0;
+        materials.insert("steel".into(), 0);
+        navy.tick_shipbuilding("A", 2, &world, &warfare, &mut materials, 0.10);
+        assert!(navy.shipbuilding["A"][0].last_day_ic < 5.0);
+        assert_eq!(navy.shipbuilding["A"][0].completed, before);
+        // No magic dockyard construction in captured/foreign ports.
+        world.set_province_controller(1, None);
+        navy.tick_shipbuilding("A", 2, &world, &warfare, &mut materials, 0.05);
+        assert_eq!(navy.shipbuilding["A"][0].last_day_ic, 0.0);
+    }
+
+    #[test]
+    fn historical_fleet_import_preserves_named_hulls_and_owner() {
+        use crate::military_model::{CountryArmy, EquipmentDefinition};
+        use std::collections::HashMap;
+        let root = std::env::temp_dir().join(format!("hoi4-naval-fixture-{}", std::process::id()));
+        let units = root.join("history/units");
+        std::fs::create_dir_all(&units).unwrap();
+        let content = r#"units = { fleet = {
+            name = "Historical fleet" naval_base = 1
+            task_force = { name = "Task force 1" location = 1
+                ship = { name = "Ship Alpha" definition = destroyer
+                    equipment = { ship_hull_light_1 = { amount = 1 owner = A } }
+                }
+            }
+        } }"#;
+        std::fs::write(units.join("A_1936.txt"), content).unwrap();
+        let world = World::from_map_data(
+            &HashMap::from([(1, 1)]), &HashMap::from([(1, "A".into())]),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+        );
+        let mut db = MilitaryCatalogue::default();
+        db.equipment.insert("ship_hull_light_1".into(), EquipmentDefinition {
+            id: "ship_hull_light_1".into(), archetype: "ship_hull_light".into(),
+            year: 1936, active: true, buildable: true,
+            stats: BTreeMap::new(), cost: 4.0, modular: false, source: "fixture".into(),
+        });
+        let mut warfare = Warfare::new(db);
+        let mut army = CountryArmy::default();
+        army.history_oobs.push("A_1936".into());
+        warfare.countries.insert("A".into(), army);
+        warfare.conditions.insert(1, crate::warfare::ProvinceConditions {
+            naval_base: 2, ..Default::default()
+        });
+        let navy = import_naval_oob(&root, &world, &warfare);
+        assert_eq!(navy.task_forces.len(), 1);
+        let force = navy.task_forces.values().next().unwrap();
+        assert_eq!(force.name, "Task force 1");
+        assert_eq!(force.ships[0].name, "Ship Alpha");
+        assert_eq!(force.ships[0].model, "ship_hull_light_1");
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
     fn naval_building_rejects_unresearched_hulls() {
         use crate::military_model::EquipmentDefinition;
         let mut cat = MilitaryCatalogue::default();
