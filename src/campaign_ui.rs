@@ -131,10 +131,8 @@ impl Panel {
                 | Self::Decisions
                 | Self::Trade
                 | Self::Agency
-                | Self::Officer
                 | Self::Focus
                 | Self::Navy
-                | Self::Air
         )
     }
 }
@@ -144,13 +142,17 @@ pub struct Hud {
     pub diplomacy_country: Option<String>,
     pub outliner: bool,
     pub minimap: bool,
+    pub orders_layout: bool,
     pub map_palette: bool,
     pub menu: bool,
     pub menu_was_paused: bool,
     pub reload_requested: bool,
+    pub save_requested: bool,
+    pub load_requested: bool,
     pub detail: Option<String>,
     pub scroll: usize,
     pub outliner_scroll: usize,
+    pub army_dock_scroll: usize,
     pub notice: String,
 }
 impl Default for Hud {
@@ -160,13 +162,17 @@ impl Default for Hud {
             diplomacy_country: None,
             outliner: true,
             minimap: true,
+            orders_layout: false,
             map_palette: false,
             menu: false,
             menu_was_paused: true,
             reload_requested: false,
+            save_requested: false,
+            load_requested: false,
             detail: None,
             scroll: 0,
             outliner_scroll: 0,
+            army_dock_scroll: 0,
             notice: String::new(),
         }
     }
@@ -186,6 +192,7 @@ impl Hud {
         r.open = false;
         r.browsing = false;
         a.close();
+        a.deployment_pick = false;
         self.active = panel;
         self.scroll = 0;
         self.detail = None;
@@ -197,6 +204,12 @@ impl Hud {
                 r.browsing = false;
             }
             Some(Panel::Army) => a.open = true,
+            Some(Panel::Recruitment) => a.show_recruitment(),
+            Some(Panel::Officer) => a.show_command(false),
+            Some(Panel::Air) => {
+                a.show_command(false);
+                a.mobile.page = crate::mobile_army_ui::MobilePage::Logistics;
+            }
             _ => {}
         }
     }
@@ -231,12 +244,19 @@ impl Hud {
             Some(Panel::Construction) => !c.open,
             Some(Panel::Production) => !p.open,
             Some(Panel::Research) => !r.open,
-            Some(Panel::Army) => !a.open,
+            Some(Panel::Army | Panel::Recruitment | Panel::Officer | Panel::Air) => !a.open,
             _ => false,
         };
         if closed {
             self.active = None;
         }
+    }
+    pub fn minimap_bounds(&self) -> Rect {
+        let mut r = Layout::current().minimap();
+        if self.orders_layout {
+            r.y = crate::battle_plan_ui::toolbar_bounds().y - 42.0 - 8.0 - r.h;
+        }
+        r
     }
     pub fn regions(&self) -> Vec<Rect> {
         let l = Layout::current();
@@ -270,7 +290,7 @@ impl Hud {
         }
         out.push(Rect::new(l.width - 33.0, l.top + 5.0, 28.0, 28.0));
         if self.minimap && !l.compact {
-            out.push(l.minimap());
+            out.push(self.minimap_bounds());
         }
         out
     }
@@ -284,6 +304,11 @@ pub enum Action {
     Open(Panel),
     Select(u64),
     SelectAll,
+    SelectArmy(u64, bool),
+    AssignArmy(u64),
+    ToggleArmy(u64),
+    CreateArmy,
+    Commander,
     Designer(usize),
     Stop,
     Redeploy,
@@ -293,6 +318,8 @@ pub enum Action {
     Menu,
     Resume,
     MainMenu,
+    Save,
+    Load,
     Reload,
     DeclareWar(String),
 }
@@ -418,6 +445,24 @@ pub fn draw_chrome(
     let factories = economy.civilian_factories + economy.military_factories + economy.dockyards;
     let manpower = number(army.map_or(0, |a| a.manpower_pool));
     let xp = army.map_or("—".into(), |a| format!("{:.0}", a.army_xp));
+    let support = tag.and_then(|t| w.logistics.countries.get(t));
+    let fuel_body=support.map_or("Нет исходных топливных данных".into(),|c|format!("Запас {:.0} / {:.0}; расход за час {:.1}. Дивизии и авиация расходуют один национальный запас. Нажмите для управления.",c.fuel,c.fuel_capacity,c.fuel_used_last_hour));
+    let mut demand = 0.;
+    let mut received = 0.;
+    for d in w
+        .divisions
+        .values()
+        .filter(|d| !d.destroyed && Some(d.country.as_str()) == tag)
+    {
+        let n = crate::logistics::supply_demand(d);
+        demand += n;
+        received += n * d.supply_fraction.clamp(0., 1.);
+    }
+    let supply_label = if demand > 0. && w.logistics.enabled {
+        format!("{:.0}%", received / demand * 100.)
+    } else {
+        "—".into()
+    };
     let metrics = [
         (
             Icon::Power,
@@ -456,24 +501,28 @@ pub fn draw_chrome(
         ),
         (
             Icon::Fuel,
-            "—".into(),
+            support.map_or("—".into(), |c| number(c.fuel.max(0.) as u64)),
             "Топливо",
-            "ЗАГЛУШКА · Национальный топливный баланс ещё не рассчитывается.",
-            false,
+            fuel_body.as_str(),
+            support.is_some(),
         ),
         (
             Icon::Convoy,
-            "—".into(),
+            support.map_or("—".into(), |c| number(c.convoys)),
             "Конвои",
-            "ЗАГЛУШКА · Производство и маршруты конвоев ещё не реализованы.",
-            false,
+            "Парк конвоев ограничивает морское снабжение через порты. Морское производство и бои флотов пока не моделируются. Нажмите для управления.",
+            support.is_some(),
         ),
         (
             Icon::Command,
-            "—".into(),
+            tag.and_then(|t| w.countries.get(t))
+                .and_then(|c| c.command_power)
+                .map_or_else(|| "—".into(), |p| format!("{p:.1}")),
             "Командный ресурс",
-            "ЗАГЛУШКА · Командный ресурс ещё не реализован.",
-            false,
+            "Command Power из состояния страны. Расходуется на доступные способности командующих.",
+            tag.and_then(|t| w.countries.get(t))
+                .and_then(|c| c.command_power)
+                .is_some(),
         ),
         (
             Icon::Army,
@@ -493,15 +542,15 @@ pub fn draw_chrome(
             Icon::Air,
             "—".into(),
             "Опыт авиации",
-            "ЗАГЛУШКА · Воздушная система ещё не реализована.",
+            "Опыт авиации пока не начисляется. Региональные воздушные миссии доступны через кнопку авиации.",
             false,
         ),
         (
             Icon::Supply,
-            "—".into(),
+            supply_label,
             "Снабжение",
-            "ЗАГЛУШКА · Национальная логистическая сеть ещё не рассчитывается.",
-            false,
+            "Обеспеченность действующих дивизий с учётом доставки и переносимых запасов. Нажмите для просмотра сети, моторизации и топлива.",
+            w.logistics.enabled,
         ),
         (
             Icon::Nuclear,
@@ -531,6 +580,15 @@ pub fn draw_chrome(
             body,
             *live,
         );
+    }
+    if is_mouse_button_pressed(MouseButton::Left) {
+        for (i, (icon, _, _, _, _)) in metrics.iter().take(count).enumerate() {
+            if matches!(icon, Icon::Fuel | Icon::Convoy | Icon::Supply)
+                && ui::inside(Rect::new(start + i as f32 * mw, y, mw, 30.))
+            {
+                actions.push(Action::Open(Panel::Air));
+            }
+        }
     }
     let nav_y = if l.compact { 70.0 } else { 35.0 * l.scale };
     let nav_h = l.top - nav_y - 4.0;
@@ -795,7 +853,7 @@ fn draw_outliner(h: &mut Hud, tag: Option<&str>, w: &Warfare, actions: &mut Vec<
     }
 }
 fn draw_dock(
-    _h: &mut Hud,
+    h: &mut Hud,
     tag: Option<&str>,
     w: &Warfare,
     selection: &ArmyView,
@@ -803,66 +861,196 @@ fn draw_dock(
 ) {
     let r = Layout::current().army_dock();
     ui::panel(r.x, r.y, r.w, r.h);
+    let compact = Layout::current().compact;
+    let all = Rect::new(
+        r.x + 3.0,
+        r.y + 4.0,
+        if compact { 34.0 } else { 80.0 },
+        r.h - 8.0,
+    );
     let n = w
         .divisions
         .values()
         .filter(|d| Some(d.country.as_str()) == tag && !d.destroyed)
         .count();
-    let card = Rect::new(
-        r.x + 4.0,
-        r.y + 4.0,
-        if r.w < 300.0 { r.w - 8.0 } else { 135.0 },
-        r.h - 8.0,
-    );
     if ui::small_button(
-        &format!("Дивизии: {n}"),
-        card,
-        !selection.selected.is_empty(),
+        &if compact {
+            n.to_string()
+        } else {
+            format!("Все: {n}")
+        },
+        all,
+        false,
     ) {
         actions.push(Action::SelectAll);
     }
     ui::tooltip(
-        card,
-        "Сухопутная армия",
-        "Выбрать все свои дивизии. Приказы: ПКМ по провинции; Shift + ПКМ добавляет маршрут.",
+        all,
+        "Все сухопутные дивизии",
+        "Выделить все свои соединения. ПКМ по карте — ручной приказ.",
     );
-    let mut x = card.right() + 5.0;
-    if x + 292.0 < r.right() {
-        for (label, action) in [("■ H", Action::Stop), ("⇥", Action::Redeploy)] {
-            let b = Rect::new(x, r.y + 5.0, 43.0, r.h - 10.0);
-            if ui::small_button(
-                label,
-                b,
-                matches!(action, Action::Redeploy) && selection.strategic,
-            ) {
-                actions.push(action);
-            }
-            x += 47.0;
+    let add = Rect::new(
+        all.right() + 3.0,
+        r.y + 4.0,
+        if compact { 28.0 } else { 38.0 },
+        r.h - 8.0,
+    );
+    if ui::small_button("+", add, false) {
+        actions.push(Action::CreateArmy);
+    }
+    ui::tooltip(
+        add,
+        "Создать армию",
+        "Сначала выделите дивизии. Они будут объединены в новую армию.",
+    );
+    let armies: Vec<_> = w
+        .command
+        .armies
+        .values()
+        .filter(|a| Some(a.country.as_str()) == tag)
+        .collect();
+    let available = (r.right() - add.right() - 10.0).max(0.0);
+    let cw = if compact { 60.0 } else { 135.0 };
+    let capacity = (available / cw).floor() as usize;
+    h.army_dock_scroll = h
+        .army_dock_scroll
+        .min(armies.len().saturating_sub(capacity.max(1)));
+    if ui::inside(r) {
+        let dy = mouse_wheel().1;
+        if dy > 0.0 {
+            h.army_dock_scroll = h.army_dock_scroll.saturating_sub(1);
+        } else if dy < 0.0 {
+            h.army_dock_scroll =
+                (h.army_dock_scroll + 1).min(armies.len().saturating_sub(capacity.max(1)));
         }
-        for (icon, title) in [
-            (Icon::Flag, "Линия фронта"),
-            (Icon::Army, "План наступления"),
-            (Icon::Terrain, "Рубеж отступления"),
-            (Icon::Recruit, "Назначение генерала"),
-        ] {
-            let b = Rect::new(x, r.y + 5.0, 33.0, r.h - 10.0);
-            ui_icons::draw(
-                icon,
-                Rect::new(b.x + 5.0, b.y + 4.0, b.w - 10.0, b.h - 8.0),
-                ui::MUTED,
-            );
-            draw_rectangle_lines(b.x, b.y, b.w, b.h, 1.0, ui::EDGE);
-            ui::tooltip(
-                b,
-                title,
-                "ЗАГЛУШКА · Эта система приказов ещё не реализована.",
-            );
-            x += 37.0;
+    }
+    for (slot, a) in armies
+        .iter()
+        .skip(h.army_dock_scroll)
+        .take(capacity)
+        .enumerate()
+    {
+        let b = Rect::new(
+            add.right() + 5.0 + slot as f32 * cw,
+            r.y + 4.0,
+            cw - 4.0,
+            r.h - 8.0,
+        );
+        let selected = selection.selected_army == Some(a.id);
+        ui::row_bg(b, selected, false);
+        let color = Color::new(
+            a.color[0] as f32 / 255.0,
+            a.color[1] as f32 / 255.0,
+            a.color[2] as f32 / 255.0,
+            1.0,
+        );
+        draw_rectangle(b.x, b.bottom() - 3.0, b.w, 3.0, color);
+        let portrait = Rect::new(b.x + 3.0, b.y + 2.0, 26.0, b.h - 5.0);
+        ui_icons::draw(
+            Icon::Officer,
+            portrait,
+            if a.general.is_some() {
+                ui::GOLD
+            } else {
+                ui::MUTED
+            },
+        );
+        let general = a
+            .general
+            .as_ref()
+            .and_then(|id| w.command.commanders.get(id))
+            .map(|c| c.name.as_str())
+            .unwrap_or("Назначить генерала");
+        ui::tooltip(
+            portrait,
+            general,
+            "ЛКМ: выбрать армию. Генерал назначается через портрет в левой панели. ПКМ по карточке: перевести выделенные дивизии.",
+        );
+        ui::label(
+            &if compact {
+                w.command.members(a.id).count().to_string()
+            } else {
+                format!("{} · {}", a.name, w.command.members(a.id).count())
+            },
+            Rect::new(
+                b.x + 32.0,
+                b.y + if compact { 29.0 } else { 5.0 },
+                b.w - if compact { 35.0 } else { 62.0 },
+                20.0,
+            ),
+            11.0,
+            ui::TEXT,
+        );
+        ui::tooltip(
+            b,
+            &a.name,
+            &format!("{} дивизий · {general}", w.command.members(a.id).count()),
+        );
+        let active =
+            w.plans.plans.values().any(|p| {
+                p.army == a.id && p.activation == crate::operations::Activation::Executing
+            });
+        let play = Rect::new(b.right() - 24.0, b.y + 3.0, 21.0, 22.0);
+        if ui::small_button(if active { "■" } else { "▶" }, play, active) {
+            actions.push(Action::ToggleArmy(a.id));
         }
+        ui::tooltip(
+            play,
+            if active {
+                "Остановить планы армии"
+            } else {
+                "Выполнить планы армии"
+            },
+            "Отдельное управление исполнением этой армии. Время идёт после снятия паузы.",
+        );
+        if !compact {
+            ui::label(
+                if active {
+                    "ПЛАНЫ ВКЛЮЧЕНЫ"
+                } else {
+                    "ПЛАНЫ ОСТАНОВЛЕНЫ"
+                },
+                Rect::new(b.x + 32.0, b.y + 29.0, b.w - 35.0, 18.0),
+                9.0,
+                if active { ui::GREEN } else { ui::MUTED },
+            );
+        }
+        let mouse = vec2(mouse_position().0, mouse_position().1);
+        if ui::inside(b) && !play.contains(mouse) && is_mouse_button_pressed(MouseButton::Left) {
+            actions.push(Action::SelectArmy(
+                a.id,
+                is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift),
+            ));
+        }
+        if ui::inside(b) && is_mouse_button_pressed(MouseButton::Right) {
+            actions.push(Action::AssignArmy(a.id));
+        }
+    }
+    if capacity == 0
+        && !armies.is_empty()
+        && ui::small_button(
+            "Армии",
+            Rect::new(
+                add.right() + 3.0,
+                r.y + 4.0,
+                (r.right() - add.right() - 6.0).max(1.0),
+                r.h - 8.0,
+            ),
+            false,
+        )
+    {
+        actions.push(Action::Open(Panel::Army));
     }
 }
 fn draw_modes(h: &mut Hud, mode: usize, actions: &mut Vec<Action>) {
     let r = Layout::current().map_modes();
+    if Layout::current().compact {
+        if ui::small_button("Карта", r, h.map_palette) {
+            h.map_palette = !h.map_palette;
+        }
+        ui::tooltip(r, "Режим карты", "Политика, местность, ресурсы и масштаб");
+        return;
+    }
     ui::panel(r.x, r.y, r.w, r.h);
     let bw = (r.w - 10.0) / 9.0;
     for (i, (icon, title)) in [
@@ -925,7 +1113,13 @@ pub fn draw_panel(
     };
     if matches!(
         panel,
-        Panel::Construction | Panel::Production | Panel::Research | Panel::Army
+        Panel::Construction
+            | Panel::Production
+            | Panel::Research
+            | Panel::Army
+            | Panel::Recruitment
+            | Panel::Officer
+            | Panel::Air
     ) {
         return Vec::new();
     }
@@ -967,7 +1161,6 @@ pub fn draw_panel(
             &mut actions,
         ),
         Panel::Trade => trade(h, world, tag, x, y, width, r.bottom() - 8.0),
-        Panel::Recruitment => recruitment(h, tag, w, x, y, width, r.bottom() - 8.0, &mut actions),
         Panel::Logistics => logistics(h, tag, w, prod, x, y, width, r.bottom() - 8.0),
         Panel::Focus => focus(h, x, y, width, r.bottom() - 8.0),
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
@@ -1342,89 +1535,6 @@ fn trade(h: &mut Hud, world: &World, tag: &str, x: f32, y: f32, width: f32, bott
         );
     }
 }
-fn recruitment(
-    h: &mut Hud,
-    tag: &str,
-    w: &Warfare,
-    x: f32,
-    y: f32,
-    width: f32,
-    bottom: f32,
-    actions: &mut Vec<Action>,
-) {
-    let army = w.countries.get(tag);
-    status(
-        "Пополнение действующих частей работает. Обучение — заглушка.",
-        x,
-        y,
-        width,
-    );
-    ui::section("ПРИОРИТЕТ СНАРЯЖЕНИЯ", x, y + 29.0, width);
-    for (i, label) in ["Пополнения", "Улучшения", "Гарнизоны"].iter().enumerate()
-    {
-        let bw = (width - 8.0) / 3.0;
-        stub_button(
-            h,
-            label,
-            Rect::new(x + i as f32 * (bw + 4.0), y + 58.0, bw, 28.0),
-        );
-    }
-    ui::section("ОЧЕРЕДЬ ПОДГОТОВКИ", x, y + 98.0, width);
-    stub_button(
-        h,
-        "Набор новых дивизий · ЗАГЛУШКА",
-        Rect::new(x, y + 128.0, width, 42.0),
-    );
-    ui::section("ШАБЛОНЫ ДИВИЗИЙ", x, y + 185.0, width);
-    let templates: Vec<_> = army
-        .map(|a| a.templates.values().collect())
-        .unwrap_or_default();
-    let count = ((bottom - y - 220.0) / 66.0).max(0.0) as usize;
-    let max = templates.len().saturating_sub(count.max(1));
-    h.scroll = h.scroll.min(max);
-    scroll(h, Rect::new(x, y + 213.0, width, bottom - y - 213.0), max);
-    for (i, t) in templates.iter().enumerate().skip(h.scroll).take(count) {
-        let yy = y + 214.0 + (i - h.scroll) as f32 * 66.0;
-        let row = Rect::new(x, yy, width, 61.0);
-        ui::row_bg(row, false, i % 2 == 1);
-        ui_icons::draw(
-            Icon::Army,
-            Rect::new(x + 8.0, yy + 14.0, 28.0, 28.0),
-            ui::GOLD,
-        );
-        ui::label(
-            &t.name,
-            Rect::new(x + 47.0, yy + 8.0, width - 145.0, 20.0),
-            13.0,
-            ui::TEXT,
-        );
-        ui::label(
-            &format!(
-                "Батальоны: {} · Поддержка: {}",
-                t.line.len(),
-                t.support.len()
-            ),
-            Rect::new(x + 47.0, yy + 33.0, width - 145.0, 18.0),
-            11.0,
-            ui::MUTED,
-        );
-        if ui::small_button(
-            "Изменить",
-            Rect::new(x + width - 90.0, yy + 15.0, 82.0, 29.0),
-            false,
-        ) {
-            actions.push(Action::Designer(i));
-        }
-    }
-    if templates.is_empty() {
-        ui::label(
-            "Стартовые шаблоны не загружены",
-            Rect::new(x + 7.0, y + 226.0, width - 14.0, 20.0),
-            13.0,
-            ui::MUTED,
-        );
-    }
-}
 fn scroll(h: &mut Hud, rect: Rect, max: usize) {
     ui::scrollbar(
         rect,
@@ -1730,15 +1840,21 @@ pub fn draw_modal(h: &mut Hud) -> Option<Action> {
             return Some(Action::Resume);
         }
         yy += 45.0;
-        ui::placeholder(
-            Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+        if ui::small_button(
             "Сохранить игру",
-        );
-        yy += 43.0;
-        ui::placeholder(
             Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+            false,
+        ) {
+            return Some(Action::Save);
+        }
+        yy += 43.0;
+        if ui::small_button(
             "Загрузить игру",
-        );
+            Rect::new(r.x + 24.0, yy, r.w - 48.0, 34.0),
+            false,
+        ) {
+            return Some(Action::Load);
+        }
         yy += 43.0;
         if ui::small_button(
             "Перезагрузить отображение карты",
@@ -1914,6 +2030,22 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, province: u32) -> Vec
 mod tests {
     use super::*;
     #[test]
+    fn existing_air_button_opens_real_mission_inspector_and_closes_with_it() {
+        let mut hud = Hud::default();
+        let mut c = ConstructionView::default();
+        let mut p = ProductionView::default();
+        let mut r = ResearchView::default();
+        let mut a = ArmyView::default();
+        hud.open(Some(Panel::Air), &mut c, &mut p, &mut r, &mut a);
+        assert!(a.open);
+        assert!(!Panel::Air.placeholder());
+        assert_eq!(a.mobile.page, crate::mobile_army_ui::MobilePage::Logistics);
+        assert_eq!(a.navigation_panel(), Panel::Air);
+        a.close();
+        hud.reconcile(&c, &p, &r, &a);
+        assert!(hud.active.is_none());
+    }
+    #[test]
     fn hoi_shortcuts_are_unique_and_shift_does_not_open_two_panels() {
         let mut bindings = std::collections::BTreeSet::new();
         for panel in Panel::NAV
@@ -1945,7 +2077,7 @@ mod tests {
             assert_eq!(c.open, panel == Panel::Construction);
             assert_eq!(p.open, panel == Panel::Production);
             assert_eq!(r.open, panel == Panel::Research);
-            assert!(!a.open);
+            assert_eq!(a.open, matches!(panel, Panel::Recruitment | Panel::Officer));
             hud.toggle(panel, &mut c, &mut p, &mut r, &mut a);
             assert!(hud.active.is_none());
             assert!(!c.open && !p.open && !r.open && !a.open);

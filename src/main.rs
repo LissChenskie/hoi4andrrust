@@ -1,11 +1,28 @@
+mod air_warfare;
+mod army_command_ui;
 mod army_controls;
+mod army_projection;
+mod army_touch;
 mod army_ui;
 mod campaign_ui;
+mod combat_modifiers;
 mod combat_rules;
+mod command;
+mod command_abilities;
 mod construction;
 mod construction_map;
 mod construction_ui;
+mod division_designer_ui;
+mod logistics;
+mod mobile_army_ui;
+mod support_import;
+#[cfg(test)]
+mod support_tests;
 pub use hoi4_mobile::game;
+mod battle_plan_render;
+mod battle_plan_ui;
+mod battle_ui;
+mod frontline;
 mod history_conditions;
 mod hoi_ui;
 mod land_combat;
@@ -16,12 +33,17 @@ mod map_pixels;
 mod military_data;
 mod military_history;
 mod military_model;
+mod operations;
 mod production;
 mod production_ui;
+mod recruitment;
+mod recruitment_ui;
 pub use hoi4_mobile::pdx;
 pub use hoi4_mobile::research;
 pub use hoi4_mobile::research_data;
 pub use hoi4_mobile::research_script;
+mod campaign_save;
+mod platform_storage;
 mod research_layout;
 mod research_ui;
 mod scenario;
@@ -1566,7 +1588,12 @@ fn draw_loading(stage: &str, progress: f32) {
     );
 }
 
-fn draw_main_menu(map: Option<&ProvinceMap>, can_continue: bool, date: game::GameDate) -> Screen {
+fn draw_main_menu(
+    map: Option<&ProvinceMap>,
+    can_continue: bool,
+    date: game::GameDate,
+    load: &mut bool,
+) -> Screen {
     draw_background();
     let compact = screen_width() < 760.0;
     if let Some(map) = map {
@@ -1628,7 +1655,10 @@ fn draw_main_menu(map: Option<&ProvinceMap>, can_continue: bool, date: game::Gam
     if button("Настройки", x, y + 165.0, width, 45.0) {
         return Screen::Settings;
     }
-    hoi_ui::placeholder(Rect::new(x, y + 220.0, width, 45.0), "Загрузить сохранение");
+    if button("Загрузить сохранение", x, y + 220.0, width, 45.0) {
+        *load = true;
+        return Screen::MapViewer;
+    }
     draw_ui_text(
         &format!("{} · КАМПАНИЯ", date.year),
         x,
@@ -1974,7 +2004,13 @@ fn province_inspector_bounds(
     research: bool,
     army: &army_ui::ArmyView,
 ) -> Option<Rect> {
-    if !selected || construction || production || research || army.open || !army.selected.is_empty()
+    if !selected
+        || construction
+        || production
+        || research
+        || army.open
+        || army.deployment_pick
+        || !army.selected.is_empty()
     {
         return None;
     }
@@ -2006,6 +2042,7 @@ fn handle_hud_action(
             hud.open(None, construction, production, research, army);
             army.selected.clear();
             army.selected.insert(id);
+            army.sync_selection(military);
             if let Some(d) = military.divisions.get(&id) {
                 if let Some((map, p)) = map.as_deref_mut().zip(
                     world
@@ -2026,9 +2063,92 @@ fn handle_hud_action(
                 .filter(|d| Some(d.country.as_str()) == tag && !d.destroyed)
                 .map(|d| d.id)
                 .collect();
+            army.sync_selection(military);
+        }
+        Action::SelectArmy(id, add) => {
+            let selected = if add {
+                army.selected.clone()
+            } else {
+                Default::default()
+            };
+            hud.open(None, construction, production, research, army);
+            army.show_army(id, military);
+            army.selected.extend(selected);
+        }
+        Action::AssignArmy(id) => {
+            if let Some(tag) = tag {
+                let ids = army.selected.iter().copied().collect::<Vec<_>>();
+                match military.assign_army(tag, id, &ids) {
+                    Ok(()) => {
+                        army.sync_selection(military);
+                        army.notice = "Дивизии переведены в армию".into();
+                    }
+                    Err(e) => army.notice = e,
+                }
+            }
+        }
+        Action::ToggleArmy(id) => {
+            if let Some(tag) = tag {
+                let active = military
+                    .plans
+                    .plans
+                    .values()
+                    .any(|p| p.army == id && p.activation == operations::Activation::Executing);
+                army.notice = military.set_army_execution(tag, id, !active).map_or_else(
+                    |e| e,
+                    |_| {
+                        if active {
+                            "Выполнение планов армии остановлено".into()
+                        } else {
+                            "Планы армии включены · снимите паузу для исполнения".into()
+                        }
+                    },
+                );
+            }
+        }
+
+        Action::CreateArmy => {
+            if let Some(tag) = tag {
+                let ids: Vec<_> = army.selected.iter().copied().collect();
+                if ids.is_empty() {
+                    army.notice = "Сначала выделите дивизии на карте".into();
+                } else {
+                    match military.create_army(tag, &ids, "") {
+                        Ok(id) => {
+                            hud.open(None, construction, production, research, army);
+                            army.show_army(id, military);
+                            army.notice="Армия создана. Портрет — выбор генерала; «Фронт» — назначение границы".into();
+                        }
+                        Err(e) => army.notice = e,
+                    }
+                }
+            }
+        }
+        Action::Commander => {
+            if let Some(tag) = tag {
+                match army.ensure_army(tag, military) {
+                    Ok(_) => {
+                        hud.open(
+                            Some(Panel::Officer),
+                            construction,
+                            production,
+                            research,
+                            army,
+                        );
+                        army.show_command(true);
+                    }
+                    Err(e) => army.notice = e,
+                }
+            }
         }
         Action::Designer(index) => {
-            hud.open(Some(Panel::Army), construction, production, research, army);
+            hud.open(
+                Some(Panel::Recruitment),
+                construction,
+                production,
+                research,
+                army,
+            );
             army.show_template(index);
         }
         Action::Stop => {
@@ -2082,6 +2202,8 @@ fn handle_hud_action(
                     .map_or_else(|e| e, |_| "Война объявлена".into());
             }
         }
+        Action::Save => hud.save_requested = true,
+        Action::Load => hud.load_requested = true,
         Action::MainMenu => {}
     }
 }
@@ -2112,6 +2234,10 @@ fn draw_map_viewer(
     military: &mut warfare::Warfare,
     army_view: &mut army_ui::ArmyView,
 ) -> Screen {
+    army_view.orders_enabled = matches!(
+        hud.active,
+        None | Some(campaign_ui::Panel::Army | campaign_ui::Panel::Officer)
+    );
     let effective_building_rules = building_rules.for_research(
         player_country.and_then(|t| research_world.country(t)),
         research_catalogue,
@@ -2253,6 +2379,15 @@ fn draw_map_viewer(
                 dest_size: Some(vec2(rect.w, rect.h)),
                 ..Default::default()
             },
+        );
+        battle_plan_ui::draw_map(
+            world,
+            military,
+            army_view,
+            player_country,
+            source_rect,
+            rect,
+            game.paused,
         );
         army_ui::draw_counters(
             world,
@@ -2511,7 +2646,11 @@ fn draw_map_viewer(
             &mut map,
         );
     }
-    if hud.active.is_none() && army_view.selected.is_empty() {
+    army_view.orders_enabled = matches!(
+        hud.active,
+        None | Some(campaign_ui::Panel::Army | campaign_ui::Panel::Officer)
+    );
+    if hud.active.is_none() && army_view.selected.is_empty() && !army_view.deployment_pick {
         if let Some((province, _, _, _)) = *selected {
             let close = campaign_ui::state_bounds();
             let actions = campaign_ui::draw_state(hud, world, military, province);
@@ -2610,10 +2749,29 @@ fn draw_map_viewer(
         selected.map(|p| p.0),
         army_view,
     );
+    if army_view.open
+        && matches!(
+            hud.active,
+            Some(
+                campaign_ui::Panel::Army
+                    | campaign_ui::Panel::Recruitment
+                    | campaign_ui::Panel::Officer
+                    | campaign_ui::Panel::Air
+            )
+        )
+    {
+        hud.active = Some(army_view.navigation_panel());
+    }
     if hud.active.is_none() {
         army_ui::draw_selection(world, player_country, military, army_view);
         if army_view.open {
-            hud.active = Some(campaign_ui::Panel::Army);
+            hud.active = Some(army_view.navigation_panel());
+        }
+    }
+    hud.orders_layout = army_view.orders_visible();
+    if army_view.orders_enabled {
+        if let Some(tag) = player_country {
+            battle_plan_ui::draw_toolbar(world, tag, military, army_view, game.paused);
         }
     }
     hud.reconcile(construction_view, production_view, research_view, army_view);
@@ -2623,7 +2781,7 @@ fn draw_map_viewer(
         && hud.active != Some(campaign_ui::Panel::Focus)
     {
         if let Some(m) = map.as_deref_mut() {
-            let r = ui_layout::Layout::current().minimap();
+            let r = hud.minimap_bounds();
             hoi_ui::panel(r.x, r.y, r.w, r.h);
             let inner = Rect::new(r.x + 4.0, r.y + 4.0, r.w - 8.0, r.h - 8.0);
             draw_texture_ex(
@@ -2781,7 +2939,7 @@ async fn main() {
     let mut production_view = production_ui::ProductionView::default();
     let mut army_view = army_ui::ArmyView::default();
     let mut hud = campaign_ui::Hud::default();
-    let production_rules = production::ProductionRules::default();
+    let mut production_rules;
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
     let research_dataset =
@@ -2851,7 +3009,22 @@ async fn main() {
         session
             .military
             .use_research_registry(&research_catalogue, &session.research);
-        let report = military_history::import_report(&session.military, start_date);
+        let mut report = military_history::import_report(&session.military, start_date);
+        report["production"] = serde_json::json!(
+            session
+                .production
+                .by_country
+                .iter()
+                .map(|(tag, c)| (
+                    tag,
+                    serde_json::json!({
+                        "starting_data_applied": c.starting_data_applied,
+                        "lines":c.lines,
+                        "model_stockpile":c.model_stockpile,
+                    })
+                ))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
         match serde_json::to_vec_pretty(&report)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
@@ -2871,6 +3044,8 @@ async fn main() {
         Ok(session) => (session, String::new()),
         Err(error) => (GameSession::new(World::default()), error),
     };
+    production_rules =
+        production::ProductionRules::from_defines(&session.military.catalogue.literal_defines);
     draw_loading("Подготовка карты и интерфейса…", 0.85);
     next_frame().await;
     let mut map = if session.world.geography.width > 0 {
@@ -2893,6 +3068,7 @@ async fn main() {
                 map.as_ref(),
                 session.player_country.is_some(),
                 session.clock.date,
+                &mut hud.load_requested,
             ),
             Screen::CountrySelect => {
                 let old_scenario = scenario_choice;
@@ -2914,6 +3090,9 @@ async fn main() {
                     match start_session(scenario_choice) {
                         Ok(fresh) => {
                             session = fresh;
+                            production_rules = production::ProductionRules::from_defines(
+                                &session.military.catalogue.literal_defines,
+                            );
                             drop(map.take());
                             match ProvinceMap::load(&session.world) {
                                 Ok(m) => {
@@ -2932,6 +3111,9 @@ async fn main() {
                         Ok(mut fresh) => {
                             fresh.player_country = country_choice.clone();
                             session = fresh;
+                            production_rules = production::ProductionRules::from_defines(
+                                &session.military.catalogue.literal_defines,
+                            );
                             drop(map.take());
                             match ProvinceMap::load(&session.world) {
                                 Ok(mut loaded) => {
@@ -2966,6 +3148,35 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
+                if hud.save_requested {
+                    hud.save_requested = false;
+                    hud.notice = platform_storage::game_file("campaign-save.json")
+                        .and_then(|path| session.save_game(&path, &research_catalogue))
+                        .map_or_else(
+                            |e| format!("Сохранение: {e}"),
+                            |_| "Кампания сохранена".into(),
+                        );
+                }
+                if hud.load_requested {
+                    hud.load_requested = false;
+                    match platform_storage::game_file("campaign-save.json")
+                        .and_then(|path| session.restore_game(&path, &research_catalogue))
+                    {
+                        Ok(()) => {
+                            army_view = Default::default();
+                            selected = None;
+                            hud.menu = false;
+                            hud.notice = "Кампания загружена на паузе".into();
+                            if let Some(m) = map.as_mut() {
+                                match ProvinceMap::load(&session.world) {
+                                    Ok(fresh) => *m = fresh,
+                                    Err(e) => load_error = e,
+                                }
+                            }
+                        }
+                        Err(e) => hud.notice = format!("Загрузка: {e}"),
+                    }
+                }
                 if is_key_pressed(KeyCode::Escape) {
                     if hud.detail.take().is_some() {
                     } else if hud.map_palette {
@@ -2975,6 +3186,17 @@ async fn main() {
                         session.clock.paused = hud.menu_was_paused;
                     } else if research_view.open && research_view.browsing {
                         research_view.browsing = false;
+                    } else if army_view.plan_tool.is_some() {
+                        army_view.cancel_tool();
+                    } else if army_view.deployment_pick {
+                        army_view.deployment_pick = false;
+                        hud.open(
+                            Some(Panel::Recruitment),
+                            &mut construction_view,
+                            &mut production_view,
+                            &mut research_view,
+                            &mut army_view,
+                        );
                     } else if hud.active.is_some() {
                         hud.open(
                             None,
@@ -2995,7 +3217,11 @@ async fn main() {
                         hud.menu = true;
                     }
                 }
-                if !hud.menu && hud.detail.is_none() && !hud.map_palette {
+                if !hud.menu
+                    && hud.detail.is_none()
+                    && !hud.map_palette
+                    && !army_view.text_input_active()
+                {
                     let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                     for panel in
                         Panel::NAV
@@ -3203,6 +3429,7 @@ async fn main() {
                         && !production_ui::is_over_panel(mouse, &production_view)
                         && !research_ui::is_over_panel(mouse, &research_view)
                         && !army_ui::is_over_panel(mouse, &army_view)
+                        && !battle_plan_ui::blocked(&army_view, mouse)
                         && !army_before_ui.is_some_and(|r| r.contains(mouse))
                         && !inspector_before_ui.is_some_and(|r| r.contains(mouse))
                         && !province_inspector_bounds(
@@ -3231,6 +3458,16 @@ async fn main() {
                         })
                         .collect();
                     let multitouch = contact_points.len() >= 2;
+                    if !touches().is_empty() {
+                        army_view.touch_ui = true;
+                    }
+                    if multitouch && army_view.pending_order.is_none() {
+                        army_view.front_start = None;
+                        army_view.front_preview.clear();
+                        army_view.front_preview_end = None;
+                        army_view.line_preview.clear();
+                        army_view.line_preview_end = None;
+                    }
                     if multitouch || hud.menu || hud.detail.is_some() || hud.map_palette {
                         army_view.map_drag = None;
                         army_view.right_down = None;
@@ -3262,6 +3499,93 @@ async fn main() {
                         && !production_view.open
                         && !research_view.open
                         && !research_before_ui;
+                    army_view.order_hover = if inside_map && military_mode {
+                        army_view.order_map.hit(
+                            world,
+                            military,
+                            current_map.source_rect(),
+                            rect,
+                            mouse,
+                            army_view.selected_plan,
+                        )
+                    } else {
+                        None
+                    };
+                    if military_mode
+                        && !army_view.text_input_active()
+                        && is_key_pressed(KeyCode::Delete)
+                    {
+                        if let Some(tag) = selected_country.as_deref() {
+                            army_view.notice =
+                                battle_plan_ui::delete_selected(&mut army_view, military, tag)
+                                    .map_or_else(|e| e, |_| "Приказ удалён".into());
+                        }
+                    }
+                    if military_mode
+                        && inside_map
+                        && army_view.plan_tool.is_none()
+                        && is_mouse_button_pressed(MouseButton::Left)
+                    {
+                        if let Some(tag) = selected_country.as_deref() {
+                            let counters = army_controls::counters(
+                                world,
+                                military,
+                                current_map.source_rect(),
+                                rect,
+                            );
+                            if army_controls::hit(&counters, tag, mouse).is_none() {
+                                if let Some(handle) = army_view.order_map.handle(
+                                    world,
+                                    current_map.source_rect(),
+                                    rect,
+                                    mouse,
+                                    army_view.selected_front,
+                                    army_view.selected_plan,
+                                ) {
+                                    battle_plan_ui::begin_handle(&mut army_view, handle, military);
+                                }
+                            }
+                        }
+                    }
+                    let mut drawing_plan = army_view.plan_tool.is_some() && military_mode;
+                    if drawing_plan && inside_map && is_mouse_button_pressed(MouseButton::Left) {
+                        if let Some(tag) = selected_country.as_deref() {
+                            let counters = army_controls::counters(
+                                world,
+                                military,
+                                current_map.source_rect(),
+                                rect,
+                            );
+                            if army_controls::hit(&counters, tag, mouse).is_some() {
+                                army_view.cancel_tool();
+                                drawing_plan = false;
+                            }
+                        }
+                    }
+                    if drawing_plan && !multitouch {
+                        let p = map_camera::screen_to_world(current_map.source_rect(), rect, mouse);
+                        let province = if p.x >= 0.0 && p.y >= 0.0 {
+                            current_map.province_at(p.x as u32, p.y as u32).map(|p| p.0)
+                        } else {
+                            None
+                        };
+                        if let Some(tag) = selected_country.as_deref() {
+                            battle_plan_ui::pointer(
+                                &mut army_view,
+                                military,
+                                world,
+                                tag,
+                                province,
+                                map_graph::MapPosition {
+                                    x: p.x as f64,
+                                    y: p.y as f64,
+                                },
+                                24.0 * current_map.source_rect().w as f64 / rect.w as f64,
+                                inside_map,
+                            );
+                        }
+                        army_view.map_drag = None;
+                    }
                     let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                     let control =
                         is_key_down(KeyCode::LeftControl) || is_key_down(KeyCode::RightControl);
@@ -3282,12 +3606,16 @@ async fn main() {
                             army_view.pan_last = None;
                         }
                     }
-                    if !multitouch && is_mouse_button_pressed(MouseButton::Left) && inside_map {
+                    if !multitouch
+                        && !drawing_plan
+                        && is_mouse_button_pressed(MouseButton::Left)
+                        && inside_map
+                    {
                         army_view.map_drag = Some(army_controls::Drag::new(
                             mouse,
                             touch_input,
-                            shift,
-                            military_mode && !touch_input,
+                            shift || army_view.touch_add,
+                            military_mode && (!touch_input || army_view.touch_box),
                         ));
                     }
                     if let Some(drag) = army_view.map_drag.as_mut() {
@@ -3326,6 +3654,7 @@ async fn main() {
                                         drag.add,
                                         &blocked,
                                     );
+                                    army_view.sync_selection(military);
                                 }
                             } else if !drag.moved() && inside_map {
                                 click = Some(drag);
@@ -3352,7 +3681,52 @@ async fn main() {
                             if let Some(tag) = selected_country.as_deref() {
                                 let counters =
                                     army_controls::counters(world, military, source, rect);
-                                if let Some(counter) = army_controls::hit(&counters, tag, mouse) {
+                                let battle_hit = army_controls::battle_markers(
+                                    world, military, tag, source, rect,
+                                )
+                                .into_iter()
+                                .find(|b| b.rect.contains(mouse));
+                                if army_view.deployment_pick {
+                                    if let Some((province, _, _, _)) = selected
+                                        .filter(|p| world.controller_of_province(p.0) == Some(tag))
+                                    {
+                                        army_view.deployment_province = Some(province);
+                                        army_view.deployment_pick = false;
+                                        hud.open(
+                                            Some(Panel::Recruitment),
+                                            &mut construction_view,
+                                            &mut production_view,
+                                            &mut research_view,
+                                            &mut army_view,
+                                        );
+                                    } else {
+                                        army_view.notice =
+                                            "Выберите свою сухопутную провинцию".into();
+                                    }
+                                } else if let Some(marker) = battle_hit {
+                                    hud.open(
+                                        Some(Panel::Army),
+                                        &mut construction_view,
+                                        &mut production_view,
+                                        &mut research_view,
+                                        &mut army_view,
+                                    );
+                                    army_view.show_battle(marker.id, military);
+                                } else if army_view.touch_move && !army_view.selected.is_empty() {
+                                    if let Some((province, _, _, _)) = selected {
+                                        army_ui::issue_order(
+                                            &mut army_view,
+                                            military,
+                                            world,
+                                            tag,
+                                            province,
+                                            false,
+                                        );
+                                        army_view.touch_move = false;
+                                    }
+                                } else if let Some(counter) =
+                                    army_controls::hit(&counters, tag, mouse)
+                                {
                                     if let Some(g) =
                                         world.geography.provinces.get(&counter.province)
                                     {
@@ -3369,6 +3743,7 @@ async fn main() {
                                         drag.add,
                                         control,
                                     );
+                                    army_view.sync_selection(military);
                                     hud.open(
                                         None,
                                         &mut construction_view,
@@ -3376,18 +3751,25 @@ async fn main() {
                                         &mut research_view,
                                         &mut army_view,
                                     );
-                                } else if drag.touch && !army_view.selected.is_empty() {
-                                    if let Some((province, _, _, _)) = selected {
-                                        army_ui::issue_order(
-                                            &mut army_view,
-                                            military,
-                                            world,
-                                            tag,
-                                            province,
-                                            drag.add,
-                                        );
-                                    }
-                                } else if !drag.add {
+                                } else if battle_plan_ui::choose_order(
+                                    &mut army_view,
+                                    military,
+                                    world,
+                                    tag,
+                                    source,
+                                    rect,
+                                    mouse,
+                                    control,
+                                    drag.add,
+                                ) {
+                                    hud.open(
+                                        None,
+                                        &mut construction_view,
+                                        &mut production_view,
+                                        &mut research_view,
+                                        &mut army_view,
+                                    );
+                                } else if !drag.add && !drag.touch {
                                     army_view.selected.clear();
                                 }
                             }

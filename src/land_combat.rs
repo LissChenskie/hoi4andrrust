@@ -1,23 +1,25 @@
 //! Hourly, stochastic land battle. Both sides fire from the same hour snapshot.
 //! Exact Clausewitz RNG/counter selection/rounding parity requires game fixtures.
+use crate::combat_modifiers::{CombatFactors as Factors, CombatStat, ModifierTrace};
 use crate::combat_rules::{CombatRandom, CombatRules};
 use crate::military_model::*;
 use crate::research_data::Entry;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum BattleOutcome {
     AttackerWon,
     DefenderWon,
     Draw,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BattleSide {
     pub active: Vec<DivisionId>,
     pub reserves: Vec<DivisionId>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AirSupport {
     pub ground_support_bonus: f64,
     pub enemy_superiority: f64,
@@ -27,7 +29,7 @@ pub struct AirSupport {
     pub plane_attack_rolls: f64,
     pub aa_damage_reduction: f64,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattleEnvironment {
     pub terrain_id: String,
     pub terrain: TerrainDefinition,
@@ -52,18 +54,19 @@ impl Default for BattleEnvironment {
         }
     }
 }
-#[derive(Debug, Clone)]
-pub struct ModifierTrace {
-    pub source: String,
-    pub attack: f64,
-    pub defense: f64,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DamageRoll {
+    pub protected: bool,
+    pub hp_die: u32,
+    pub org_die: u32,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttackTrace {
     pub from: u64,
     pub to: u64,
     pub effective_attack: f64,
     pub rolls: u32,
+    pub target_defensive_rolls: u32,
     pub protected: u32,
     pub protected_hits: u32,
     pub overflow_hits: u32,
@@ -71,12 +74,27 @@ pub struct AttackTrace {
     pub hp_damage: f64,
     pub org_damage: f64,
     pub modifiers: Vec<ModifierTrace>,
+    pub damage_rolls: Vec<DamageRoll>,
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HourTrace {
+    #[serde(default)]
+    pub attacker_air: AirSupport,
+    #[serde(default)]
+    pub defender_air: AirSupport,
     pub hour: u32,
+    pub rng_start: Option<u64>,
+    pub rng_end: Option<u64>,
     pub width: f64,
     pub attacker_width: f64,
+    pub attacker_over_width_penalty: f64,
+    pub defender_over_width_penalty: f64,
+    pub attacker_stacking_penalty: f64,
+    pub defender_stacking_penalty: f64,
+    pub attacker_frontline: Vec<u64>,
+    pub defender_frontline: Vec<u64>,
+    pub attacker_reserves: Vec<u64>,
+    pub defender_reserves: Vec<u64>,
     pub defender_width: f64,
     pub attacker_tactic: String,
     pub defender_tactic: String,
@@ -88,7 +106,7 @@ pub struct HourTrace {
     pub equipment_losses: u32,
     pub outcome: Option<BattleOutcome>,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LandBattle {
     pub id: u64,
     pub province: u32,
@@ -103,33 +121,6 @@ pub struct LandBattle {
     pending_outcome: Option<BattleOutcome>,
     pub history: VecDeque<HourTrace>,
     pub trace_enabled: bool,
-}
-
-#[derive(Default)]
-struct Factors {
-    attack: f64,
-    defense: f64,
-    trace: Vec<ModifierTrace>,
-}
-impl Factors {
-    fn identity() -> Self {
-        Self {
-            attack: 1.0,
-            defense: 1.0,
-            trace: Vec::new(),
-        }
-    }
-    fn multiply(&mut self, source: &str, attack: f64, defense: f64) {
-        let attack = attack.max(0.0);
-        let defense = defense.max(0.0);
-        self.attack *= attack;
-        self.defense *= defense;
-        self.trace.push(ModifierTrace {
-            source: source.into(),
-            attack,
-            defense,
-        });
-    }
 }
 
 pub struct TacticContext<'a> {
@@ -427,8 +418,18 @@ impl LandBattle {
         );
         f.multiply(
             "commander",
-            1.0 + division.commander_attack,
-            1.0 + division.commander_defense,
+            1.0 + division.commander_attack + division.command.attack,
+            1.0,
+        );
+        f.apply(
+            "commander",
+            CombatStat::Defense,
+            1.0 + division.commander_defense + division.command.defense,
+        );
+        f.apply(
+            "commander",
+            CombatStat::Breakthrough,
+            1.0 + division.commander_defense + division.command.breakthrough,
         );
         let terrain = division
             .derived
@@ -505,14 +506,21 @@ impl LandBattle {
             f.multiply("night", 1.0 + rules.night_attack, 1.0);
         }
         let weather = |key: &str| env.weather.get(key).copied().unwrap_or(0.0);
-        f.multiply(
-            "weather",
-            1.0 + weather("army_attack_factor"),
-            1.0 + weather(if attacker {
-                "breakthrough_factor"
-            } else {
-                "army_defence_factor"
-            }),
+        f.multiply("weather attack", 1.0 + weather("army_attack_factor"), 1.0);
+        f.apply(
+            "weather defense",
+            CombatStat::Defense,
+            1.0 + weather("army_defence_factor"),
+        );
+        f.apply(
+            "weather defense",
+            CombatStat::Breakthrough,
+            1.0 + weather("army_defence_factor"),
+        );
+        f.apply(
+            "weather breakthrough",
+            CombatStat::Breakthrough,
+            1.0 + weather("breakthrough_factor"),
         );
         let used = Self::used(side, units);
         let width_factor = 1.0 - rules.width_penalty(used, width);
@@ -535,12 +543,49 @@ impl LandBattle {
             1.0,
             1.0 + rules.air_superiority * air.enemy_superiority.clamp(0.0, 1.0),
         );
-        // Fuel affects fuel-consuming divisions only; absence is an explicit input.
+        // Only fuel-consuming components lose their equipment combat output.
         if stats.fuel > 0.0 {
+            let loss = (1.0 - division.fuel_fraction.clamp(0.0, 1.0))
+                * (1.0 - rules.fuel_attack_penalty.unwrap_or(0.0));
+            let fs = &division.derived.fuel_stats;
+            for (stat, affected, total) in [
+                (CombatStat::SoftAttack, fs.soft_attack, stats.soft_attack),
+                (CombatStat::HardAttack, fs.hard_attack, stats.hard_attack),
+                (CombatStat::Defense, fs.defense, stats.defense),
+                (
+                    CombatStat::Breakthrough,
+                    fs.breakthrough,
+                    stats.breakthrough,
+                ),
+            ] {
+                f.apply(
+                    "fuel",
+                    stat,
+                    1.0 - loss * (affected / total.max(1e-9)).clamp(0.0, 1.0),
+                );
+            }
+        }
+        let ability = |key: &str| division.ability_modifiers.get(key).copied().unwrap_or(0.0);
+        f.multiply(
+            "commander ability",
+            1.0 + ability("offence") + ability("army_attack_factor"),
+            1.0,
+        );
+        f.apply(
+            "commander ability",
+            CombatStat::Defense,
+            1.0 + ability("defence") + ability("army_defence_factor"),
+        );
+        f.apply(
+            "commander ability",
+            CombatStat::Breakthrough,
+            1.0 + ability("breakthrough_factor") + ability("army_defence_factor"),
+        );
+        if !attacker {
             f.multiply(
-                "fuel",
-                division.fuel_fraction.clamp(0.0, 1.0),
-                division.fuel_fraction.clamp(0.0, 1.0),
+                "ability entrenchment",
+                1.0 + ability("combat_entrenchment"),
+                1.0 + ability("combat_entrenchment"),
             );
         }
         let strength = division.strength();
@@ -567,6 +612,10 @@ impl LandBattle {
             }
             let chance = rules.reinforce_chance
                 + d.reinforce_bonus
+                + d.ability_modifiers
+                    .get("land_reinforce_rate")
+                    .copied()
+                    .unwrap_or(0.0)
                 + d.derived.stats.initiative * rules.initiative_reinforce;
             if rng.chance(chance) {
                 side.reserves.retain(|v| *v != id);
@@ -593,6 +642,9 @@ impl LandBattle {
         self.elapsed_hours += 1;
         let mut trace = HourTrace {
             hour: self.elapsed_hours,
+            attacker_air: env.attacker_air.clone(),
+            defender_air: env.defender_air.clone(),
+            rng_start: rng.checkpoint(),
             ..Default::default()
         };
         if let Some(outcome) = self.pending_outcome {
@@ -616,7 +668,7 @@ impl LandBattle {
             side.reserves
                 .retain(|id| units.get(id).is_some_and(Division::fighting));
         }
-        if self.elapsed_hours == 1 || self.elapsed_hours % rules.tactic_hours == 0 {
+        if self.elapsed_hours == 1 || (self.elapsed_hours - 1) % rules.tactic_hours == 0 {
             self.attacker_tactic = Self::choose_tactic(
                 catalogue,
                 &self.attackers,
@@ -692,6 +744,16 @@ impl LandBattle {
         }
         trace.attacker_width = Self::used(&self.attackers, units);
         trace.defender_width = Self::used(&self.defenders, units);
+        trace.attacker_over_width_penalty = rules.width_penalty(trace.attacker_width, width);
+        trace.defender_over_width_penalty = rules.width_penalty(trace.defender_width, width);
+        trace.attacker_stacking_penalty =
+            rules.stacking(self.attackers.active.len(), self.directions());
+        trace.defender_stacking_penalty =
+            rules.stacking(self.defenders.active.len(), self.directions());
+        trace.attacker_frontline = self.attackers.active.clone();
+        trace.defender_frontline = self.defenders.active.clone();
+        trace.attacker_reserves = self.attackers.reserves.clone();
+        trace.defender_reserves = self.defenders.reserves.clone();
         let mut factors = BTreeMap::new();
         let mut defensive_budgets = BTreeMap::new();
         for (side, attacker) in [(&self.attackers, true), (&self.defenders, false)] {
@@ -715,7 +777,10 @@ impl LandBattle {
                 };
                 defensive_budgets.insert(
                     *id,
-                    rng.stochastic_round(defensive * f.defense / rules.attack_scale),
+                    rng.stochastic_round(
+                        defensive * if attacker { f.breakthrough } else { f.defense }
+                            / rules.attack_scale,
+                    ),
                 );
                 factors.insert(*id, f);
             }
@@ -763,16 +828,27 @@ impl LandBattle {
                         / used.max(1e-9)
                         + if target == priority { coordinated } else { 0.0 };
                     let effective = (d.derived.stats.soft_attack
+                        * f.soft_attack
                         * (1.0 - opponent.derived.stats.hardness)
-                        + d.derived.stats.hard_attack * opponent.derived.stats.hardness)
-                        * fraction
-                        * f.attack;
+                        + d.derived.stats.hard_attack
+                            * f.hard_attack
+                            * opponent.derived.stats.hardness)
+                        * fraction;
                     let rolls = rng.stochastic_round(effective / rules.attack_scale);
                     let remaining = defensive_budgets.get_mut(&target).unwrap();
+                    let target_defensive_rolls = *remaining;
                     let protected = rolls.min(*remaining);
                     *remaining -= protected;
-                    let (hp, org, protected_hits, overflow_hits) =
-                        resolve_hits(rolls, protected, d, opponent, rules, rng);
+                    let mut damage_rolls = Vec::new();
+                    let (hp, org, protected_hits, overflow_hits) = resolve_hits_recorded(
+                        rolls,
+                        protected,
+                        d,
+                        opponent,
+                        rules,
+                        rng,
+                        self.trace_enabled.then_some(&mut damage_rolls),
+                    );
                     let org_tactic = 1.0
                         + tactics
                             .iter()
@@ -784,7 +860,25 @@ impl LandBattle {
                                 }
                             })
                             .sum::<f64>();
-                    let org = org * org_tactic.max(0.0);
+                    let org = org
+                        * org_tactic.max(0.0)
+                        * f.org_damage
+                        * (1.0
+                            + opponent
+                                .ability_modifiers
+                                .get("org_damage_multiplier")
+                                .copied()
+                                .unwrap_or(0.0))
+                        .max(0.0);
+                    let hp = hp
+                        * f.hp_damage
+                        * (1.0
+                            + opponent
+                                .ability_modifiers
+                                .get("str_damage_multiplier")
+                                .copied()
+                                .unwrap_or(0.0))
+                        .max(0.0);
                     let delta = damage.entry(target).or_default();
                     delta.0 += hp;
                     delta.1 += org;
@@ -794,6 +888,7 @@ impl LandBattle {
                             to: target,
                             effective_attack: effective,
                             rolls,
+                            target_defensive_rolls,
                             protected,
                             protected_hits,
                             overflow_hits,
@@ -804,6 +899,7 @@ impl LandBattle {
                             hp_damage: hp,
                             org_damage: org,
                             modifiers: f.trace.clone(),
+                            damage_rolls,
                         });
                     }
                 }
@@ -857,6 +953,7 @@ impl LandBattle {
                 trace.outcome = Some(result);
             }
         }
+        trace.rng_end = rng.checkpoint();
         self.record(&trace);
         Some(trace)
     }
@@ -875,6 +972,17 @@ pub fn resolve_hits<R: CombatRandom>(
     target: &Division,
     rules: &CombatRules,
     rng: &mut R,
+) -> (f64, f64, u32, u32) {
+    resolve_hits_recorded(rolls, protected, attacker, target, rules, rng, None)
+}
+fn resolve_hits_recorded<R: CombatRandom>(
+    rolls: u32,
+    protected: u32,
+    attacker: &Division,
+    target: &Division,
+    rules: &CombatRules,
+    rng: &mut R,
+    mut record: Option<&mut Vec<DamageRoll>>,
 ) -> (f64, f64, u32, u32) {
     let armor = rules.armor_factor(attacker.derived.stats.piercing, target.derived.stats.armor);
     let armored = attacker.derived.stats.armor > 0.0
@@ -899,8 +1007,17 @@ pub fn resolve_hits<R: CombatRandom>(
         } else {
             overflow_hits += 1;
         }
-        hp += f64::from(rng.die(rules.hp_die)) * rules.hp_damage * armor;
-        org += f64::from(rng.die(org_die)) * rules.org_damage * armor;
+        let hp_die = rng.die(rules.hp_die);
+        let org_die = rng.die(org_die);
+        if let Some(record) = record.as_deref_mut() {
+            record.push(DamageRoll {
+                protected: i < protected,
+                hp_die,
+                org_die,
+            });
+        }
+        hp += f64::from(hp_die) * rules.hp_damage * armor;
+        org += f64::from(org_die) * rules.org_damage * armor;
     }
     (hp, org, defended_hits, overflow_hits)
 }
@@ -910,6 +1027,86 @@ mod tests {
     use super::*;
     use crate::combat_rules::SeededRandom;
     use crate::military_model::tests::{catalogue, division};
+    #[test]
+    fn typed_scopes_and_tactics_have_full_twelve_hour_intervals() {
+        let c = catalogue();
+        let mut a = division(1, "A", 1);
+        let mut b = division(2, "B", 2);
+        a.derived.stats.soft_attack = 0.0;
+        b.derived.stats.soft_attack = 0.0;
+        a.derived.stats.hard_attack = 0.0;
+        b.derived.stats.hard_attack = 0.0;
+        let mut units = BTreeMap::from([(1, a), (2, b)]);
+        let mut env = BattleEnvironment::default();
+        env.weather.insert("breakthrough_factor".into(), -0.6);
+        let mut battle = LandBattle::new(1, 2, vec![1], vec![2], &units, &env, &c.rules);
+        let f = battle.factors(
+            &units[&1],
+            true,
+            &battle.attackers,
+            &units,
+            &env,
+            &c.rules,
+            70.0,
+            0.0,
+        );
+        assert_eq!(f.soft_attack, 1.0);
+        assert_eq!(f.defense, 1.0);
+        assert_eq!(f.breakthrough, 0.4);
+        let mut rng = SeededRandom::new(12);
+        let mut changes = Vec::new();
+        for hour in 1..=25 {
+            let trace = battle
+                .step(&mut units, &c, &BTreeMap::new(), &env, &mut rng)
+                .unwrap();
+            if trace.tactic_changed {
+                changes.push(hour);
+            }
+        }
+        assert_eq!(changes, vec![1, 13, 25]);
+    }
+    #[test]
+    fn hourly_trace_is_replayable_and_records_dice_and_shared_defense() {
+        let mut c = catalogue();
+        c.rules.hp_damage = 0.0001;
+        c.rules.org_damage = 0.0001;
+        let mut a = division(1, "A", 1);
+        let mut b = division(2, "B", 2);
+        a.derived.stats.soft_attack = 1000.0;
+        b.derived.stats.soft_attack = 1000.0;
+        a.derived.stats.defense = 9000.0;
+        a.derived.stats.breakthrough = 0.0;
+        b.derived.stats.defense = 9000.0;
+        b.derived.stats.breakthrough = 0.0;
+        let mut units = BTreeMap::from([(1, a), (2, b)]);
+        let mut other = units.clone();
+        let env = BattleEnvironment::default();
+        let mut battle = LandBattle::new(1, 2, vec![1], vec![2], &units, &env, &c.rules);
+        battle.trace_enabled = true;
+        let mut replay = battle.clone();
+        let mut rng = SeededRandom::new(123);
+        let mut rng2 = rng.clone();
+        let t = battle
+            .step(&mut units, &c, &BTreeMap::new(), &env, &mut rng)
+            .unwrap();
+        let r = replay
+            .step(&mut other, &c, &BTreeMap::new(), &env, &mut rng2)
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(&t).unwrap(),
+            serde_json::to_value(r).unwrap()
+        );
+        let attacking = t.attacks.iter().find(|t| t.from == 1).unwrap();
+        let defending = t.attacks.iter().find(|t| t.from == 2).unwrap();
+        assert_eq!(attacking.protected, attacking.rolls);
+        assert_eq!(defending.protected, 0);
+        assert_eq!(
+            defending.damage_rolls.len() as u32,
+            defending.protected_hits + defending.overflow_hits
+        );
+        assert_eq!(t.rng_start, Some(123));
+        assert_eq!(t.rng_end, Some(rng.state));
+    }
     #[test]
     fn defense_and_breakthrough_are_selected_by_role_and_modifiers_keep_their_sources() {
         let a = division(1, "A", 1);
@@ -943,9 +1140,9 @@ mod tests {
             70.0,
             0.0,
         );
-        assert!((fa.attack - 0.7 * 0.7 * 0.5).abs() < 1e-9);
-        assert!((fa.defense - 0.7 * 0.7).abs() < 1e-9);
-        assert!((fd.attack - 0.5).abs() < 1e-9);
+        assert!((fa.soft_attack - 0.7 * 0.7 * 0.5).abs() < 1e-9);
+        assert!((fa.breakthrough - 0.7 * 0.7).abs() < 1e-9);
+        assert!((fd.soft_attack - 0.5).abs() < 1e-9);
         assert_eq!(fd.defense, 1.0);
         assert!(fa.trace.iter().any(|m| m.source == "river"));
         assert!(fa.trace.iter().any(|m| m.source == "fort"));
@@ -1118,7 +1315,7 @@ mod tests {
                 swaps.push(t.hour);
             }
         }
-        assert_eq!(swaps, [1, 12, 24]);
+        assert_eq!(swaps, [1, 13, 25]);
         let entries = crate::research_data::parse_pdx("NOT = { unknown = yes }").unwrap();
         let m = MilitaryModifiers::default();
         assert_eq!(

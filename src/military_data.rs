@@ -119,7 +119,17 @@ fn read_file(
     source.hash(&mut hash);
     db.source_files
         .insert(path.display().to_string(), hash.finish());
-    let root = parse_pdx(&source).map_err(|e| format!("{}: {e}", path.display()))?;
+    let parsed = crate::pdx::parse_pdx_compatible(&source)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    for at in parsed.eof_terminated_blocks {
+        db.diagnostics.push(format!(
+            "{}:{}:{}: outer block ends at EOF",
+            path.display(),
+            at.line,
+            at.column
+        ));
+    }
+    let root = parsed.entries;
     let vars = variables(&root);
     Ok((root, vars))
 }
@@ -212,6 +222,7 @@ pub fn import_units(source: &str, path: &str, db: &mut MilitaryCatalogue) -> Res
                 divisional: yes(b, "divisional", !yes(b, "regimental", false)),
                 regimental: yes(b, "regimental", false),
                 affects_speed: yes(b, "affects_speed", group != "support"),
+                equipment_speed_multiplier: true,
                 stats: raw,
                 need,
                 terrain,
@@ -444,32 +455,102 @@ pub fn import_technologies(source: &str, db: &mut MilitaryCatalogue) -> Result<(
     Ok(())
 }
 
-pub fn load(root: &Path) -> MilitaryCatalogue {
-    let mut db = MilitaryCatalogue::default();
+/// Same explicit layer order as the research importer; no independently
+/// guessed DLC or mod activation in the army loader.
+pub fn data_layers(root: &Path) -> Vec<PathBuf> {
+    let install = hoi4_mobile::research_import::installation(root);
     let mut layers = vec![root.to_path_buf()];
-    if let Ok(profile) = fs::read_to_string(root.join("military_profile.txt")) {
-        if let Ok(entries) = parse_pdx(&profile) {
-            if let Some(extras) = block(&entries, "data_layers") {
-                for entry in extras {
-                    if entry.value.is_none() {
-                        let extra = PathBuf::from(&entry.key);
-                        layers.push(if extra.is_absolute() {
-                            extra
-                        } else {
-                            root.join(extra)
-                        });
+    let extras = if !install.data_layers.is_empty() {
+        install.data_layers
+    } else {
+        fs::read_to_string(root.join("military_profile.txt"))
+            .ok()
+            .and_then(|s| parse_pdx(&s).ok())
+            .and_then(|e| {
+                block(&e, "data_layers").map(|b| {
+                    b.iter()
+                        .filter(|e| e.value.is_none())
+                        .map(|e| e.key.clone())
+                        .collect()
+                })
+            })
+            .unwrap_or_default()
+    };
+    layers.extend(extras.into_iter().map(|s| {
+        let p = PathBuf::from(s);
+        if p.is_absolute() { p } else { root.join(p) }
+    }));
+    layers
+}
+
+pub fn localisation(layers: &[PathBuf], ids: &BTreeSet<String>) -> BTreeMap<String, String> {
+    let files = layered_files(layers, "localisation", true, "yml");
+    let mut out = BTreeMap::new();
+    for language in ["english", "russian"] {
+        for path in files
+            .iter()
+            .filter(|p| p.to_string_lossy().contains(language))
+        {
+            if let Ok(s) = fs::read_to_string(path) {
+                for line in s.lines() {
+                    let line = line.trim();
+                    let Some((key, value)) = line.split_once(':') else {
+                        continue;
+                    };
+                    if !ids.contains(key) {
+                        continue;
+                    }
+                    let Some(start) = value.find('"') else {
+                        continue;
+                    };
+                    let Some(end) = value.rfind('"') else {
+                        continue;
+                    };
+                    if end > start {
+                        out.insert(key.into(), value[start + 1..end].to_owned());
                     }
                 }
             }
-            if let Some(version) = atom(&entries, "target_version") {
-                db.rules.target_version = version.into();
-            }
         }
+    }
+    out
+}
+pub fn load(root: &Path) -> MilitaryCatalogue {
+    let mut db = MilitaryCatalogue::default();
+    let layers = data_layers(root);
+    let install = hoi4_mobile::research_import::installation(root);
+    db.source_version = install.version.clone();
+    db.source_checksum = install.checksum;
+    if db.source_version.as_deref() != Some("1.19.3") {
+        db.diagnostics.push(format!(
+            "Target is 1.19.3; imported source version is {}. Version parity is not certified.",
+            db.source_version.as_deref().unwrap_or("unknown")
+        ));
     }
     for path in layered_files(&layers, "common/defines", false, "lua") {
         if let Ok(source) = fs::read_to_string(&path) {
             db.rules
                 .import_defines(&source, &path.display().to_string());
+            let parsed = hoi4_mobile::defines::read(&source);
+            for key in parsed.unresolved {
+                db.literal_defines.remove(&key);
+                db.literal_arrays.remove(&key);
+            }
+            db.literal_defines.extend(parsed.values);
+            db.literal_arrays.extend(parsed.arrays);
+        }
+    }
+    for path in layered_files(&layers, "common/buildings", false, "txt") {
+        if let Ok((entries, vars)) = read_file(&path, &mut db) {
+            if let Some(b) = block(
+                block(&entries, "buildings").unwrap_or(&entries),
+                "infrastructure",
+            ) {
+                db.infrastructure_max = atom(b, "max_level")
+                    .and_then(|v| scalar_value(v, &vars, 0))
+                    .filter(|v| *v > 0.0)
+                    .map(|v| v as u16);
+            }
         }
     }
     let mut modules = BTreeMap::new();
@@ -626,6 +707,13 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
             }
         }
     }
+    let ids = db
+        .units
+        .keys()
+        .chain(db.equipment.keys())
+        .cloned()
+        .collect();
+    db.localisation = localisation(&layers, &ids);
     if db.units.is_empty() {
         db.diagnostics
             .push("No land unit definitions: add common/units/*.txt to enable armies".into());
@@ -649,9 +737,9 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
         "Compatibility: reconstructed rules; original engine RNG/rounding parity is unverified"
             .into(),
     );
-    db.diagnostics.push("Supply, fuel, weather and air are resolved scenario inputs; no upstream logistics/air simulation yet".into());
-    db.diagnostics.push("1.19 mastery/doctrines, battalion_mult, custom variants and attrition require further import/validation".into());
-    db.diagnostics.push("Operations: manual orders and basic AI; outgoing attacks are interrupted when their origin is attacked".into());
+    db.diagnostics.push("Supply/fuel/air are resolved by campaign support systems when their map data is available; direct inputs remain for legacy profiles. Weather generation is not implemented.".into());
+    db.diagnostics.push("1.19 mastery/doctrines, battalion_mult and custom variants require further import/validation; campaign attrition coefficients are approximate.".into());
+    db.diagnostics.push("Operations: army/group front assignments and plan policies issue ordinary movement/combat orders; outgoing attacks are interrupted when their origin is attacked".into());
     db
 }
 
@@ -659,6 +747,10 @@ pub fn parse_template(b: &[Entry]) -> Result<DivisionTemplate, String> {
     let mut t = DivisionTemplate {
         name: atom(b, "name").ok_or("Template has no name")?.into(),
         locked: yes(b, "is_locked", false),
+        icon: atom(b, "division_icon")
+            .or_else(|| atom(b, "icon"))
+            .unwrap_or("infantry")
+            .into(),
         ..Default::default()
     };
     for unit in block(b, "regiments").unwrap_or(&[]) {
@@ -700,6 +792,7 @@ pub struct OrderOfBattle {
     pub diagnostics: Vec<String>,
     pub warnings: Vec<String>,
     pub declared_divisions: usize,
+    pub initial_effects: Vec<Entry>,
 }
 pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
     parse_oob_for_country(
@@ -716,8 +809,10 @@ pub fn parse_oob_for_country(
     today: crate::game::GameDate,
 ) -> Result<OrderOfBattle, String> {
     let parsed = crate::pdx::parse_pdx_compatible(source)?;
+    let source_entries =
+        hoi4_mobile::script_constants::resolve(&parsed.entries, &Default::default());
     let (root, diagnostics) =
-        crate::history_conditions::resolve(&parsed.entries, tag, modifiers, today);
+        crate::history_conditions::resolve(&source_entries, tag, modifiers, today);
     let warnings = parsed
         .eof_terminated_blocks
         .into_iter()
@@ -729,6 +824,11 @@ pub fn parse_oob_for_country(
         })
         .collect();
     let mut result = OrderOfBattle {
+        initial_effects: root
+            .iter()
+            .filter(|e| !matches!(e.key.as_str(), "division_template" | "units"))
+            .cloned()
+            .collect(),
         diagnostics,
         warnings,
         ..Default::default()
@@ -879,5 +979,55 @@ mod tests {
         let m = MilitaryModifiers::from_research(&db, &BTreeSet::from(["radio".into()]));
         assert_eq!(m.value("reinforce_rate"), 0.05);
         assert!(m.unlocked_equipment.contains("rifle"));
+    }
+}
+
+#[cfg(test)]
+mod equipment_movement_tests {
+    use super::*;
+    #[test]
+    fn motorized_speed_is_fastest_equipment_archetype_not_sum_and_logistics_reduces_demand() {
+        let mut db = MilitaryCatalogue::default();
+        import_units("sub_units={ mot={group=motorized active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 supply_consumption=1 need={rifles=100 trucks=50}} logistics={group=support active=yes type=support max_strength=1 max_organisation=20 supply_consumption_factor=-0.2 fuel_consumption_factor=-0.1} }","authored fixture",&mut db).unwrap();
+        for (id, arch, speed, fuel) in [
+            ("rifle", "rifles", 4.0, 0.0),
+            ("truck", "trucks", 12.0, 1.2),
+        ] {
+            db.equipment.insert(
+                id.into(),
+                EquipmentDefinition {
+                    id: id.into(),
+                    archetype: arch.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats: BTreeMap::from([
+                        ("maximum_speed".into(), speed),
+                        ("fuel_consumption".into(), fuel),
+                    ]),
+                    cost: 1.0,
+                    modular: false,
+                    source: "authored fixture".into(),
+                },
+            );
+        }
+        let t = DivisionTemplate {
+            name: "Mot".into(),
+            line: vec![BattalionSlot {
+                unit: "mot".into(),
+                column: 0,
+                row: 0,
+            }],
+            support: vec![SupportSlot {
+                unit: "logistics".into(),
+                regiment: None,
+                row: 0,
+            }],
+            ..Default::default()
+        };
+        let d = db.aggregate(&t, &Default::default(), None).unwrap();
+        assert_eq!(d.stats.speed, 12.0);
+        assert!((d.stats.fuel - 1.08).abs() < 1e-9);
+        assert_eq!(d.stats.supply, 0.8);
     }
 }

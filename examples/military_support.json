@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "logistics_rules": {
+    "profile": "mobile-logistics-v1-approximation",
+    "network_interval": 6,
+    "supply_reserve_hours": 48.0,
+    "fuel_reserve_hours": 24.0
+  },
+  "air_rules": {
+    "profile": "mobile-air-v1-approximation",
+    "mission_interval": 8
+  },
+  "countries": {},
+  "bases": {},
+  "wings": [],
+  "motorized_hubs": [],
+  "blocked_sea": []
+}

@@ -1,12 +1,12 @@
 //! Starting armies and explicit campaign inputs. No generated historical armies.
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::game::GameDate;
 use crate::military_data::{atom, block, layered_files, number, parse_oob_for_country, stats};
 use crate::military_model::{CountryArmy, StatBlock};
-use crate::production::ProductionState;
+use crate::production::{Equipment, ProductionRules, ProductionState, StartingProduction};
 use crate::research::ResearchWorld;
 use crate::research_data::{Entry, parse_pdx};
 use crate::warfare::Warfare;
@@ -24,6 +24,166 @@ fn date(key: &str) -> Option<GameDate> {
     })
 }
 
+fn literal(b: &[Entry], key: &str, default: f64) -> Result<f64, String> {
+    atom(b, key).map_or(Ok(default), |raw| {
+        raw.parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .ok_or_else(|| format!("{key}: unsupported numeric expression {raw}"))
+    })
+}
+fn stockpile_effect(
+    b: &[Entry],
+    tag: &str,
+    w: &Warfare,
+    production: &mut ProductionState,
+) -> Result<(), String> {
+    let kind = atom(b, "type").ok_or("stockpile entry has no type")?;
+    if atom(b, "variant_name").is_some_and(|name| !name.is_empty()) {
+        return Err(format!(
+            "stockpile {kind}: named variant requires design import"
+        ));
+    }
+    let amount = literal(b, "amount", 0.0)?;
+    if amount.fract() != 0.0 || amount.abs() > i64::MAX as f64 {
+        return Err("stockpile amount must be an integer".into());
+    }
+    let definition = w
+        .catalogue
+        .equipment
+        .get(kind)
+        .ok_or_else(|| format!("unresolved stockpile type {kind}"))?;
+    let stock = &mut production.country_mut(tag).model_stockpile;
+    if amount < 0.0 {
+        let mut remaining = (-amount) as u64;
+        let ids: Vec<_> = stock
+            .keys()
+            .filter(|id| {
+                id.as_str() == kind
+                    || (!definition.buildable
+                        && w.catalogue
+                            .equipment
+                            .get(*id)
+                            .is_some_and(|e| e.archetype == kind))
+            })
+            .cloned()
+            .collect();
+        for id in ids {
+            let count = stock.get_mut(&id).unwrap();
+            let taken = remaining.min(*count);
+            *count -= taken;
+            remaining -= taken;
+        }
+        return Ok(());
+    }
+    let model = if definition.buildable && !definition.modular {
+        Some(definition)
+    } else if !definition.buildable {
+        w.catalogue
+            .best_equipment(kind, &w.countries[tag].modifiers)
+    } else {
+        None
+    }
+    .ok_or_else(|| {
+        format!("stockpile {kind}: no resolved model for the selected country's technology")
+    })?;
+    let n = stock.entry(model.id.clone()).or_default();
+    *n = n.saturating_add(amount as u64);
+    Ok(())
+}
+fn production_effect(
+    b: &[Entry],
+    tag: &str,
+    source: &str,
+    w: &Warfare,
+    production: &mut ProductionState,
+    rules: &ProductionRules,
+) -> Result<(), String> {
+    let e = block(b, "equipment").ok_or("production line has no equipment block")?;
+    let kind = atom(e, "type").ok_or("production line has no equipment type")?;
+    let creator = atom(e, "creator").map(str::to_owned);
+    let variant = atom(e, "version_name").map(str::to_owned);
+    let requested = literal(b, "requested_factories", 1.0)?;
+    let progress = literal(b, "progress", 0.0)?;
+    let amount = literal(b, "amount", 0.0)?;
+    if amount < 0.0 || amount.fract() != 0.0 || amount > u64::MAX as f64 {
+        return Err(format!("production {kind}: invalid amount"));
+    }
+    let efficiency = literal(b, "efficiency", rules.starting_efficiency * 100.0)? / 100.0;
+    if requested < 0.0
+        || requested.fract() != 0.0
+        || requested > u32::MAX as f64
+        || !(0.0..=1.0).contains(&progress)
+        || efficiency < 0.0
+    {
+        return Err(format!(
+            "production {kind}: invalid factories/progress/efficiency"
+        ));
+    }
+    let definition = w.catalogue.equipment.get(kind);
+    let archetype = definition.map_or(kind, |e| e.archetype.as_str());
+    let naval = [
+        "ship_",
+        "convoy",
+        "submarine",
+        "cruiser",
+        "battleship",
+        "destroyer",
+        "carrier",
+    ]
+    .iter()
+    .any(|p| archetype.contains(p));
+    let category = if archetype.contains("infantry") || archetype.contains("rifle") {
+        Equipment::InfantryKit
+    } else if archetype.contains("support") {
+        Equipment::SupportKit
+    } else if archetype.contains("motorized") || archetype.contains("truck") {
+        Equipment::Truck
+    } else if ["plane", "airframe", "fighter", "bomber", "cas_equipment"]
+        .iter()
+        .any(|p| archetype.contains(p))
+    {
+        Equipment::Aircraft
+    } else {
+        Equipment::FieldEquipment
+    };
+    let blocked = if naval {
+        Some("Требуется морское производство на верфях".to_owned())
+    } else if variant.as_ref().is_some_and(|v| !v.is_empty()) {
+        Some("Именной вариант требует импорта конструкции".to_owned())
+    } else if definition.is_none() {
+        Some(format!("Не найдено определение {kind}"))
+    } else if definition.is_some_and(|e| e.modular) {
+        Some("Не разрешена модульная конструкция".to_owned())
+    } else if !w
+        .catalogue
+        .equipment_available(kind, &w.countries[tag].modifiers)
+    {
+        Some("Модель недоступна по стартовым технологиям".to_owned())
+    } else if definition.is_some_and(|e| !e.cost.is_finite() || e.cost <= 0.0) {
+        Some("Неизвестна производственная стоимость".to_owned())
+    } else {
+        None
+    };
+    let country = production.country_mut(tag);
+    country.create(category, requested as u32, rules);
+    let line = country.lines.last_mut().unwrap();
+    line.starting = Some(StartingProduction {
+        equipment: kind.into(),
+        creator,
+        variant,
+        source: source.into(),
+    });
+    line.blocked_reason = blocked;
+    line.remaining = (amount > 0.0).then_some(amount as u64);
+    line.efficiency = efficiency.min(rules.efficiency_cap.max(0.0));
+    if line.blocked_reason.is_none() {
+        line.model = Some(kind.into());
+        line.partial_ic = progress * definition.unwrap().cost;
+    }
+    Ok(())
+}
+
 fn effects(
     entries: &[Entry],
     tag: &str,
@@ -32,6 +192,8 @@ fn effects(
     oobs: &mut Vec<String>,
     ideas: &mut BTreeSet<String>,
     today: GameDate,
+    rules: &ProductionRules,
+    source: &str,
 ) -> bool {
     let initial = warfare.countries[tag].modifiers.clone();
     let (resolved, diagnostics) = crate::history_conditions::resolve(entries, tag, &initial, today);
@@ -46,6 +208,27 @@ fn effects(
     for entry in &resolved {
         let army = warfare.countries.get_mut(tag).unwrap();
         match entry.key.as_str() {
+            "set_convoys" => {
+                if let Some(n) = entry.atom().and_then(|s| s.parse::<u64>().ok()) {
+                    warfare
+                        .logistics
+                        .countries
+                        .entry(tag.into())
+                        .or_default()
+                        .convoys = n;
+                }
+            }
+            "set_fuel" | "fuel" => {
+                if let Some(n) = entry
+                    .atom()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|n| n.is_finite() && *n >= 0.)
+                {
+                    let c = warfare.logistics.countries.entry(tag.into()).or_default();
+                    c.fuel = n;
+                    c.fuel_capacity = c.fuel_capacity.max(n);
+                }
+            }
             "oob" | "set_oob" => {
                 if let Some(id) = entry.atom() {
                     oobs.clear();
@@ -65,6 +248,15 @@ fn effects(
             "clr_country_flag" => {
                 if let Some(flag) = entry.atom() {
                     army.modifiers.flags.remove(flag);
+                }
+            }
+            "add_command_power" => {
+                if let Some(v) = entry
+                    .atom()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .filter(|v| v.is_finite())
+                {
+                    army.command_power = Some((army.command_power.unwrap_or(0.0) + v).max(0.0));
                 }
             }
             "add_manpower" => {
@@ -106,22 +298,42 @@ fn effects(
                     ideas.remove(&id.key);
                 }
             }
-            "add_equipment_to_stockpile" => {
-                if let Some(b) = entry.block() {
-                    if let Some(model) = atom(b, "type") {
-                        let amount = number(b, "amount", 0.0);
-                        if warfare.catalogue.equipment.contains_key(model) && amount >= 0.0 {
-                            let n = production
-                                .country_mut(tag)
-                                .model_stockpile
-                                .entry(model.into())
-                                .or_default();
-                            *n = n.saturating_add(amount as u64);
-                        } else {
-                            warfare
-                                .diagnostics
-                                .push(format!("{tag}: unresolved stockpile model {model}"));
-                        }
+            "add_equipment_to_stockpile" | "add_equipment_production" => {
+                if !production
+                    .country(tag)
+                    .is_some_and(|c| c.starting_data_applied)
+                {
+                    let result = entry
+                        .block()
+                        .ok_or_else(|| "missing effect block".to_owned())
+                        .and_then(|b| {
+                            if entry.key == "add_equipment_to_stockpile" {
+                                if atom(b, "type") == Some("convoy_1")
+                                    || atom(b, "type") == Some("convoy")
+                                {
+                                    literal(b, "amount", 0.).and_then(|n| {
+                                        if n.fract() != 0. || n.abs() > i64::MAX as f64 {
+                                            return Err("Invalid convoy count".into());
+                                        }
+                                        let c = warfare
+                                            .logistics
+                                            .countries
+                                            .entry(tag.into())
+                                            .or_default();
+                                        c.convoys = c.convoys.saturating_add_signed(n as i64);
+                                        Ok(())
+                                    })
+                                } else {
+                                    stockpile_effect(b, tag, warfare, production)
+                                }
+                            } else {
+                                production_effect(b, tag, source, warfare, production, rules)
+                            }
+                        });
+                    if let Err(error) = result {
+                        warfare
+                            .diagnostics
+                            .push(format!("{tag}: {source}: {error}"));
                     }
                 }
             }
@@ -142,26 +354,28 @@ pub fn initialize(
     today: GameDate,
 ) -> Warfare {
     let mut warfare = Warfare::new(crate::military_data::load(root));
-    let mut layers = vec![root.to_path_buf()];
+    let layers = crate::military_data::data_layers(root);
     let profile = fs::read_to_string(root.join("military_profile.txt"))
         .ok()
         .and_then(|s| parse_pdx(&s).ok())
         .unwrap_or_default();
-    if let Some(entries) = block(&profile, "data_layers") {
-        layers.extend(entries.iter().filter(|e| e.value.is_none()).map(|e| {
-            let p = PathBuf::from(&e.key);
-            if p.is_absolute() { p } else { root.join(p) }
-        }));
-    }
     warfare.strict_geography = atom(&profile, "strict_geography") == Some("yes");
     if let Some(seed) = atom(&profile, "seed").and_then(|s| s.parse().ok()) {
         warfare.rng = crate::combat_rules::SeededRandom::new(seed);
     }
     let dlcs = crate::history_conditions::profile_dlcs(root);
     for tag in world.countries.keys() {
-        warfare
-            .countries
-            .insert(tag.clone(), CountryArmy::default());
+        warfare.countries.insert(
+            tag.clone(),
+            CountryArmy {
+                command_power: warfare
+                    .catalogue
+                    .literal_defines
+                    .get("NDefines.NCountry.STARTING_COMMAND_POWER")
+                    .copied(),
+                ..Default::default()
+            },
+        );
     }
     for entry in profile.iter().filter(|e| e.key == "country") {
         if let Some(b) = entry.block() {
@@ -211,16 +425,33 @@ pub fn initialize(
                         number(state, "manpower", 0.0).max(0.0) as u64;
                 }
             }
+            for vp in h
+                .iter()
+                .filter(|e| e.key == "victory_points")
+                .filter_map(Entry::block)
+            {
+                for pair in vp.chunks_exact(2) {
+                    if let (Ok(id), Ok(value)) =
+                        (pair[0].key.parse::<u32>(), pair[1].key.parse::<f64>())
+                    {
+                        warfare.conditions.entry(id).or_default().victory_points = value.max(0.0);
+                    }
+                }
+            }
             for province in block(h, "buildings").unwrap_or(&[]) {
                 if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
-                    warfare.conditions.entry(id).or_default().fort_level =
-                        number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
+                    let c = warfare.conditions.entry(id).or_default();
+                    c.fort_level = number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
+                    c.naval_base = number(b, "naval_base", 0.0).clamp(0.0, 100.0) as u16;
+                    c.supply_node = number(b, "supply_node", 0.0) > 0.0;
                 }
             }
         }
     }
     let tags: Vec<_> = world.countries.keys().cloned().collect();
     for tag in tags {
+        let production_rules = ProductionRules::from_defines(&warfare.catalogue.literal_defines)
+            .for_research(research.country(&tag));
         let mut oobs = Vec::new();
         let mut oob_history_known = true;
         let mut ideas = BTreeSet::new();
@@ -244,13 +475,18 @@ pub fn initialize(
                         ));
                     }
                     oob_history_known = effects(
-                        &parsed.entries,
+                        &hoi4_mobile::script_constants::resolve(
+                            &parsed.entries,
+                            &Default::default(),
+                        ),
                         &tag,
                         &mut warfare,
                         production,
                         &mut oobs,
                         &mut ideas,
                         today,
+                        &production_rules,
+                        &path.display().to_string(),
                     );
                 }
                 Err(e) => {
@@ -309,8 +545,20 @@ pub fn initialize(
                     parse_oob_for_country(&s, &tag, &warfare.countries[&tag].modifiers, today)
                 })
                 .map_err(|e| format!("{tag}: history/units/{oob}.txt: {e}"));
+            let oob_id = oob;
             match result {
                 Ok(oob) => {
+                    effects(
+                        &oob.initial_effects,
+                        &tag,
+                        &mut warfare,
+                        production,
+                        &mut Vec::new(),
+                        &mut BTreeSet::new(),
+                        today,
+                        &production_rules,
+                        &format!("history/units/{oob_name}.txt", oob_name = oob_id),
+                    );
                     let army = warfare.countries.get_mut(&tag).unwrap();
                     army.history_expected += oob.declared_divisions;
                     army.history_errors.extend(oob.diagnostics.iter().cloned());
@@ -379,6 +627,7 @@ pub fn initialize(
                 (populations.get(&tag).copied().unwrap_or(0) as f64 * rate.clamp(0.0, 1.0)) as u64,
             )
             .saturating_sub(serving);
+        production.country_mut(&tag).starting_data_applied = true;
         if army.templates.is_empty() {
             warfare
                 .diagnostics
@@ -513,6 +762,9 @@ pub fn initialize(
             }
         }
     }
+    crate::support_import::load(root, world, &mut warfare, today);
+    warfare.command = crate::command::load(root, &warfare, today);
+    crate::command_abilities::load(root, &mut warfare);
     warfare
 }
 
@@ -536,7 +788,7 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
             )
         })
         .collect();
-    serde_json::json!({"scenario": date.display(), "countries": countries, "diagnostics": warfare.diagnostics})
+    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "logistics":warfare.logistics, "air":warfare.air, "countries": countries, "command_data": warfare.command.data, "command_summary": warfare.command.data.summary(), "army_views": warfare.command.armies.values().filter_map(|a| crate::army_projection::army(warfare, &a.country, a.id, "russian").ok()).collect::<Vec<_>>(), "diagnostics": warfare.diagnostics})
 }
 
 #[cfg(test)]
@@ -791,7 +1043,17 @@ mod tests {
         let mut o = Vec::new();
         let mut i = BTreeSet::new();
         let e=parse_pdx("if={limit={unknown=yes} load_oob=maybe} else_if={limit={always=yes} load_oob=unsafe} else={load_oob=unsafe_too}").unwrap();
-        effects(&e, "A", &mut w, &mut p, &mut o, &mut i, GameDate::START);
+        effects(
+            &e,
+            "A",
+            &mut w,
+            &mut p,
+            &mut o,
+            &mut i,
+            GameDate::START,
+            &ProductionRules::default(),
+            "fixture",
+        );
         assert!(o.is_empty());
     }
     #[test]
@@ -802,9 +1064,112 @@ mod tests {
         let mut o = Vec::new();
         let mut i = BTreeSet::new();
         let e=parse_pdx("oob=A_1936 1939.1.1={load_oob=A_1939} if={limit={NOT={unimplemented=yes}} load_oob=bad} else={load_oob=also_bad} add_manpower=12").unwrap();
-        effects(&e, "A", &mut w, &mut p, &mut o, &mut i, GameDate::START);
+        effects(
+            &e,
+            "A",
+            &mut w,
+            &mut p,
+            &mut o,
+            &mut i,
+            GameDate::START,
+            &ProductionRules::default(),
+            "fixture",
+        );
         assert_eq!(o, vec!["A_1936"]);
         assert_eq!(w.countries["A"].manpower_pool, 12);
         assert!(!w.diagnostics.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod starting_economy_regressions {
+    use super::*;
+    #[test]
+    fn selected_oob_instant_effects_import_real_lines_stocks_and_progress_once_per_country() {
+        let dir = std::env::temp_dir().join(format!(
+            "hoi4-starting-industry-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let put = |path: &str, source: &str| {
+            let p = dir.join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, source).unwrap();
+        };
+        put("military_profile.txt", "dlcs={Chosen}");
+        put(
+            "common/defines/production.lua",
+            "NDefines.NProduction.BASE_FACTORY_MAX_EFFICIENCY_FACTOR = 30\n",
+        );
+        put(
+            "common/units/equipment/rifles.txt",
+            "equipments={rifles={is_archetype=yes active=yes build_cost_ic=2} rifle_1={archetype=rifles year=1936} rifle_future={archetype=rifles year=1945 active=no}}",
+        );
+        put(
+            "history/countries/A.txt",
+            "oob=A_Unselected IF={LIMIT={has_dlc=Chosen} set_oob=A_Selected} ELSE={set_oob=A_Legacy} load_oob=A_Selected add_equipment_to_stockpile={type=rifle_1 amount=11}",
+        );
+        put("history/countries/B.txt", "oob=B_1936");
+        put(
+            "history/units/A_Unselected.txt",
+            "instant_effect={add_equipment_to_stockpile={type=rifle_1 amount=9000} add_equipment_production={equipment={type=rifle_1} requested_factories=99}}",
+        );
+        put(
+            "history/units/A_Selected.txt",
+            r#"@count=8
+            instant_effect={
+                if={limit={has_dlc=Chosen} add_equipment_to_stockpile={type=rifles amount=@count}}
+                add_equipment_to_stockpile={type=rifles amount=-2}
+                add_equipment_production={equipment={type=rifle_1 creator=A} requested_factories=2 progress=0.25 efficiency=40}
+                add_equipment_production={equipment={type=rifle_1 creator=A version_name="Unknown design"} requested_factories=5 efficiency=100}
+                add_equipment_production={equipment={type=convoy_1} requested_factories=2 amount=10}
+                if={limit={unknown_condition=yes} add_equipment_to_stockpile={type=rifle_1 amount=10000}}
+            }
+            1939.1.1={instant_effect={add_equipment_to_stockpile={type=rifle_1 amount=9999}}}
+        "#,
+        );
+        put(
+            "history/units/B_1936.txt",
+            "instant_effect={add_equipment_to_stockpile={type=rifle_1 amount=3} add_equipment_production={equipment={type=rifle_1 creator=B} requested_factories=1 efficiency=20}}",
+        );
+        let world = crate::warfare::tests::world();
+        let mut p = ProductionState::default();
+        let research = ResearchWorld::default();
+        let w = initialize(&dir, &world, &research, &mut p, GameDate::START);
+        let a = p.country("A").unwrap();
+        assert_eq!(a.lines.len(), 3);
+        assert_eq!(a.model_stockpile["rifle_1"], 17);
+        assert!(!a.model_stockpile.contains_key("rifles"));
+        assert!(!a.model_stockpile.contains_key("rifle_future"));
+        assert_eq!(a.lines[0].model.as_deref(), Some("rifle_1"));
+        assert_eq!(a.lines[0].requested_factories, 2);
+        assert_eq!(a.lines[0].efficiency, 0.3);
+        assert_eq!(a.lines[0].partial_ic, 0.5);
+        assert_eq!(
+            a.lines[0].starting.as_ref().unwrap().creator.as_deref(),
+            Some("A")
+        );
+        assert!(a.lines[1].blocked_reason.is_some());
+        assert!(a.lines[2].blocked_reason.is_some());
+        assert_eq!(p.country("B").unwrap().model_stockpile["rifle_1"], 3);
+        assert_eq!(p.country("B").unwrap().lines.len(), 1);
+        assert!(
+            w.diagnostics
+                .iter()
+                .any(|s| s.contains("unsupported conditional"))
+        );
+        let before = serde_json::to_string(&p).unwrap();
+        initialize(&dir, &world, &research, &mut p, GameDate::START);
+        assert_eq!(serde_json::to_string(&p).unwrap(), before);
+        let rules = ProductionRules::from_defines(&w.catalogue.literal_defines);
+        p.country_mut("A")
+            .tick_with_models(2, &rules, &BTreeMap::from([("rifle_1".into(), 2.0)]));
+        assert_eq!(p.country("A").unwrap().model_stockpile["rifle_1"], 18);
+        assert!((p.country("A").unwrap().lines[0].last_day_ic - 2.7).abs() < 1e-12);
+        assert!(p.country("A").unwrap().stockpile.is_empty());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -1,5 +1,5 @@
 //! Army controls and map counters. All orders go through the campaign model.
-use crate::military_model::{BattalionSlot, DivisionOrder, DivisionTemplate, SupportSlot};
+use crate::military_model::DivisionOrder;
 use crate::production::{ProductionRules, ProductionState};
 use crate::warfare::Warfare;
 use crate::world::World;
@@ -11,50 +11,207 @@ use std::collections::BTreeSet;
 enum Page {
     #[default]
     Divisions,
+    Command,
     Templates,
+    Recruitment,
     Equipment,
     Battles,
+    BattleDetails,
     Data,
 }
 #[derive(Debug, Default)]
 pub struct ArmyView {
     pub open: bool,
+    pub orders_enabled: bool,
     pub selected: BTreeSet<u64>,
     pub map_drag: Option<crate::army_controls::Drag>,
     pub pan_last: Option<Vec2>,
     pub right_down: Option<Vec2>,
     pub strategic: bool,
+    pub support_attack: bool,
+    pub touch_add: bool,
+    pub touch_box: bool,
+    pub touch_move: bool,
+    pub touch_ui: bool,
+    pub mobile: crate::mobile_army_ui::MobileView,
+    pub pending_order: Option<crate::battle_plan_ui::PendingOrder>,
+    pub confirm_drawing: bool,
+    pub toolbar_gesture: crate::army_touch::Gesture,
+    pub selected_army: Option<crate::command::ArmyId>,
+    pub selected_front: Option<crate::frontline::FrontId>,
+    pub selected_plan: Option<crate::operations::PlanId>,
+    pub plan_advanced: bool,
+    pub draw_new_front: bool,
+    pub order_map: crate::battle_plan_render::OrderMap,
+    pub order_hover: Option<crate::battle_plan_render::OrderRef>,
+    pub selected_order: Option<crate::battle_plan_render::OrderRef>,
+    pub order_handle: Option<crate::battle_plan_render::Handle>,
+    pub group_orders: bool,
+    pub ability_marshal: bool,
+    pub name_target: u8,
+    pub group_choice: usize,
+    pub command_touch_last: Option<Vec2>,
+    pub line_preview: Vec<u32>,
+    pub line_preview_end: Option<u32>,
+    pub plan_tool: Option<crate::battle_plan_ui::Tool>,
+    pub front_start: Option<crate::frontline::FrontEdge>,
+    pub front_hover: Option<crate::frontline::FrontEdge>,
+    pub front_preview_end: Option<crate::frontline::FrontEdge>,
+    pub front_preview: Vec<crate::frontline::FrontEdge>,
+    pub army_scroll: f32,
+    pub commander_picker: Option<bool>,
+    pub command_scroll: usize,
+    pub edit_army_name: bool,
+    pub army_name: String,
     page: Page,
     scroll: usize,
     selection_scroll: usize,
-    template: usize,
-    unit: usize,
-    slot: (usize, usize),
-    support: bool,
-    regimental: bool,
-    draft: Option<DivisionTemplate>,
-    editing: Option<String>,
+    pub designer: crate::division_designer_ui::DesignerView,
     pub notice: String,
+    pub deployment_province: Option<u32>,
+    pub deployment_pick: bool,
+    pub recruit_template: usize,
+    pub recruit_scroll: usize,
+    pub battle_id: Option<u64>,
+    pub battle_scroll: usize,
     model: usize,
     battle: usize,
     trace: usize,
 }
 impl ArmyView {
+    pub fn cancel_tool(&mut self) {
+        self.plan_tool = None;
+        self.pending_order = None;
+        self.confirm_drawing = false;
+        self.order_handle = None;
+        self.plan_advanced = false;
+        self.front_start = None;
+        self.front_hover = None;
+        self.front_preview.clear();
+        self.front_preview_end = None;
+        self.line_preview.clear();
+        self.line_preview_end = None;
+    }
+    pub fn sync_selection(&mut self, w: &Warfare) {
+        let previous = self.selected_army;
+        let armies: BTreeSet<_> = self
+            .selected
+            .iter()
+            .filter_map(|id| w.command.membership.get(id).copied())
+            .collect();
+        self.selected_army = if armies.len() == 1 {
+            armies.first().copied()
+        } else {
+            None
+        };
+        if previous != self.selected_army {
+            self.selected_front = None;
+            self.selected_plan = None;
+            self.selected_order = None;
+        }
+    }
+    pub fn ensure_army(&mut self, tag: &str, w: &mut Warfare) -> Result<u64, String> {
+        let army = crate::army_command_ui::selected_army(self, w)
+            .filter(|id| w.command.armies.get(id).is_some_and(|a| a.country == tag));
+        let id = if let Some(id) = army {
+            id
+        } else {
+            if self.selected.is_empty() {
+                return Err("Сначала выделите дивизии на карте".into());
+            }
+            w.create_army(tag, &self.selected.iter().copied().collect::<Vec<_>>(), "")?
+        };
+        self.selected_army = Some(id);
+        if self.selected.is_empty() {
+            self.selected = w.command.members(id).collect();
+        }
+        Ok(id)
+    }
+    pub fn show_army(&mut self, id: u64, w: &Warfare) {
+        self.cancel_tool();
+        let changed = self.selected_army != Some(id);
+        self.selected_army = Some(id);
+        self.selected = w.command.members(id).collect();
+        if changed {
+            self.selected_front = None;
+            self.selected_plan = None;
+            self.selected_order = None;
+        }
+        self.open = false;
+    }
+    pub fn show_command(&mut self, picker: bool) {
+        self.cancel_tool();
+        self.open = true;
+        self.page = Page::Command;
+        self.army_scroll = 0.0;
+        self.commander_picker = picker.then_some(false);
+        self.mobile.advanced = false;
+        self.mobile.page = crate::mobile_army_ui::MobilePage::Army;
+        self.mobile.scroll = 0.0;
+    }
+    pub fn show_recruitment(&mut self) {
+        self.open = true;
+        self.page = Page::Recruitment;
+    }
+    pub fn show_battle(&mut self, id: u64, w: &Warfare) {
+        self.cancel_tool();
+        self.open = true;
+        self.page = Page::BattleDetails;
+        self.battle_id = Some(id);
+        self.battle = w.battles.keys().position(|b| *b == id).unwrap_or(0);
+        self.trace = 0;
+        self.battle_scroll = 0;
+    }
+    pub fn show_battle_log(&mut self, id: u64, w: &Warfare) {
+        self.battle = w.battles.keys().position(|b| *b == id).unwrap_or(0);
+        self.page = Page::Battles;
+    }
+    pub fn navigation_panel(&self) -> crate::campaign_ui::Panel {
+        match self.page {
+            Page::Recruitment | Page::Templates => crate::campaign_ui::Panel::Recruitment,
+            Page::Command
+                if !self.mobile.advanced
+                    && self.mobile.page == crate::mobile_army_ui::MobilePage::Logistics =>
+            {
+                crate::campaign_ui::Panel::Air
+            }
+            Page::Command => crate::campaign_ui::Panel::Officer,
+            _ => crate::campaign_ui::Panel::Army,
+        }
+    }
+
     pub fn show_template(&mut self, index: usize) {
         self.open = true;
         self.page = Page::Templates;
-        self.template = index;
-        self.draft = None;
+        self.designer.template_index = index;
+        self.designer.draft = None;
+    }
+    pub fn orders_visible(&self) -> bool {
+        self.orders_enabled
+            && self.selected_army.is_some()
+            && (!self.open
+                || self.page == Page::Divisions
+                || (self.page == Page::Command && self.mobile.advanced))
+    }
+    pub fn text_input_active(&self) -> bool {
+        self.open
+            && ((self.page == Page::Command && self.edit_army_name)
+                || (self.page == Page::Templates && self.designer.name_active))
     }
     pub fn close(&mut self) {
         self.open = false;
+        self.cancel_tool();
         self.map_drag = None;
         self.pan_last = None;
         self.right_down = None;
     }
 }
-pub fn bounds(_view: &ArmyView) -> Rect {
-    crate::ui_layout::Layout::current().primary()
+pub fn bounds(view: &ArmyView) -> Rect {
+    let mut r = crate::ui_layout::Layout::current().primary();
+    if view.orders_visible() {
+        r.h = (crate::battle_plan_ui::toolbar_bounds().y - 46.0 - r.y).max(100.0);
+    }
+    r
 }
 pub fn is_over_panel(point: Vec2, view: &ArmyView) -> bool {
     interactive_bounds(view).is_some_and(|r| r.contains(point))
@@ -71,6 +228,7 @@ fn order(d: &DivisionOrder) -> &'static str {
         DivisionOrder::Hold => "ОБОРОНА",
         DivisionOrder::Move { .. } => "ДВИЖЕНИЕ",
         DivisionOrder::Attack { .. } => "АТАКА",
+        DivisionOrder::SupportAttack { .. } => "ПОДДЕРЖКА АТАКИ",
         DivisionOrder::Retreat { .. } => "ОТСТУПЛЕНИЕ",
         DivisionOrder::StrategicRedeployment { .. } => "ПЕРЕБРОСКА",
         DivisionOrder::Train { .. } => "УЧЕНИЯ",
@@ -84,6 +242,20 @@ fn result<T>(view: &mut ArmyView, value: Result<T, String>, ok: &str) {
 }
 
 pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
+    if view.plan_tool.is_some() && !view.open {
+        return None;
+    }
+    if !view.open
+        && !view.selected.is_empty()
+        && (view.touch_ui || screen_width() < 760.0 || screen_height() < 600.0)
+    {
+        return Some(Rect::new(
+            0.0,
+            crate::ui_layout::Layout::current().top,
+            310.0f32.min(screen_width() - 10.0),
+            164.0,
+        ));
+    }
     if view.open {
         Some(bounds(view))
     } else if !view.selected.is_empty() {
@@ -91,7 +263,12 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
             0.0,
             crate::ui_layout::Layout::current().top,
             (screen_width() - 10.0).min(310.0).max(1.0),
-            (screen_height() - crate::ui_layout::Layout::current().top - 52.0).max(120.0),
+            ((if view.orders_visible() {
+                crate::battle_plan_ui::toolbar_bounds().y - 46.0
+            } else {
+                screen_height() - crate::ui_layout::Layout::current().bottom - 4.0
+            }) - crate::ui_layout::Layout::current().top)
+                .max(120.0),
         ))
     } else {
         None
@@ -105,6 +282,20 @@ pub fn issue_order(
     province: u32,
     append: bool,
 ) {
+    if view.support_attack
+        || is_key_down(KeyCode::LeftControl)
+        || is_key_down(KeyCode::RightControl)
+    {
+        let mut report = crate::army_controls::OrderReport::default();
+        for id in view.selected.clone() {
+            match w.support_attack(tag, &[id], province, world) {
+                Ok(_) => report.accepted += 1,
+                Err(e) => report.errors.push(e),
+            }
+        }
+        view.notice = report.message();
+        return;
+    }
     let report = crate::army_controls::order_selection(
         w,
         world,
@@ -117,7 +308,23 @@ pub fn issue_order(
     view.notice = report.message();
 }
 pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &mut ArmyView) {
-    if view.open || view.selected.is_empty() {
+    if view.deployment_pick {
+        let r = Rect::new(
+            5.0,
+            crate::ui_layout::Layout::current().top + 5.0,
+            (screen_width() - 10.0).min(440.0),
+            48.0,
+        );
+        ui::panel(r.x, r.y, r.w, r.h);
+        ui::paragraph(
+            "Выберите свою провинцию для развёртывания. Esc — назад к набору.",
+            r,
+            13.0,
+            ui::GOLD,
+        );
+        return;
+    }
+    if view.open || view.selected.is_empty() || view.plan_tool.is_some() {
         return;
     }
     let Some(tag) = tag else {
@@ -131,6 +338,10 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
     let Some(a) = interactive_bounds(view) else {
         return;
     };
+    if view.touch_ui || screen_width() < 760.0 || screen_height() < 600.0 {
+        crate::mobile_army_ui::selection(w, view, a);
+        return;
+    }
     ui::panel(a.x, a.y, a.w, a.h);
     ui::header(a.x + 3.0, a.y + 3.0, a.w - 6.0, "ВЫБОР ВОЙСК");
     if ui::small_button(
@@ -163,12 +374,45 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
         Rect::new(x + 8.0, a.y + 73.0, 45.0, 54.0),
         ui::MUTED,
     );
-    ui::placeholder(
-        Rect::new(x + 72.0, a.y + 69.0, width - 72.0, 29.0),
-        "Назначить командира",
+    let army = crate::army_command_ui::selected_army(view, w);
+    let general = army
+        .and_then(|id| w.command.armies.get(&id))
+        .and_then(|a| a.general.as_ref())
+        .and_then(|id| w.command.commanders.get(id))
+        .map(|c| c.name.clone());
+    ui::tooltip(
+        portrait,
+        general.as_deref().unwrap_or("Назначить генерала"),
+        "Нажмите портрет для выбора командующего армии",
     );
+    if ui::inside(portrait) && is_mouse_button_pressed(MouseButton::Left) {
+        match view.ensure_army(tag, w) {
+            Ok(_) => view.show_command(true),
+            Err(e) => view.notice = e,
+        }
+    }
+    let name = army
+        .and_then(|id| w.command.armies.get(&id))
+        .map_or("Объединить в армию", |a| a.name.as_str());
+    if ui::small_button(
+        name,
+        Rect::new(x + 72.0, a.y + 69.0, width - 72.0, 29.0),
+        false,
+    ) {
+        if army.is_none() {
+            let ids: Vec<_> = view.selected.iter().copied().collect();
+            match w.create_army(tag, &ids, "") {
+                Ok(id) => view.selected_army = Some(id),
+                Err(e) => view.notice = e,
+            }
+        } else {
+            view.selected_army = army;
+        }
+        view.page = Page::Command;
+        view.open = true;
+    }
     label(
-        "ПКМ: движение / атака",
+        general.as_deref().unwrap_or("Нажмите портрет: генерал"),
         x + 72.0,
         a.y + 115.0,
         width - 72.0,
@@ -176,14 +420,31 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
         ui::TEXT,
     );
     label(
-        "Shift + ПКМ: маршрут",
+        "ПКМ: приказ · Shift: маршрут",
         x + 72.0,
         a.y + 133.0,
         width - 72.0,
         11.0,
         ui::MUTED,
     );
-    let list = Rect::new(x, a.y + 151.0, width, (a.h - 252.0).max(45.0));
+    if screen_width() < 760.0 {
+        if let Some(battle) = view
+            .selected
+            .iter()
+            .filter_map(|id| w.divisions.get(id).and_then(|d| d.battle))
+            .next()
+        {
+            if ui::small_button(
+                "Открыть бой",
+                Rect::new(x + 72.0, a.y + 104.0, width - 72.0, 28.0),
+                false,
+            ) {
+                view.show_battle(battle, w);
+            }
+        }
+        return;
+    }
+    let list = Rect::new(x, a.y + 151.0, width, (a.h - 286.0).max(45.0));
     let ids: Vec<_> = view.selected.iter().copied().collect();
     let rows = (list.h / 48.0).max(1.0) as usize;
     let max = ids.len().saturating_sub(rows);
@@ -211,7 +472,23 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
             Rect::new(r.x + 5.0, r.y + 10.0, 22.0, 22.0),
             ui::GOLD,
         );
-        label(&d.name, r.x + 36.0, r.y + 16.0, r.w - 44.0, 12.0, ui::TEXT);
+        label(
+            &d.name,
+            r.x + 36.0,
+            r.y + 16.0,
+            r.w - if d.battle.is_some() { 100.0 } else { 44.0 },
+            12.0,
+            ui::TEXT,
+        );
+        if let Some(battle) = d.battle {
+            if ui::small_button(
+                "Бой",
+                Rect::new(r.right() - 52.0, r.y + 4.0, 46.0, 24.0),
+                false,
+            ) {
+                view.show_battle(battle, w);
+            }
+        }
         label(
             order(&d.order),
             r.x + 36.0,
@@ -248,7 +525,26 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
             view.selected.insert(*id);
         }
     }
-    label(&view.notice, x, a.bottom() - 89.0, width, 10.0, ui::GOLD);
+    label(&view.notice, x, a.bottom() - 122.0, width, 10.0, ui::GOLD);
+    if ui::small_button(
+        "+ Выделение",
+        Rect::new(x, a.bottom() - 112.0, (width - 5.0) / 2.0, 27.0),
+        view.touch_add,
+    ) {
+        view.touch_add = !view.touch_add;
+    }
+    if ui::small_button(
+        "Рамка",
+        Rect::new(
+            x + (width + 5.0) / 2.0,
+            a.bottom() - 112.0,
+            (width - 5.0) / 2.0,
+            27.0,
+        ),
+        view.touch_box,
+    ) {
+        view.touch_box = !view.touch_box;
+    }
     if ui::small_button(
         "Стоп · H",
         Rect::new(x, a.bottom() - 76.0, 95.0, 29.0),
@@ -258,10 +554,22 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
     }
     if ui::small_button(
         "Переброска",
-        Rect::new(x + 101.0, a.bottom() - 76.0, width - 101.0, 29.0),
+        Rect::new(x + 101.0, a.bottom() - 76.0, (width - 104.0) / 2.0, 29.0),
         view.strategic,
     ) {
         view.strategic = !view.strategic;
+    }
+    if ui::small_button(
+        "Поддержка",
+        Rect::new(
+            x + 101.0 + (width - 104.0) / 2.0 + 3.0,
+            a.bottom() - 76.0,
+            (width - 104.0) / 2.0,
+            29.0,
+        ),
+        view.support_attack,
+    ) {
+        view.support_attack = !view.support_attack;
     }
     if ui::small_button(
         "Управление дивизиями",
@@ -286,8 +594,23 @@ pub fn draw(
         return;
     }
     let a = bounds(view);
+    if view.page == Page::Command && !view.mobile.advanced {
+        if let Some(tag) = tag {
+            crate::mobile_army_ui::draw(world, tag, w, view, a);
+        }
+        return;
+    }
     ui::panel(a.x, a.y, a.w, a.h);
-    ui::header(a.x + 4.0, a.y + 4.0, a.w - 8.0, "СУХОПУТНЫЕ ВОЙСКА");
+    ui::header(
+        a.x + 4.0,
+        a.y + 4.0,
+        a.w - 8.0,
+        if matches!(view.page, Page::Recruitment | Page::Templates) {
+            "НАБОР И РАЗВЁРТЫВАНИЕ"
+        } else {
+            "СУХОПУТНЫЕ ВОЙСКА"
+        },
+    );
     if ui::small_button(
         "X",
         Rect::new(a.x + a.w - 36.0, a.y + 7.0, 26.0, 24.0),
@@ -309,23 +632,32 @@ pub fn draw(
     let x = a.x + 10.0;
     let width = a.w - 20.0;
     let mut y = a.y + 51.0;
-    let tabw = width / 5.0;
-    for (i, (p, title)) in [
-        (Page::Divisions, "ДИВИЗИИ"),
-        (Page::Templates, "ШАБЛОНЫ"),
-        (Page::Equipment, "ТЕХНИКА"),
-        (Page::Battles, "БОИ"),
-        (Page::Data, "ДАННЫЕ"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
+    let recruitment = matches!(view.page, Page::Recruitment | Page::Templates);
+    let tabs: &[(Page, &str)] = if recruitment {
+        &[
+            (Page::Recruitment, "НАБОР И РАЗВЁРТЫВАНИЕ"),
+            (Page::Templates, "КОНСТРУКТОР ШАБЛОНОВ"),
+        ]
+    } else {
+        &[
+            (Page::Divisions, "ДИВИЗИИ"),
+            (Page::Command, "КОМАНДОВАНИЕ"),
+            (Page::BattleDetails, "БОИ"),
+            (Page::Equipment, "ТЕХНИКА"),
+            (Page::Data, "ДАННЫЕ"),
+        ]
+    };
+    let tabw = width / tabs.len() as f32;
+    for (i, &(p, title)) in tabs.iter().enumerate() {
         if ui::small_button(
             title,
             Rect::new(x + i as f32 * tabw, y - 15.0, tabw - 3.0, 29.0),
             view.page == p,
         ) {
             view.page = p;
+            if p == Page::Command {
+                view.mobile.advanced = false;
+            }
             view.scroll = 0;
         }
     }
@@ -349,6 +681,26 @@ pub fn draw(
     y += 25.0;
     let bottom = a.y + a.h - 47.0;
     match view.page {
+        Page::Recruitment => crate::recruitment_ui::draw(
+            world,
+            tag,
+            w,
+            production,
+            selected_province,
+            view,
+            Rect::new(x, y, width, (bottom - y).max(1.0)),
+        ),
+        Page::Command => {
+            crate::army_command_ui::draw(
+                tag,
+                w,
+                view,
+                Rect::new(x, y, width, (bottom - y).max(1.0)),
+                world,
+                production,
+                selected_province,
+            );
+        }
         Page::Divisions => {
             let count = w
                 .divisions
@@ -403,6 +755,21 @@ pub fn draw(
                 }
             }
             y += 36.0;
+            if ui::small_button(
+                "Добавлять к выделению",
+                Rect::new(x, y, (width - 5.0) / 2.0, 28.0),
+                view.touch_add,
+            ) {
+                view.touch_add = !view.touch_add;
+            }
+            if ui::small_button(
+                "Выделение рамкой",
+                Rect::new(x + (width + 5.0) / 2.0, y, (width - 5.0) / 2.0, 28.0),
+                view.touch_box,
+            ) {
+                view.touch_box = !view.touch_box;
+            }
+            y += 35.0;
             if let Some(province) = selected_province {
                 let controller = world.controller_of_province(province).unwrap_or("---");
                 label(
@@ -494,6 +861,7 @@ pub fn draw(
                         view.selected.clear();
                         view.selected.insert(*id);
                     }
+                    view.sync_selection(w);
                 }
             }
             let py = bottom - 22.0;
@@ -587,7 +955,24 @@ pub fn draw(
             width,
             bottom,
         ),
+        Page::BattleDetails => {
+            crate::battle_ui::draw(tag, w, view, Rect::new(x, y, width, (bottom - y).max(1.0)))
+        }
         Page::Battles => {
+            if ui::small_button("← Сводка боя", Rect::new(x, y, width, 26.0), false) {
+                view.page = Page::BattleDetails;
+            }
+            y += 32.0;
+            if ui::small_button("Выгрузить журнал JSON", Rect::new(x, y, width, 26.0), false)
+            {
+                result(
+                    view,
+                    crate::platform_storage::game_file("combat-debug.json")
+                        .and_then(|path| w.export_combat_log(&path)),
+                    "Журнал сохранён: combat-debug.json",
+                );
+            }
+            y += 34.0;
             let battles: Vec<_> = w.battles.keys().copied().collect();
             if battles.is_empty() {
                 label(
@@ -746,8 +1131,10 @@ pub fn draw(
                         {
                             label(
                                 &format!(
-                                    "{}: attack x{:.3}, defense x{:.3}",
-                                    m.source, m.attack, m.defense
+                                    "{} · {} ×{:.3}",
+                                    m.source,
+                                    format!("{:?}", m.stat),
+                                    m.factor
                                 ),
                                 x,
                                 y,
@@ -870,238 +1257,21 @@ fn draw_templates(
     province: Option<u32>,
     view: &mut ArmyView,
     x: f32,
-    mut y: f32,
+    y: f32,
     width: f32,
     bottom: f32,
 ) {
-    let Some(army) = w.countries.get(tag) else {
-        return;
-    };
-    let names: Vec<_> = army.templates.keys().cloned().collect();
-    if names.is_empty() {
-        label(
-            "Шаблоны дивизий не загружены.",
-            x,
-            y,
-            width,
-            12.0,
-            ui::MUTED,
-        );
-        return;
-    }
-    view.template %= names.len();
-    let name = names[view.template].clone();
-    if ui::small_button("<", Rect::new(x, y, 28.0, 26.0), false) {
-        view.template = (view.template + names.len() - 1) % names.len();
-        view.draft = None;
-    }
-    label(&name, x + 35.0, y + 18.0, width - 74.0, 13.0, ui::TEXT);
-    if ui::small_button(">", Rect::new(x + width - 28.0, y, 28.0, 26.0), false) {
-        view.template = (view.template + 1) % names.len();
-        view.draft = None;
-    }
-    y += 34.0;
-    if view.draft.is_none() || view.editing.as_deref() != Some(name.as_str()) {
-        view.draft = Some(army.templates[&name].clone());
-        view.editing = Some(name.clone());
-    }
-    let t = view.draft.as_ref().unwrap().clone();
-    let cell = ((width - 12.0) / 6.0).min(43.0);
-    let grid_height = cell * 5.0;
-    if y + grid_height + 145.0 > bottom {
-        label(
-            "Увеличьте высоту окна для редактора шаблонов.",
-            x,
-            y + 20.0,
-            width,
-            12.0,
-            ui::MUTED,
-        );
-        return;
-    }
-    for c in 0..5 {
-        for r in 0..5 {
-            let unit = t
-                .line
-                .iter()
-                .find(|s| s.column == c && s.row == r)
-                .map(|s| s.unit.as_str())
-                .unwrap_or("+");
-            if ui::small_button(
-                unit,
-                Rect::new(
-                    x + c as f32 * cell,
-                    y + r as f32 * cell,
-                    cell - 2.0,
-                    cell - 2.0,
-                ),
-                !view.support && view.slot == (c, r),
-            ) {
-                view.slot = (c, r);
-                view.support = false;
-            }
-        }
-    }
-    for r in 0..5 {
-        let unit = t
-            .support
-            .iter()
-            .find(|s| {
-                s.regiment
-                    == if view.regimental {
-                        Some(view.slot.0)
-                    } else {
-                        None
-                    }
-                    && s.row == r
-            })
-            .map(|s| s.unit.as_str())
-            .unwrap_or("+");
-        if ui::small_button(
-            unit,
-            Rect::new(
-                x + 5.0 * cell + 8.0,
-                y + r as f32 * cell,
-                cell - 2.0,
-                cell - 2.0,
-            ),
-            view.support && view.slot.1 == r,
-        ) {
-            view.slot.1 = r;
-            view.support = true;
-        }
-    }
-    y += grid_height + 8.0;
-    if ui::small_button(
-        "ПОЛКОВАЯ ПОДДЕРЖКА",
-        Rect::new(x, y, width, 25.0),
-        view.regimental,
-    ) {
-        view.regimental = !view.regimental;
-    }
-    y += 32.0;
-    let options: Vec<_> = w
-        .catalogue
-        .units
-        .values()
-        .filter(|u| {
-            (u.active || army.modifiers.unlocked_units.contains(&u.id))
-                && if view.support {
-                    u.group == "support"
-                        && if view.regimental {
-                            u.regimental
-                        } else {
-                            u.divisional
-                        }
-                } else {
-                    u.group != "support"
-                }
-        })
-        .map(|u| u.id.clone())
-        .collect();
-    if !options.is_empty() {
-        view.unit %= options.len();
-        if ui::small_button("<", Rect::new(x, y, 27.0, 25.0), false) {
-            view.unit = (view.unit + options.len() - 1) % options.len();
-        }
-        label(
-            &options[view.unit],
-            x + 33.0,
-            y + 17.0,
-            width - 178.0,
-            12.0,
-            ui::TEXT,
-        );
-        if ui::small_button(">", Rect::new(x + width - 140.0, y, 27.0, 25.0), false) {
-            view.unit = (view.unit + 1) % options.len();
-        }
-        let mut changed = t.clone();
-        let apply = ui::small_button(
-            "ВЫБРАТЬ",
-            Rect::new(x + width - 106.0, y, 48.0, 25.0),
-            false,
-        );
-        let remove = ui::small_button("УБРАТЬ", Rect::new(x + width - 53.0, y, 48.0, 25.0), false);
-        if apply || remove {
-            if view.support {
-                let regiment = view.regimental.then_some(view.slot.0);
-                changed
-                    .support
-                    .retain(|s| !(s.regiment == regiment && s.row == view.slot.1));
-                if apply {
-                    changed.support.push(SupportSlot {
-                        unit: options[view.unit].clone(),
-                        regiment,
-                        row: view.slot.1,
-                    });
-                }
-            } else {
-                changed
-                    .line
-                    .retain(|s| !(s.column == view.slot.0 && s.row == view.slot.1));
-                if apply {
-                    changed.line.push(BattalionSlot {
-                        unit: options[view.unit].clone(),
-                        column: view.slot.0,
-                        row: view.slot.1,
-                    });
-                }
-            }
-            view.draft = Some(changed);
-        }
-    }
-    y += 34.0;
-    if let Ok(d) = w
-        .catalogue
-        .aggregate(view.draft.as_ref().unwrap(), &army.modifiers, None)
-    {
-        label(
-            &format!(
-                "SA {:.1}  HA {:.1}  DEF {:.1}  BRK {:.1}  W {:.0}",
-                d.stats.soft_attack,
-                d.stats.hard_attack,
-                d.stats.defense,
-                d.stats.breakthrough,
-                d.stats.width
-            ),
-            x,
-            y + 13.0,
-            width,
-            11.0,
-            ui::TEXT,
-        );
-    }
-    y += 22.0;
-    let cost = w
-        .catalogue
-        .edit_cost(&army.templates[&name], view.draft.as_ref().unwrap());
-    if ui::small_button(
-        &format!(
-            "СОХРАНИТЬ · {:.0} ОПЫТА",
-            cost.as_ref().copied().unwrap_or(0.0)
-        ),
-        Rect::new(x, y, width / 2.0 - 4.0, 28.0),
-        false,
-    ) {
-        let r = w.save_template(
-            tag,
-            view.editing.as_deref(),
-            view.draft.as_ref().unwrap().clone(),
-        );
-        result(view, r, "Шаблон сохранён");
-    }
-    if ui::small_button(
-        "РАЗВЕРНУТЬ",
-        Rect::new(x + width / 2.0 + 4.0, y, width / 2.0 - 4.0, 28.0),
-        false,
-    ) {
-        if let Some(province) = province {
-            let r = w.recruit(tag, &name, province, world, production);
-            result(view, r, "Дивизия развёрнута");
-        } else {
-            view.notice = "Сначала выберите свою провинцию на карте".into();
-        }
-    }
+    crate::division_designer_ui::draw(
+        world,
+        tag,
+        w,
+        production,
+        province,
+        &view.selected,
+        &mut view.designer,
+        &mut view.notice,
+        Rect::new(x, y, width, (bottom - y).max(1.0)),
+    );
 }
 
 pub fn draw_counters(
@@ -1122,7 +1292,9 @@ pub fn draw_counters(
         let mut path = match &d.order {
             DivisionOrder::Move { path, .. }
             | DivisionOrder::StrategicRedeployment { path, .. } => path.clone(),
-            DivisionOrder::Attack { province } => vec![*province],
+            DivisionOrder::Attack { province } | DivisionOrder::SupportAttack { province } => {
+                vec![*province]
+            }
             DivisionOrder::Retreat { destination, .. } => vec![*destination],
             _ => Vec::new(),
         };
@@ -1148,10 +1320,16 @@ pub fn draw_counters(
     for c in crate::army_controls::counters(world, w, source, area) {
         let selected = c.ids.iter().any(|id| view.selected.contains(id));
         let battle = c.ids.iter().any(|id| w.divisions[id].battle.is_some());
+        let army_color = c
+            .ids
+            .iter()
+            .find_map(|id| w.command.membership.get(id))
+            .and_then(|id| w.command.armies.get(id))
+            .map(|a| Color::from_rgba(a.color[0], a.color[1], a.color[2], 255));
         let color = if selected {
             ui::GOLD
         } else if Some(c.country.as_str()) == tag {
-            Color::from_rgba(89, 155, 75, 255)
+            army_color.unwrap_or(Color::from_rgba(89, 155, 75, 255))
         } else if tag.is_some_and(|t| w.at_war(t, &c.country)) {
             Color::from_rgba(190, 66, 58, 255)
         } else {
@@ -1160,8 +1338,29 @@ pub fn draw_counters(
         let r = c.rect;
         draw_rectangle(r.x, r.y, r.w, r.h, ui::BASE);
         draw_rectangle_lines(r.x, r.y, r.w, r.h, if selected { 2.0 } else { 1.0 }, color);
-        draw_line(r.x + 5.0, r.y + 6.0, r.x + 15.0, r.y + 15.0, 1.3, color);
-        draw_line(r.x + 15.0, r.y + 6.0, r.x + 5.0, r.y + 15.0, 1.3, color);
+        let icon = c
+            .ids
+            .first()
+            .and_then(|id| w.divisions.get(id))
+            .and_then(|d| {
+                w.countries
+                    .get(&d.country)
+                    .and_then(|a| a.templates.get(&d.template))
+            })
+            .map_or("infantry", |t| t.icon.as_str());
+        match icon {
+            "armor" => draw_rectangle_lines(r.x + 5.0, r.y + 7.0, 12.0, 7.0, 1.3, color),
+            "motorized" => {
+                draw_rectangle_lines(r.x + 5.0, r.y + 6.0, 12.0, 7.0, 1.3, color);
+                draw_circle(r.x + 7.0, r.y + 15.0, 2.0, color);
+                draw_circle(r.x + 15.0, r.y + 15.0, 2.0, color);
+            }
+            "artillery" => draw_circle(r.x + 10.0, r.y + 10.0, 3.0, color),
+            _ => {
+                draw_line(r.x + 5.0, r.y + 6.0, r.x + 15.0, r.y + 15.0, 1.3, color);
+                draw_line(r.x + 15.0, r.y + 6.0, r.x + 5.0, r.y + 15.0, 1.3, color);
+            }
+        }
         draw_ui_text(
             &c.ids.len().to_string(),
             r.x + 23.0,
@@ -1213,5 +1412,52 @@ pub fn draw_counters(
                 "ЛКМ: выбрать дивизию. Ctrl + ЛКМ: выбрать весь стек. ПКМ: движение или атака.",
             );
         }
+    }
+    if let Some(tag) = tag {
+        for marker in crate::army_controls::battle_markers(world, w, tag, source, area) {
+            let p = marker.rect.center();
+            draw_circle(p.x, p.y, marker.rect.w / 2.0, ui::BASE);
+            draw_circle_lines(p.x, p.y, marker.rect.w / 2.0, 2.0, ui::GOLD);
+            ui::label("⚔", marker.rect, 16.0, ui::GOLD);
+            if !pointer_blocked {
+                ui::tooltip(
+                    marker.rect,
+                    "Сражение",
+                    "Нажмите для просмотра участников, организации, резервов, тактик и потерь",
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod interactions {
+    use super::*;
+    #[test]
+    fn selecting_a_division_changes_the_army_context_and_opening_panels_cancels_drawing() {
+        let (_, mut w) = crate::frontline::tests::scenario();
+        let first = w.create_army("A", &[1, 2], "First").unwrap();
+        let second = w.create_army("A", &[3, 4], "Second").unwrap();
+        let mut view = ArmyView::default();
+        view.show_army(first, &w);
+        assert_eq!(view.selected, BTreeSet::from([1, 2]));
+        view.selected = BTreeSet::from([3]);
+        view.sync_selection(&w);
+        assert_eq!(view.selected_army, Some(second));
+        view.selected = BTreeSet::from([12]);
+        assert_eq!(crate::army_command_ui::selected_army(&view, &w), None);
+        view.plan_tool = Some(crate::battle_plan_ui::Tool::Spearhead);
+        view.line_preview = vec![17, 18];
+        view.close();
+        assert!(view.plan_tool.is_none());
+        assert!(view.line_preview.is_empty());
+        view.show_recruitment();
+        assert_eq!(
+            view.navigation_panel(),
+            crate::campaign_ui::Panel::Recruitment
+        );
+        view.show_command(true);
+        assert_eq!(view.navigation_panel(), crate::campaign_ui::Panel::Officer);
+        assert_eq!(view.commander_picker, Some(false));
     }
 }

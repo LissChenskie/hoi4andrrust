@@ -99,9 +99,10 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
         return vec![None];
     }
     fn alternatives<'a>(body: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
-        for e in body.iter().filter(|e| {
-            (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
-        }) {
+        for e in body
+            .iter()
+            .filter(|e| e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+        {
             if let Some(b) = e.block() {
                 out.push((e.key.eq_ignore_ascii_case("else"), b));
                 alternatives(b, out);
@@ -114,7 +115,7 @@ fn parts(entries: &[Entry], c: &CountryResearch, depth: u8) -> Vec<Option<bool>>
         index += 1;
         if !e.key.eq_ignore_ascii_case("if") {
             result.push(
-                if (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")) {
+                if e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if") {
                     None
                 } else {
                     predicate(e, c, depth)
@@ -378,7 +379,7 @@ fn execute(
             let mut alternatives = vec![(false, nested)];
             fn collect<'a>(b: &'a [Entry], out: &mut Vec<(bool, &'a [Entry])>) {
                 for e in b.iter().filter(|e| {
-                    (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+                    e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")
                 }) {
                     if let Some(b) = e.block() {
                         out.push((e.key.eq_ignore_ascii_case("else"), b));

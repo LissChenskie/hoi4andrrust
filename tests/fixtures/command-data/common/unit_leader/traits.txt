@@ -1,0 +1,10 @@
+leader_traits = {
+ test_organizer = {
+  modifier = { planning_speed = 0.1 }
+  non_shared_modifier = { army_attack_factor = 0.05 }
+  field_marshal_modifier = { supply_consumption_factor = -0.02 }
+  gain_xp = { has_combat = yes }
+  allowed = { always = yes }
+  future_trait_field = { flag = yes }
+ }
+}

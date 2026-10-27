@@ -1,0 +1,6 @@
+﻿l_english:
+ TEST_GENERAL_NAME:0 "Test General"
+ TEST_MULTI_NAME:0 "Test Multi"
+ TEST_MARSHAL_NAME:0 "Test Marshal"
+ test_organizer:0 "Organizer"
+ test_organizer_desc:0 "Own authored \"trait\" description" # comment

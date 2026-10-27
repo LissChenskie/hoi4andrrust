@@ -22,7 +22,7 @@ enum Entry {
     Bare(String),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StateEconomy {
     pub infrastructure: u16,
     pub civilian_factories: u16,
@@ -66,8 +66,12 @@ pub struct StateMembership {
 
 fn read_building_counts(entries: &[Entry], economy: &mut StateEconomy) {
     for entry in entries {
-        let Entry::Pair(key, Value::Atom(raw)) = entry else { continue };
-        let Ok(value) = raw.parse::<u16>() else { continue };
+        let Entry::Pair(key, Value::Atom(raw)) = entry else {
+            continue;
+        };
+        let Ok(value) = raw.parse::<u16>() else {
+            continue;
+        };
         match key.as_str() {
             "infrastructure" => economy.infrastructure = value,
             "industrial_complex" => economy.civilian_factories = value,
@@ -268,7 +272,9 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
                 Entry::Pair(field_name, value) if field_name == "id" => {
                     id = Some(numeric_atom(&value, "state ID")?);
                 }
-                Entry::Pair(field_name, Value::Atom(category)) if field_name == "state_category" => {
+                Entry::Pair(field_name, Value::Atom(category))
+                    if field_name == "state_category" =>
+                {
                     state_category = Some(category);
                 }
                 Entry::Pair(field_name, Value::Block(values)) if field_name == "provinces" => {
@@ -311,7 +317,9 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
                 return Err(format!("State {id} contains invalid province ID 0"));
             }
             if !seen.insert(*province_id) {
-                return Err(format!("State {id} lists province {province_id} more than once"));
+                return Err(format!(
+                    "State {id} lists province {province_id} more than once"
+                ));
             }
         }
         states.push(StateDefinition {
@@ -329,21 +337,41 @@ pub fn parse_state_file(source: &str) -> Result<Vec<StateDefinition>, String> {
     Ok(states)
 }
 
-
-fn parse_state_owner_history(entries: &[Entry], map_date: (u32, u32, u32), target: &str) -> Option<String> {
-    let read_tag = |fields: &[Entry]| fields.iter().rev().find_map(|entry| match entry {
-        Entry::Pair(key, Value::Atom(tag)) if key == target && !tag.is_empty()
-            && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => Some(tag.clone()),
-        _ => None,
-    });
+fn parse_state_owner_history(
+    entries: &[Entry],
+    map_date: (u32, u32, u32),
+    target: &str,
+) -> Option<String> {
+    let read_tag = |fields: &[Entry]| {
+        fields.iter().rev().find_map(|entry| match entry {
+            Entry::Pair(key, Value::Atom(tag))
+                if key == target
+                    && !tag.is_empty()
+                    && tag.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') =>
+            {
+                Some(tag.clone())
+            }
+            _ => None,
+        })
+    };
     // Defaults do not override a dated history entry just because they occur
     // later in the file. Equal-date entries retain source order.
-    entries.iter().enumerate().filter_map(|(index, entry)| {
-        let Entry::Pair(key, Value::Block(fields)) = entry else { return None; };
-        let date = parse_history_date(key)?;
-        if date > map_date { return None; }
-        Some(((date, index), read_tag(fields)?))
-    }).max_by_key(|(key, _)| *key).map(|(_, tag)| tag).or_else(|| read_tag(entries))
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let Entry::Pair(key, Value::Block(fields)) = entry else {
+                return None;
+            };
+            let date = parse_history_date(key)?;
+            if date > map_date {
+                return None;
+            }
+            Some(((date, index), read_tag(fields)?))
+        })
+        .max_by_key(|(key, _)| *key)
+        .map(|(_, tag)| tag)
+        .or_else(|| read_tag(entries))
 }
 
 fn parse_history_date(value: &str) -> Option<(u32, u32, u32)> {
@@ -365,20 +393,83 @@ pub fn parse_state_owners(
     parse_state_history_field(source, map_date, "owner")
 }
 
-pub fn parse_state_controllers(source: &str, map_date: (u32, u32, u32))
-    -> Result<HashMap<u32, String>, String> {
+pub fn parse_state_controllers(
+    source: &str,
+    map_date: (u32, u32, u32),
+) -> Result<HashMap<u32, String>, String> {
     parse_state_history_field(source, map_date, "controller")
 }
 
-fn parse_state_history_field(source: &str, map_date: (u32, u32, u32), target: &str)
-    -> Result<HashMap<u32, String>, String> {
+/// Scripted VP at the selected bookmark. The implicit 0.1 per province is
+/// applied by state control, not added to the imported named VP value.
+pub fn parse_state_victory_points(
+    source: &str,
+    at: (u32, u32, u32),
+) -> Result<HashMap<u32, f64>, String> {
+    use crate::pdx::Entry as ScriptEntry;
+    fn collect(entries: &[ScriptEntry], at: (u32, u32, u32), out: &mut HashMap<u32, f64>) {
+        for vp in entries
+            .iter()
+            .filter(|e| e.key == "victory_points")
+            .filter_map(ScriptEntry::block)
+        {
+            for pair in vp.chunks_exact(2) {
+                if let (Ok(id), Ok(value)) =
+                    (pair[0].key.parse::<u32>(), pair[1].key.parse::<f64>())
+                {
+                    if value.is_finite() && value >= 0.0 {
+                        out.insert(id, value);
+                    }
+                }
+            }
+        }
+        let mut dates: Vec<_> = entries
+            .iter()
+            .filter_map(|e| {
+                parse_history_date(&e.key)
+                    .filter(|d| *d <= at)
+                    .map(|d| (d, e))
+            })
+            .collect();
+        dates.sort_by_key(|(d, _)| *d);
+        for (_, e) in dates {
+            if let Some(b) = e.block() {
+                collect(b, at, out);
+            }
+        }
+    }
+    let root = crate::pdx::parse_pdx_compatible(source)?.entries;
+    let mut result = HashMap::new();
+    for state in root
+        .iter()
+        .filter(|e| e.key == "state")
+        .filter_map(ScriptEntry::block)
+    {
+        for history in state
+            .iter()
+            .filter(|e| e.key == "history")
+            .filter_map(ScriptEntry::block)
+        {
+            collect(history, at, &mut result);
+        }
+    }
+    Ok(result)
+}
+
+fn parse_state_history_field(
+    source: &str,
+    map_date: (u32, u32, u32),
+    target: &str,
+) -> Result<HashMap<u32, String>, String> {
     let tokens = tokenize(source)?;
     let mut cursor = 0;
     let root = parse_entries(&tokens, &mut cursor, false)?;
     let mut owners = HashMap::new();
 
     for entry in root {
-        let Entry::Pair(key, Value::Block(state_fields)) = entry else { continue };
+        let Entry::Pair(key, Value::Block(state_fields)) = entry else {
+            continue;
+        };
         if key != "state" {
             continue;
         }
@@ -416,12 +507,16 @@ pub fn parse_state_categories(source: &str) -> Result<HashMap<String, u16>, Stri
     let mut categories = HashMap::new();
 
     for entry in root {
-        let Entry::Pair(root_name, Value::Block(category_entries)) = entry else { continue };
+        let Entry::Pair(root_name, Value::Block(category_entries)) = entry else {
+            continue;
+        };
         if root_name != "state_categories" {
             continue;
         }
         for category_entry in category_entries {
-            let Entry::Pair(category_name, Value::Block(fields)) = category_entry else { continue };
+            let Entry::Pair(category_name, Value::Block(fields)) = category_entry else {
+                continue;
+            };
             for field in fields {
                 if let Entry::Pair(name, Value::Atom(raw)) = field {
                     if name == "local_building_slots" {
@@ -440,11 +535,22 @@ pub fn parse_state_categories(source: &str) -> Result<HashMap<String, u16>, Stri
 
 fn default_state_category_slots() -> HashMap<String, u16> {
     [
-        ("wasteland", 0), ("enclave", 0), ("tiny_island", 0),
-        ("pastoral", 1), ("small_island", 1), ("rural", 2),
-        ("town", 4), ("large_town", 5), ("city", 6),
-        ("large_city", 8), ("metropolis", 10), ("megalopolis", 12),
-    ].into_iter().map(|(name, slots)| (name.to_owned(), slots)).collect()
+        ("wasteland", 0),
+        ("enclave", 0),
+        ("tiny_island", 0),
+        ("pastoral", 1),
+        ("small_island", 1),
+        ("rural", 2),
+        ("town", 4),
+        ("large_town", 5),
+        ("city", 6),
+        ("large_city", 8),
+        ("metropolis", 10),
+        ("megalopolis", 12),
+    ]
+    .into_iter()
+    .map(|(name, slots)| (name.to_owned(), slots))
+    .collect()
 }
 
 fn load_state_category_slots(directory: &Path) -> Result<HashMap<String, u16>, String> {
@@ -453,8 +559,12 @@ fn load_state_category_slots(directory: &Path) -> Result<HashMap<String, u16>, S
         return Ok(categories);
     }
 
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("Could not read state-category directory {}: {error}", directory.display()))?;
+    let entries = fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Could not read state-category directory {}: {error}",
+            directory.display()
+        )
+    })?;
     let mut paths: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -472,12 +582,23 @@ fn load_state_category_slots(directory: &Path) -> Result<HashMap<String, u16>, S
     Ok(categories)
 }
 
-pub fn load_state_membership(directory: &Path, category_directory: &Path) -> Result<StateMembership, String> {
-    load_state_membership_at(directory,category_directory,crate::game::GameDate::START)
+pub fn load_state_membership(
+    directory: &Path,
+    category_directory: &Path,
+) -> Result<StateMembership, String> {
+    load_state_membership_at(directory, category_directory, crate::game::GameDate::START)
 }
-pub fn load_state_membership_at(directory:&Path,category_directory:&Path,date:crate::game::GameDate)->Result<StateMembership,String>{
-    let entries = fs::read_dir(directory)
-        .map_err(|error| format!("Could not read state directory {}: {error}", directory.display()))?;
+pub fn load_state_membership_at(
+    directory: &Path,
+    category_directory: &Path,
+    date: crate::game::GameDate,
+) -> Result<StateMembership, String> {
+    let entries = fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Could not read state directory {}: {error}",
+            directory.display()
+        )
+    })?;
     let mut paths: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|entry| entry.path())
@@ -486,7 +607,10 @@ pub fn load_state_membership_at(directory:&Path,category_directory:&Path,date:cr
     paths.sort();
 
     if paths.is_empty() {
-        return Err(format!("No state .txt files found in {}", directory.display()));
+        return Err(format!(
+            "No state .txt files found in {}",
+            directory.display()
+        ));
     }
 
     let category_slots = load_state_category_slots(category_directory)?;
@@ -496,22 +620,32 @@ pub fn load_state_membership_at(directory:&Path,category_directory:&Path,date:cr
     for path in paths {
         let source = fs::read_to_string(&path)
             .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
-        let definitions = parse_state_file(&source)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let definitions =
+            parse_state_file(&source).map_err(|error| format!("{}: {error}", path.display()))?;
 
         for mut state in definitions {
-            state.economy=economy_at(&source,state.id,date)?;
+            state.economy = economy_at(&source, state.id, date)?;
             if !state_ids.insert(state.id) {
-                return Err(format!("Duplicate state ID {} (found in {})", state.id, path.display()));
+                return Err(format!(
+                    "Duplicate state ID {} (found in {})",
+                    state.id,
+                    path.display()
+                ));
             }
             membership.economy_by_state.insert(state.id, state.economy);
-            let shared_slots = state.state_category.as_ref()
+            let shared_slots = state
+                .state_category
+                .as_ref()
                 .and_then(|category| category_slots.get(category))
                 .copied()
                 .unwrap_or(state.shared_building_slots);
-            membership.shared_slots_by_state.insert(state.id, shared_slots);
+            membership
+                .shared_slots_by_state
+                .insert(state.id, shared_slots);
             for province_id in state.province_ids {
-                if let Some(previous_state) = membership.state_by_province.insert(province_id, state.id) {
+                if let Some(previous_state) =
+                    membership.state_by_province.insert(province_id, state.id)
+                {
                     return Err(format!(
                         "Province {province_id} is assigned to both state {previous_state} and state {}",
                         state.id
@@ -529,24 +663,26 @@ pub fn load_state_membership_at(directory:&Path,category_directory:&Path,date:cr
 mod tests {
     use super::{parse_state_categories, parse_state_file};
 
-
     #[test]
     fn parses_state_category_and_its_shared_slot_limit() {
-        let categories = parse_state_categories(r#"
+        let categories = parse_state_categories(
+            r#"
             state_categories = {
                 rural = { local_building_slots = 2 color = { 1 2 3 } }
                 metropolis = { local_building_slots = 10 }
             }
-        "#).unwrap();
+        "#,
+        )
+        .unwrap();
         assert_eq!(categories.get("rural"), Some(&2));
         assert_eq!(categories.get("metropolis"), Some(&10));
     }
 
     #[test]
     fn reads_state_category_from_state_definition() {
-        let states = parse_state_file(
-            r#"state = { id = 4 state_category = city provinces = { 41 42 } }"#
-        ).unwrap();
+        let states =
+            parse_state_file(r#"state = { id = 4 state_category = city provinces = { 41 42 } }"#)
+                .unwrap();
         assert_eq!(states[0].state_category.as_deref(), Some("city"));
     }
 
@@ -609,9 +745,11 @@ mod tests {
             state = { id = 2 provinces = { 21 } }
         "#;
         let states = parse_state_file(source).expect("valid state definitions");
-        assert_eq!(states.iter().map(|state| state.id).collect::<Vec<_>>(), vec![1, 2]);
+        assert_eq!(
+            states.iter().map(|state| state.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
     }
-
 
     #[test]
     fn parses_state_industry_from_history_buildings_without_counting_province_blocks() {
@@ -636,16 +774,19 @@ mod tests {
             }
         "#;
         let states = parse_state_file(source).unwrap();
-        assert_eq!(states[0].economy, super::StateEconomy {
-            infrastructure: 6,
-            civilian_factories: 4,
-            military_factories: 3,
-            dockyards: 2,
-            synthetic_refineries: 1,
-            fuel_silos: 1,
-            rocket_sites: 2,
-            nuclear_reactors: 1,
-        });
+        assert_eq!(
+            states[0].economy,
+            super::StateEconomy {
+                infrastructure: 6,
+                civilian_factories: 4,
+                military_factories: 3,
+                dockyards: 2,
+                synthetic_refineries: 1,
+                fuel_silos: 1,
+                rocket_sites: 2,
+                nuclear_reactors: 1,
+            }
+        );
         assert_eq!(states[0].economy.occupied_shared_slots(), 14);
     }
 
@@ -659,16 +800,23 @@ mod tests {
     #[test]
     fn rejects_missing_closing_brace() {
         let source = "state = { id = 1 provinces = { 2 3 }";
-        assert!(parse_state_file(source).unwrap_err().contains("Missing closing brace"));
+        assert!(
+            parse_state_file(source)
+                .unwrap_err()
+                .contains("Missing closing brace")
+        );
     }
 
     #[test]
     fn rejects_duplicate_provinces_within_state() {
         let source = "state = { id = 1 provinces = { 2 2 } }";
-        assert!(parse_state_file(source).unwrap_err().contains("lists province 2 more than once"));
+        assert!(
+            parse_state_file(source)
+                .unwrap_err()
+                .contains("lists province 2 more than once")
+        );
     }
 }
-
 
 fn economy_at(source: &str, id: u32, date: crate::game::GameDate) -> Result<StateEconomy, String> {
     use crate::pdx::{Entry, atom, block, parse_pdx};
@@ -741,5 +889,19 @@ mod bookmark_economy_tests {
         .unwrap();
         assert_eq!(later.military_factories, 7);
         assert_eq!(later.civilian_factories, 3);
+    }
+}
+
+#[cfg(test)]
+mod victory_point_regressions {
+    #[test]
+    fn starting_control_uses_dated_victory_points_without_future_overrides() {
+        let source = "state={id=1 provinces={1 2} history={victory_points={1 2} 1935.1.1={victory_points={1 5}} 1939.1.1={victory_points={1 20} victory_points={2 10}}}}";
+        let early = super::parse_state_victory_points(source, (1936, 1, 1)).unwrap();
+        assert_eq!(early[&1], 5.0);
+        assert!(!early.contains_key(&2));
+        let late = super::parse_state_victory_points(source, (1939, 1, 1)).unwrap();
+        assert_eq!(late[&1], 20.0);
+        assert_eq!(late[&2], 10.0);
     }
 }

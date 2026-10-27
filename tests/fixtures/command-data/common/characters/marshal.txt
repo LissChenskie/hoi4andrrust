@@ -1,0 +1,6 @@
+characters = {
+ TEST_marshal = {
+  name = TEST_MARSHAL_NAME
+  field_marshal = { skill=3 attack_skill=2 defense_skill=4 planning_skill=2 logistics_skill=3 traits={test_organizer unknown_trait} }
+ }
+}

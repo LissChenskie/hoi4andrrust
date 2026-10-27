@@ -2,13 +2,14 @@
 //!
 //! Implements factory allocation by line priority, equipment output (IC),
 //! efficiency growth and national stockpiles. Exact equipment definitions,
-//! historical 1936 lines, technologies, resource consumption and energy must
-//! be imported later. Defaults below are explicit prototypes, not hidden
+//! starting lines and stockpiles come from selected country/OOB effects.
+//! Resource consumption and energy still require further modelling. Defaults below are explicit prototypes, not hidden
 //! guesses about a country's historical production.
-use std::collections::BTreeMap;
 use crate::world::World;
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Equipment {
     InfantryKit,
     SupportKit,
@@ -19,8 +20,11 @@ pub enum Equipment {
 
 impl Equipment {
     pub const ALL: [Self; 5] = [
-        Self::InfantryKit, Self::SupportKit, Self::Truck,
-        Self::FieldEquipment, Self::Aircraft,
+        Self::InfantryKit,
+        Self::SupportKit,
+        Self::Truck,
+        Self::FieldEquipment,
+        Self::Aircraft,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -52,7 +56,7 @@ impl Equipment {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ProductionRules {
     pub base_factory_output: f64,
     pub powered_factory_output: f64,
@@ -86,6 +90,37 @@ impl Default for ProductionRules {
 }
 
 impl ProductionRules {
+    pub fn from_defines(defines: &BTreeMap<String, f64>) -> Self {
+        let mut r = Self::default();
+        for (key, field, scale) in [
+            ("BASE_FACTORY_SPEED_MIL", &mut r.powered_factory_output, 1.0),
+            (
+                "BASE_FACTORY_START_EFFICIENCY_FACTOR",
+                &mut r.starting_efficiency,
+                0.01,
+            ),
+            (
+                "BASE_FACTORY_MAX_EFFICIENCY_FACTOR",
+                &mut r.efficiency_cap,
+                0.01,
+            ),
+            (
+                "BASE_FACTORY_EFFICIENCY_GAIN",
+                &mut r.efficiency_growth,
+                1.0,
+            ),
+        ] {
+            if let Some(value) = defines
+                .get(&format!("NDefines.NProduction.{key}"))
+                .copied()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+            {
+                *field = value * scale;
+            }
+        }
+        r.starting_efficiency = r.starting_efficiency.min(r.efficiency_cap);
+        r
+    }
     pub fn for_research(&self, c: Option<&crate::research::CountryResearch>) -> Self {
         let mut r = *self;
         if let Some(c) = c {
@@ -106,20 +141,36 @@ impl ProductionRules {
         let power = self.powered_fraction.clamp(0.0, 1.0);
         let output = self.base_factory_output
             + (self.powered_factory_output - self.base_factory_output) * power;
-        (output * (1.0 + self.factory_output_bonus).max(0.0)
-            * self.resource_factor.clamp(0.0, 1.0)).max(0.0)
+        (output * (1.0 + self.factory_output_bonus).max(0.0) * self.resource_factor.clamp(0.0, 1.0))
+            .max(0.0)
     }
     pub fn efficiency_gain(&self, efficiency: f64) -> f64 {
         let cap = self.efficiency_cap.max(0.0);
-        if efficiency >= cap || cap == 0.0 { return 0.0; }
+        if efficiency >= cap || cap == 0.0 {
+            return 0.0;
+        }
         // HOI4-like curve: growth slows as the line nears its cap.
         (self.efficiency_growth * cap * cap / efficiency.max(0.01)).max(0.0)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartingProduction {
+    pub equipment: String,
+    pub creator: Option<String>,
+    pub variant: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionLine {
     pub id: u64,
+    #[serde(default)]
+    pub starting: Option<StartingProduction>,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub remaining: Option<u64>,
     pub equipment: Equipment,
     /// Concrete imported equipment model; None retains the original prototype category.
     pub model: Option<String>,
@@ -132,17 +183,19 @@ pub struct ProductionLine {
     pub last_day_ic: f64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Allocation {
     pub assigned: u32,
     pub requested: u32,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CountryProduction {
     pub lines: Vec<ProductionLine>,
     pub stockpile: BTreeMap<Equipment, u64>,
     pub model_stockpile: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub starting_data_applied: bool,
     next_id: u64,
 }
 
@@ -151,15 +204,28 @@ impl CountryProduction {
         self.next_id += 1;
         let id = self.next_id;
         self.lines.push(ProductionLine {
-            id, equipment, model: None,
+            id,
+            starting: None,
+            blocked_reason: None,
+            remaining: None,
+            equipment,
+            model: None,
             requested_factories: requested.min(rules.max_factories_per_line),
             efficiency: rules.starting_efficiency,
-            partial_ic: 0.0, total_produced: 0,
-            last_day_units: 0, last_day_ic: 0.0,
+            partial_ic: 0.0,
+            total_produced: 0,
+            last_day_units: 0,
+            last_day_ic: 0.0,
         });
         id
     }
-    pub fn create_model(&mut self, model: &str, equipment: Equipment, requested: u32, rules: &ProductionRules) -> u64 {
+    pub fn create_model(
+        &mut self,
+        model: &str,
+        equipment: Equipment,
+        requested: u32,
+        rules: &ProductionRules,
+    ) -> u64 {
         let id = self.create(equipment, requested, rules);
         self.lines.last_mut().unwrap().model = Some(model.to_owned());
         id
@@ -170,28 +236,51 @@ impl CountryProduction {
         self.lines.len() != old
     }
     pub fn change_requested(&mut self, id: u64, delta: i32, rules: &ProductionRules) -> bool {
-        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else { return false; };
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return false;
+        };
         let old = line.requested_factories;
         line.requested_factories = (i64::from(old) + i64::from(delta))
-            .clamp(0, i64::from(rules.max_factories_per_line)) as u32;
+            .clamp(0, i64::from(rules.max_factories_per_line))
+            as u32;
         old != line.requested_factories
     }
     pub fn move_up(&mut self, id: u64) -> bool {
-        let Some(index) = self.lines.iter().position(|line| line.id == id) else { return false; };
-        if index == 0 { return false; }
+        let Some(index) = self.lines.iter().position(|line| line.id == id) else {
+            return false;
+        };
+        if index == 0 {
+            return false;
+        }
         self.lines.swap(index - 1, index);
         true
     }
     pub fn move_down(&mut self, id: u64) -> bool {
-        let Some(index) = self.lines.iter().position(|line| line.id == id) else { return false; };
-        if index + 1 >= self.lines.len() { return false; }
+        let Some(index) = self.lines.iter().position(|line| line.id == id) else {
+            return false;
+        };
+        if index + 1 >= self.lines.len() {
+            return false;
+        }
         self.lines.swap(index, index + 1);
         true
     }
-    pub fn switch_equipment(&mut self, id: u64, equipment: Equipment, rules: &ProductionRules) -> bool {
-        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else { return false; };
-        if line.equipment == equipment { return false; }
+    pub fn switch_equipment(
+        &mut self,
+        id: u64,
+        equipment: Equipment,
+        rules: &ProductionRules,
+    ) -> bool {
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return false;
+        };
+        if line.equipment == equipment {
+            return false;
+        }
         line.equipment = equipment;
+        line.starting = None;
+        line.blocked_reason = None;
+        line.remaining = None;
         line.model = None;
         line.efficiency = (line.efficiency * rules.switch_retention)
             .clamp(rules.starting_efficiency, rules.efficiency_cap);
@@ -200,53 +289,116 @@ impl CountryProduction {
         line.last_day_ic = 0.0;
         true
     }
-    pub fn switch_model(&mut self,id:u64,model:&str,equipment:Equipment,rules:&ProductionRules)->bool {
-        let Some(line)=self.lines.iter_mut().find(|line|line.id==id) else {return false;};
-        if line.model.as_deref()==Some(model) {return false;}
-        line.equipment=equipment;line.model=Some(model.into());
-        line.efficiency=(line.efficiency*rules.switch_retention).clamp(rules.starting_efficiency,rules.efficiency_cap);
-        line.partial_ic=0.0;line.last_day_units=0;line.last_day_ic=0.0;true
+    pub fn switch_model(
+        &mut self,
+        id: u64,
+        model: &str,
+        equipment: Equipment,
+        rules: &ProductionRules,
+    ) -> bool {
+        let Some(line) = self.lines.iter_mut().find(|line| line.id == id) else {
+            return false;
+        };
+        if line.model.as_deref() == Some(model) {
+            return false;
+        }
+        line.equipment = equipment;
+        line.starting = None;
+        line.blocked_reason = None;
+        line.remaining = None;
+        line.model = Some(model.into());
+        line.efficiency = (line.efficiency * rules.switch_retention)
+            .clamp(rules.starting_efficiency, rules.efficiency_cap);
+        line.partial_ic = 0.0;
+        line.last_day_units = 0;
+        line.last_day_ic = 0.0;
+        true
     }
-    pub fn allocations(&self, available_factories: u32, rules: &ProductionRules) -> Vec<Allocation> {
+    pub fn allocations(
+        &self,
+        available_factories: u32,
+        rules: &ProductionRules,
+    ) -> Vec<Allocation> {
         let mut free = available_factories;
-        self.lines.iter().map(|line| {
-            let requested = line.requested_factories.min(rules.max_factories_per_line);
-            let assigned = free.min(requested);
-            free -= assigned;
-            Allocation { assigned, requested }
-        }).collect()
+        self.lines
+            .iter()
+            .map(|line| {
+                let requested = line.requested_factories.min(rules.max_factories_per_line);
+                let assigned = if line.blocked_reason.is_some() || line.remaining == Some(0) {
+                    0
+                } else {
+                    free.min(requested)
+                };
+                free -= assigned;
+                Allocation {
+                    assigned,
+                    requested,
+                }
+            })
+            .collect()
     }
     pub fn allocated_total(&self, available: u32, rules: &ProductionRules) -> u32 {
-        self.allocations(available, rules).iter().map(|a| a.assigned).sum()
+        self.allocations(available, rules)
+            .iter()
+            .map(|a| a.assigned)
+            .sum()
     }
     pub fn tick(&mut self, available_factories: u32, rules: &ProductionRules) {
         self.tick_with_models(available_factories, rules, &BTreeMap::new());
     }
-    pub fn tick_with_models(&mut self, available_factories: u32, rules: &ProductionRules, model_costs: &BTreeMap<String, f64>) {
+    pub fn tick_with_models(
+        &mut self,
+        available_factories: u32,
+        rules: &ProductionRules,
+        model_costs: &BTreeMap<String, f64>,
+    ) {
         let allocations = self.allocations(available_factories, rules);
         let ic_per_factory = rules.ic_per_factory();
         for (line, allocation) in self.lines.iter_mut().zip(allocations) {
             line.last_day_units = 0;
             line.last_day_ic = 0.0;
-            if allocation.assigned == 0 { continue; }
+            if allocation.assigned == 0 || line.blocked_reason.is_some() {
+                continue;
+            }
             let ic = allocation.assigned as f64 * ic_per_factory * line.efficiency.max(0.0);
-            if !ic.is_finite() || ic <= 0.0 { continue; }
+            if !ic.is_finite() || ic <= 0.0 {
+                continue;
+            }
             line.last_day_ic = ic;
             let item_cost = if let Some(model) = line.model.as_ref() {
-                let Some(cost) = model_costs.get(model).copied().filter(|v| v.is_finite() && *v > 0.0) else { continue; };
+                let Some(cost) = model_costs
+                    .get(model)
+                    .copied()
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                else {
+                    continue;
+                };
                 cost
-            } else { line.equipment.placeholder_cost() };
+            } else {
+                line.equipment.placeholder_cost()
+            };
             let budget = line.partial_ic + ic;
-            let made = (budget / item_cost).floor().clamp(0.0, u64::MAX as f64) as u64;
-            line.partial_ic = (budget - made as f64 * item_cost).max(0.0);
+            let made = ((budget / item_cost).floor().clamp(0.0, u64::MAX as f64) as u64)
+                .min(line.remaining.unwrap_or(u64::MAX));
+            if let Some(remaining) = &mut line.remaining {
+                *remaining -= made;
+            }
+            line.partial_ic = if line.remaining == Some(0) {
+                0.0
+            } else {
+                (budget - made as f64 * item_cost).max(0.0)
+            };
             if line.partial_ic >= item_cost {
                 // Floating point roundoff correction only; never lose whole items.
                 line.partial_ic %= item_cost;
             }
             line.total_produced = line.total_produced.saturating_add(made);
             line.last_day_units = made;
-            let stock = if let Some(model) = &line.model { self.model_stockpile.entry(model.clone()).or_default() }
-                else { self.stockpile.entry(line.equipment).or_default() };
+            let stock = if let Some(model) = &line.model {
+                self.model_stockpile.entry(model.clone()).or_default()
+            } else {
+                self.stockpile.entry(line.equipment).or_default()
+            };
             *stock = stock.saturating_add(made);
             line.efficiency = (line.efficiency + rules.efficiency_gain(line.efficiency))
                 .min(rules.efficiency_cap);
@@ -254,32 +406,46 @@ impl CountryProduction {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct ProductionState {
     pub by_country: BTreeMap<String, CountryProduction>,
 }
 
 impl ProductionState {
-    pub fn country(&self, tag: &str) -> Option<&CountryProduction> { self.by_country.get(tag) }
+    pub fn country(&self, tag: &str) -> Option<&CountryProduction> {
+        self.by_country.get(tag)
+    }
     pub fn country_mut(&mut self, tag: &str) -> &mut CountryProduction {
         self.by_country.entry(tag.to_owned()).or_default()
     }
     pub fn tick_country(&mut self, world: &World, tag: &str, rules: &ProductionRules) {
-        let Some(economy) = world.country_economy(tag) else { return; };
-        self.country_mut(tag).tick(economy.military_factories, rules);
+        let Some(economy) = world.country_economy(tag) else {
+            return;
+        };
+        self.country_mut(tag)
+            .tick(economy.military_factories, rules);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]fn concrete_models_use_imported_cost_and_only_the_model_stockpile(){
-        let rules=ProductionRules{starting_efficiency:1.0,efficiency_cap:1.0,..Default::default()};
-        let mut country=CountryProduction::default();country.create_model("rifle_1936",Equipment::InfantryKit,1,&rules);
-        country.tick_with_models(1,&rules,&BTreeMap::from([("rifle_1936".into(),1.0)]));
-        let expected=rules.ic_per_factory().floor()as u64;
-        assert_eq!(country.model_stockpile["rifle_1936"],expected);assert!(country.stockpile.is_empty());
-        let before=country.model_stockpile.clone();country.tick_with_models(1,&rules,&BTreeMap::new());assert_eq!(before,country.model_stockpile);
+    #[test]
+    fn concrete_models_use_imported_cost_and_only_the_model_stockpile() {
+        let rules = ProductionRules {
+            starting_efficiency: 1.0,
+            efficiency_cap: 1.0,
+            ..Default::default()
+        };
+        let mut country = CountryProduction::default();
+        country.create_model("rifle_1936", Equipment::InfantryKit, 1, &rules);
+        country.tick_with_models(1, &rules, &BTreeMap::from([("rifle_1936".into(), 1.0)]));
+        let expected = rules.ic_per_factory().floor() as u64;
+        assert_eq!(country.model_stockpile["rifle_1936"], expected);
+        assert!(country.stockpile.is_empty());
+        let before = country.model_stockpile.clone();
+        country.tick_with_models(1, &rules, &BTreeMap::new());
+        assert_eq!(before, country.model_stockpile);
     }
     use crate::state::StateEconomy;
     use std::collections::HashMap;
@@ -289,9 +455,13 @@ mod tests {
             &HashMap::from([(12, 1)]),
             &HashMap::from([(1, "ABC".to_owned())]),
             &HashMap::new(),
-            &HashMap::from([(1, StateEconomy {
-                military_factories: factories, ..Default::default()
-            })]),
+            &HashMap::from([(
+                1,
+                StateEconomy {
+                    military_factories: factories,
+                    ..Default::default()
+                },
+            )]),
             &HashMap::new(),
         )
     }
@@ -300,7 +470,9 @@ mod tests {
     fn production_uses_fractional_ic_and_adds_to_national_stockpile() {
         let rules = ProductionRules::default();
         let mut game = ProductionState::default();
-        let id = game.country_mut("ABC").create(Equipment::InfantryKit, 2, &rules);
+        let id = game
+            .country_mut("ABC")
+            .create(Equipment::InfantryKit, 2, &rules);
         game.tick_country(&world(2), "ABC", &rules);
         let country = game.country("ABC").unwrap();
         assert_eq!(country.lines[0].id, id);
@@ -317,9 +489,21 @@ mod tests {
         let mut c = CountryProduction::default();
         let a = c.create(Equipment::SupportKit, 6, &rules);
         let b = c.create(Equipment::Truck, 4, &rules);
-        assert_eq!(c.allocations(7, &rules).iter().map(|a| a.assigned).collect::<Vec<_>>(), vec![6, 1]);
+        assert_eq!(
+            c.allocations(7, &rules)
+                .iter()
+                .map(|a| a.assigned)
+                .collect::<Vec<_>>(),
+            vec![6, 1]
+        );
         assert!(c.move_up(b));
-        assert_eq!(c.allocations(7, &rules).iter().map(|a| a.assigned).collect::<Vec<_>>(), vec![4, 3]);
+        assert_eq!(
+            c.allocations(7, &rules)
+                .iter()
+                .map(|a| a.assigned)
+                .collect::<Vec<_>>(),
+            vec![4, 3]
+        );
         assert!(c.change_requested(b, 2000, &rules));
         assert_eq!(c.lines[0].requested_factories, 150);
         assert!(!c.move_up(b));
@@ -331,7 +515,8 @@ mod tests {
     fn newly_built_factories_become_available_next_production_tick() {
         let rules = ProductionRules::default();
         let mut game = ProductionState::default();
-        game.country_mut("ABC").create(Equipment::SupportKit, 7, &rules);
+        game.country_mut("ABC")
+            .create(Equipment::SupportKit, 7, &rules);
         game.tick_country(&world(2), "ABC", &rules);
         let first = game.country("ABC").unwrap().lines[0].last_day_ic;
         game.tick_country(&world(7), "ABC", &rules);
@@ -348,7 +533,9 @@ mod tests {
         let start = c.lines[0].efficiency;
         c.tick(0, &rules);
         assert_eq!(c.lines[0].efficiency, start);
-        for _ in 0..1000 { c.tick(1, &rules); }
+        for _ in 0..1000 {
+            c.tick(1, &rules);
+        }
         assert!(c.lines[0].efficiency <= rules.efficiency_cap);
         assert!(c.lines[0].efficiency > 0.45);
         assert!(c.switch_equipment(id, Equipment::Truck, &rules));
@@ -360,7 +547,8 @@ mod tests {
     fn country_stockpiles_are_isolated_and_no_hidden_starting_lines() {
         let rules = ProductionRules::default();
         let mut game = ProductionState::default();
-        game.country_mut("ABC").create(Equipment::InfantryKit, 2, &rules);
+        game.country_mut("ABC")
+            .create(Equipment::InfantryKit, 2, &rules);
         game.tick_country(&world(2), "ABC", &rules);
         assert!(game.country("DEF").is_none());
         assert!(game.country("ABC").unwrap().stockpile[&Equipment::InfantryKit] > 0);
@@ -369,8 +557,8 @@ mod tests {
     #[test]
     fn completed_military_factory_increases_real_production_next_day() {
         use crate::construction::{
-            self, BuildingRules, BuildingType, ConstructionOrder,
-            ConstructionQueues, ConstructionModifiers, CountryConstructionPolicy,
+            self, BuildingRules, BuildingType, ConstructionModifiers, ConstructionOrder,
+            ConstructionQueues, CountryConstructionPolicy,
         };
         let rules = ProductionRules::default();
         let mut world = world(1);
@@ -378,12 +566,19 @@ mod tests {
         state.economy.civilian_factories = 15;
         state.shared_building_slots = 25;
         let mut game = ProductionState::default();
-        game.country_mut("ABC").create(Equipment::InfantryKit, 2, &rules);
+        game.country_mut("ABC")
+            .create(Equipment::InfantryKit, 2, &rules);
         let mut queue = ConstructionQueues::new();
         let building_rules = BuildingRules::default();
         construction::enqueue_project(
-            &world, "ABC", 1, &mut queue, &building_rules, BuildingType::MilitaryFactory,
-        ).unwrap();
+            &world,
+            "ABC",
+            1,
+            &mut queue,
+            &building_rules,
+            BuildingType::MilitaryFactory,
+        )
+        .unwrap();
         // Fast-forward one building for integration testing without simulating
         // thousands of days; completion is still performed by the real engine.
         queue.get_mut(&1).unwrap()[0].cost = 1.0;
@@ -393,8 +588,13 @@ mod tests {
         game.tick_country(&world, "ABC", &rules);
         let day_one = game.country("ABC").unwrap().lines[0].last_day_ic;
         construction::advance_day_by_order(
-            &mut world, "ABC", &mut queue, &mut order, &building_rules,
-            CountryConstructionPolicy::default(), &ConstructionModifiers::default(),
+            &mut world,
+            "ABC",
+            &mut queue,
+            &mut order,
+            &building_rules,
+            CountryConstructionPolicy::default(),
+            &ConstructionModifiers::default(),
         );
         assert_eq!(world.country_economy("ABC").unwrap().military_factories, 2);
         assert!(queue.is_empty());
@@ -410,14 +610,26 @@ mod tests {
         let mut c = CountryProduction::default();
         let rules = ProductionRules::default();
         let id = c.create(Equipment::SupportKit, 4, &rules);
-        for _ in 0..40 { c.tick(4, &rules); }
+        for _ in 0..40 {
+            c.tick(4, &rules);
+        }
         let previous = c.lines[0].efficiency;
-        let old_stock = c.stockpile.get(&Equipment::SupportKit).copied().unwrap_or(0);
+        let old_stock = c
+            .stockpile
+            .get(&Equipment::SupportKit)
+            .copied()
+            .unwrap_or(0);
         assert!(c.switch_equipment(id, Equipment::Aircraft, &rules));
         assert!(c.lines[0].efficiency < previous);
         assert_eq!(c.lines[0].partial_ic, 0.0);
         c.tick(4, &rules);
-        assert_eq!(c.stockpile.get(&Equipment::SupportKit).copied().unwrap_or(0), old_stock);
+        assert_eq!(
+            c.stockpile
+                .get(&Equipment::SupportKit)
+                .copied()
+                .unwrap_or(0),
+            old_stock
+        );
     }
 
     #[test]
@@ -428,5 +640,28 @@ mod tests {
         c.create(Equipment::InfantryKit, 10, &rules);
         c.tick(10, &rules);
         assert_eq!(c.stockpile.get(&Equipment::InfantryKit), None);
+    }
+}
+
+#[cfg(test)]
+mod historical_line_regressions {
+    use super::*;
+    #[test]
+    fn blocked_and_finished_orders_never_consume_factories_or_create_prototype_stock() {
+        let rules = ProductionRules::default();
+        let mut c = CountryProduction::default();
+        c.create(Equipment::FieldEquipment, 5, &rules);
+        c.lines[0].blocked_reason = Some("unresolved variant".into());
+        c.create_model("rifle_1", Equipment::InfantryKit, 5, &rules);
+        c.lines[1].remaining = Some(3);
+        c.lines[1].efficiency = 0.5;
+        c.tick_with_models(5, &rules, &BTreeMap::from([("rifle_1".into(), 1.0)]));
+        assert_eq!(c.model_stockpile["rifle_1"], 3);
+        assert!(c.stockpile.is_empty());
+        assert_eq!(c.lines[1].remaining, Some(0));
+        assert_eq!(c.lines[1].partial_ic, 0.0);
+        assert!(c.allocations(5, &rules).iter().all(|a| a.assigned == 0));
+        c.tick_with_models(5, &rules, &BTreeMap::from([("rifle_1".into(), 1.0)]));
+        assert_eq!(c.model_stockpile["rifle_1"], 3);
     }
 }

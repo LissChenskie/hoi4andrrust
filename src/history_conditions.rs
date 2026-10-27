@@ -43,9 +43,10 @@ pub fn resolve(
     today: GameDate,
 ) -> (Vec<Entry>, Vec<String>) {
     fn alternatives<'a>(b: &'a [Entry], out: &mut Vec<(&'a str, &'a [Entry])>) {
-        for e in b.iter().filter(|e| {
-            (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
-        }) {
+        for e in b
+            .iter()
+            .filter(|e| e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if"))
+        {
             if let Some(b) = e.block() {
                 out.push((&e.key, b));
                 alternatives(b, out);
@@ -136,10 +137,14 @@ pub fn resolve(
                 }
                 continue;
             }
-            if (e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if")) {
+            if e.key.eq_ignore_ascii_case("else") || e.key.eq_ignore_ascii_case("else_if") {
                 continue;
             }
             match e.key.as_str() {
+                "instant_effect" | "hidden_effect" => {
+                    walk(e.block().unwrap_or(&[]), tag, m, today, out, diagnostics);
+                    continue;
+                }
                 "units" => {
                     // Country/OOB conditions also occur inside the units
                     // container. Resolve them in the same ordered context.

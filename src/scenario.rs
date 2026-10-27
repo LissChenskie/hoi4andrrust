@@ -88,6 +88,7 @@ pub fn load_at(
     let date = (start.year, u32::from(start.month), u32::from(start.day));
     let mut owners = HashMap::new();
     let mut controllers = HashMap::new();
+    let mut victory_points = HashMap::new();
     if let Ok(entries) = fs::read_dir(&state_directory) {
         let mut paths: Vec<_> = entries
             .flatten()
@@ -99,6 +100,7 @@ pub fn load_at(
             let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             owners.extend(state::parse_state_owners(&source, date)?);
             controllers.extend(state::parse_state_controllers(&source, date)?);
+            victory_points.extend(state::parse_state_victory_points(&source, date)?);
         }
     }
     for province in membership.state_by_province.keys() {
@@ -135,6 +137,11 @@ pub fn load_at(
         .collect();
     for (id, tag) in control_overrides {
         world.set_province_controller(id, Some(&tag));
+    }
+    for (id, value) in victory_points {
+        if let Some(p) = geography.provinces.get_mut(&id) {
+            p.victory_points = value;
+        }
     }
     world.geography = geography;
     Ok(LoadedScenario { world, diagnostics })
@@ -190,7 +197,7 @@ mod tests {
         fs::write(
             root.join("history/states/one.txt"),
             "state = { id = 1 state_category = town provinces = { 1 2 4 } history = {
-                owner = AAA controller = BBB buildings = { industrial_complex = 2 }
+                owner = AAA controller = BBB victory_points = { 1 10 } buildings = { industrial_complex = 2 }
             }}",
         )
         .unwrap();
@@ -204,7 +211,9 @@ mod tests {
             world.geography.connection(2, 4).unwrap().kind,
             crate::map_graph::CrossingKind::Strait
         );
-        assert_eq!(world.country_economy("AAA").unwrap().civilian_factories, 2);
+        assert_eq!(world.country_economy("AAA").unwrap().civilian_factories, 0);
+        assert_eq!(world.country_economy("BBB").unwrap().civilian_factories, 2);
+        assert_eq!(world.geography.provinces[&1].victory_points, 10.0);
         assert_eq!(world.states[&1].shared_building_slots, 4);
         assert_eq!(
             world

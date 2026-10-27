@@ -21,7 +21,7 @@ impl Layout {
             scale,
             compact,
             top: if compact { 104.0 } else { 78.0 * scale },
-            bottom: 48.0,
+            bottom: 72.0,
         }
     }
     pub fn current() -> Self {
@@ -77,15 +77,15 @@ impl Layout {
         )
     }
     pub fn map_modes(self) -> Rect {
-        let w = if self.compact { 260.0 } else { 306.0 };
+        let w = if self.compact { 64.0 } else { 306.0 };
         Rect::new(self.width - w - 5.0, self.height - 44.0, w, 39.0)
     }
     pub fn army_dock(self) -> Rect {
         Rect::new(
             5.0,
-            self.height - 44.0,
+            self.height - 68.0,
             (self.width - self.map_modes().w - 17.0).max(36.0),
-            39.0,
+            63.0,
         )
     }
     pub fn minimap(self) -> Rect {

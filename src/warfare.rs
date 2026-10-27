@@ -11,19 +11,37 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet, BinaryHeap, VecDeque};
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ProvinceConditions {
     pub weather: Option<String>,
     pub night_override: Option<bool>,
     pub fort_level: u16,
+    pub naval_base: u16,
+    pub victory_points: f64,
+    pub supply_node: bool,
     pub attacker_air: AirSupport,
     pub defender_air: AirSupport,
 }
-#[derive(Debug)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
+    #[serde(default)]
+    pub logistics: crate::logistics::LogisticsState,
+    #[serde(default)]
+    pub air: crate::air_warfare::AirState,
+    pub command: crate::command::CommandState,
+    pub abilities: crate::command_abilities::AbilityState,
+    pub fronts: crate::frontline::FrontState,
+    pub plans: crate::operations::OperationalState,
+    #[serde(skip)]
+    pub automatic_order: bool,
+    #[serde(skip)]
     pub catalogue: Arc<MilitaryCatalogue>,
     pub countries: BTreeMap<String, CountryArmy>,
     pub divisions: BTreeMap<DivisionId, Division>,
+    #[serde(default)]
+    pub recruitment: BTreeMap<u64, crate::recruitment::RecruitmentOrder>,
+    #[serde(default = "first_recruitment_id")]
+    pub next_recruitment_id: u64,
     pub battles: BTreeMap<u64, LandBattle>,
     pub wars: BTreeSet<(String, String)>,
     pub military_access: BTreeSet<(String, String)>,
@@ -38,6 +56,9 @@ pub struct Warfare {
     pub simulated_hours: u64,
     pub ai_enabled: bool,
 }
+fn first_recruitment_id() -> u64 {
+    1
+}
 impl Default for Warfare {
     fn default() -> Self {
         Self::new(MilitaryCatalogue::default())
@@ -47,9 +68,18 @@ impl Warfare {
     pub fn new(catalogue: MilitaryCatalogue) -> Self {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
+            logistics: Default::default(),
+            air: Default::default(),
+            command: Default::default(),
+            abilities: Default::default(),
+            fronts: Default::default(),
+            plans: Default::default(),
+            automatic_order: false,
             catalogue: Arc::new(catalogue),
             countries: BTreeMap::new(),
             divisions: BTreeMap::new(),
+            recruitment: BTreeMap::new(),
+            next_recruitment_id: 1,
             battles: BTreeMap::new(),
             wars: BTreeSet::new(),
             military_access: BTreeSet::new(),
@@ -64,6 +94,166 @@ impl Warfare {
             simulated_hours: 0,
             ai_enabled: true,
         }
+    }
+    pub fn clean_references(&mut self) {
+        let abandoned: Vec<_> = self
+            .fronts
+            .fronts
+            .values()
+            .filter(|f| {
+                f.auto_include
+                    && f.assigned_divisions.is_empty()
+                    && self.fronts.fronts.values().any(|other| {
+                        other.id != f.id
+                            && other.army == f.army
+                            && !other.assigned_divisions.is_empty()
+                    })
+            })
+            .map(|f| f.id)
+            .collect();
+        if !abandoned.is_empty() {
+            for id in abandoned {
+                self.fronts.fronts.remove(&id);
+            }
+            self.fronts.revision += 1;
+        }
+        for f in self.fronts.fronts.values_mut() {
+            f.assignments
+                .retain(|id, _| f.assigned_divisions.contains(id));
+            f.reserves.retain(|id| f.assigned_divisions.contains(id));
+        }
+        self.fronts
+            .fronts
+            .retain(|_, f| self.command.armies.contains_key(&f.army));
+        self.plans.normalize(&self.command, &self.fronts);
+        self.abilities
+            .headquarters
+            .retain(|_, h| self.command.armies.contains_key(&h.army));
+        for h in self.abilities.headquarters.values_mut() {
+            if h.plan.is_some_and(|p| !self.plans.plans.contains_key(&p)) {
+                h.plan = None;
+            }
+        }
+    }
+    pub fn validate_references(&self, world: &World) -> Result<(), String> {
+        if !self.command.identifiers_valid()
+            || !self.fronts.identifiers_valid()
+            || !self.plans.identifiers_valid()
+            || self.divisions.keys().any(|id| *id >= self.next_division_id)
+            || self.battles.keys().any(|id| *id >= self.next_battle_id)
+        {
+            return Err("Повреждены устойчивые идентификаторы армии".into());
+        }
+        for (&id, job) in &self.recruitment {
+            if id != job.id
+                || id >= self.next_recruitment_id
+                || !self.countries.contains_key(&job.country)
+                || !world.provinces.contains_key(&job.province)
+                || !job.training_hours.is_finite()
+                || !job.required_hours.is_finite()
+                || job.required_hours <= 0.0
+                || job.training_hours < 0.0
+                || job.training_hours > job.required_hours
+            {
+                return Err("Повреждена очередь подготовки".into());
+            }
+        }
+        for (&id, d) in &self.divisions {
+            if id != d.id
+                || !world.provinces.contains_key(&d.province)
+                || !self
+                    .countries
+                    .get(&d.country)
+                    .is_some_and(|c| c.templates.contains_key(&d.template))
+                || d.battle.is_some_and(|b| !self.battles.contains_key(&b))
+            {
+                return Err(format!("Повреждена ссылка дивизии {id}"));
+            }
+            let path = match &d.order {
+                DivisionOrder::Move { path, .. }
+                | DivisionOrder::StrategicRedeployment { path, .. } => path.clone(),
+                DivisionOrder::Retreat { destination, .. } => vec![*destination],
+                _ => Vec::new(),
+            };
+            if path.iter().any(|p| !world.provinces.contains_key(p)) {
+                return Err("Маршрут ссылается на отсутствующую провинцию".into());
+            }
+        }
+        if self.command.membership.iter().any(|(d, a)| {
+            !self.divisions.contains_key(d)
+                || !self
+                    .command
+                    .armies
+                    .get(a)
+                    .is_some_and(|a| a.country == self.divisions[d].country)
+        }) {
+            return Err("Повреждён состав армии".into());
+        }
+        for a in self.command.armies.values() {
+            if !self.command.theaters.contains_key(&a.theater)
+                || a.group
+                    .is_some_and(|g| !self.command.groups.contains_key(&g))
+                || a.general.as_ref().is_some_and(|c| {
+                    !self
+                        .command
+                        .commanders
+                        .get(c)
+                        .is_some_and(|c| c.country == a.country)
+                })
+            {
+                return Err("Повреждена структура командования".into());
+            }
+        }
+        for f in self.fronts.fronts.values() {
+            if !self.command.armies.contains_key(&f.army)
+                || f.assigned_divisions
+                    .iter()
+                    .any(|id| !self.divisions.contains_key(id))
+                || f.edges.iter().any(|e| {
+                    !world.provinces.contains_key(&e.friendly)
+                        || !world.provinces.contains_key(&e.enemy)
+                })
+            {
+                return Err("Повреждён фронт".into());
+            }
+        }
+        for p in self.plans.plans.values() {
+            if !self.command.armies.contains_key(&p.army)
+                || p.assigned_divisions
+                    .iter()
+                    .any(|id| !self.divisions.contains_key(id))
+                || p.destination_line
+                    .iter()
+                    .any(|id| !world.provinces.contains_key(id))
+                || p.source_front
+                    .is_some_and(|f| !self.fronts.fronts.contains_key(&f))
+            {
+                return Err("Повреждён план".into());
+            }
+        }
+        for b in self.battles.values() {
+            if !world.provinces.contains_key(&b.province)
+                || b.attackers
+                    .active
+                    .iter()
+                    .chain(&b.defenders.active)
+                    .chain(&b.attackers.reserves)
+                    .chain(&b.defenders.reserves)
+                    .any(|id| !self.divisions.contains_key(id))
+            {
+                return Err("Повреждён состав сражения".into());
+            }
+        }
+        Ok(())
+    }
+    pub fn export_combat_log(&self, path: &std::path::Path) -> Result<(), String> {
+        let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+        serde_json::to_writer_pretty(std::io::BufWriter::new(file), &serde_json::json!({
+            "schema":1,"target":self.catalogue.rules.target_version,
+            "source_version":self.catalogue.source_version,"source_checksum":self.catalogue.source_checksum,
+            "simulated_hours":self.simulated_hours,"rng_state":self.rng.state,
+            "rules":self.catalogue.rules,"battles":self.battles
+        })).map_err(|e|e.to_string())
     }
     pub fn notice(&mut self, text: impl Into<String>) {
         self.notices.push_back(text.into());
@@ -86,10 +276,14 @@ impl Warfare {
             return Err("Invalid war participants".into());
         }
         self.wars.insert(Self::pair(a, b));
+        for p in self.plans.plans.values_mut() {
+            p.control_revision = u64::MAX;
+            p.last_review = 0;
+        }
         self.notice(format!("{a} is at war with {b}"));
         Ok(())
     }
-    fn friendly(&self, country: &str, controller: &str) -> bool {
+    pub(crate) fn friendly(&self, country: &str, controller: &str) -> bool {
         country == controller
             || (!self.at_war(country, controller)
                 && self
@@ -309,6 +503,8 @@ impl Warfare {
                 planning: 0.0,
                 supply_fraction: 1.0,
                 fuel_fraction: 1.0,
+                command: Default::default(),
+                ability_modifiers: Default::default(),
                 commander_attack: 0.0,
                 commander_defense: 0.0,
                 reinforce_bonus: 0.0,
@@ -329,6 +525,340 @@ impl Warfare {
             ));
         }
         Ok(id)
+    }
+    pub fn draw_front(
+        &mut self,
+        world: &World,
+        country: &str,
+        army: u64,
+        existing: Option<u64>,
+        path: &[crate::frontline::FrontEdge],
+        selection: &BTreeSet<u64>,
+        group: bool,
+    ) -> Result<u64, String> {
+        if group && self.command.own_army(country, army)?.group.is_none() {
+            return Err("Сначала назначьте армию в группу".into());
+        }
+        let mut fronts = std::mem::take(&mut self.fronts);
+        let result = if let Some(id) = existing.filter(|id| {
+            fronts
+                .fronts
+                .get(id)
+                .is_some_and(|f| f.army == army && f.country == country)
+        }) {
+            fronts.redraw(self, world, country, id, path).map(|_| id)
+        } else {
+            fronts.create_drawn(self, world, country, army, path, selection)
+        }
+        .and_then(|id| {
+            if group {
+                fronts.assign_group(self, country, id, selection)?;
+            }
+            Ok(id)
+        });
+        self.fronts = fronts;
+        if let Ok(id) = result {
+            let members = self.fronts.fronts[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            for p in self
+                .plans
+                .plans
+                .values_mut()
+                .filter(|p| p.source_front == Some(id))
+            {
+                p.last_review = 0;
+                p.source_revision = u64::MAX;
+            }
+            self.clean_references();
+        }
+        result
+    }
+    pub fn edit_front_sector(
+        &mut self,
+        world: &World,
+        country: &str,
+        id: u64,
+        sector: usize,
+        path: &[crate::frontline::FrontEdge],
+    ) -> Result<(), String> {
+        let f = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        let mut sectors = if f.sectors.is_empty() {
+            vec![f.edges.clone()]
+        } else {
+            f.sectors.clone()
+        };
+        if sector >= sectors.len() {
+            return Err("Участок фронта уже изменился".into());
+        }
+        let army = f.army;
+        let mut fronts = std::mem::take(&mut self.fronts);
+        let result = fronts.redraw(self, world, country, id, path);
+        if result.is_ok() {
+            sectors[sector] = path.to_vec();
+            let edges: Vec<_> = sectors.into_iter().flatten().collect();
+            let enemy = fronts.fronts[&id].enemy_country.clone();
+            let sectors = fronts.boundary(world, country, &enemy).sectors(&edges);
+            let f = fronts.fronts.get_mut(&id).unwrap();
+            f.edges = edges;
+            f.anchor_edges = f.edges.clone();
+            f.sectors = sectors;
+        }
+        self.fronts = fronts;
+        if result.is_ok() {
+            let members = self.fronts.fronts[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            for p in self.plans.plans.values_mut().filter(|p| p.army == army) {
+                p.source_revision = u64::MAX;
+                p.last_review = 0;
+            }
+        }
+        result
+    }
+    pub fn set_army_execution(
+        &mut self,
+        country: &str,
+        army: u64,
+        active: bool,
+    ) -> Result<(), String> {
+        self.command.own_army(country, army)?;
+        let ids: Vec<_> = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| {
+                p.army == army
+                    && p.country == country
+                    && p.activation != crate::operations::Activation::Completed
+            })
+            .map(|p| p.id)
+            .collect();
+        if ids.is_empty() {
+            return Err("Сначала нарисуйте фронт и линию наступления".into());
+        }
+        for id in ids {
+            self.plans.activate(country, id, active)?;
+        }
+        Ok(())
+    }
+    pub fn draw_plan(
+        &mut self,
+        world: &World,
+        country: &str,
+        army: u64,
+        source: Option<u64>,
+        kind: crate::operations::OrderType,
+        line: Vec<u32>,
+        edit: Option<u64>,
+    ) -> Result<u64, String> {
+        let mut plans = std::mem::take(&mut self.plans);
+        let result = if let Some(id) = edit {
+            plans.edit_line(country, id, line, world).map(|_| id)
+        } else {
+            plans.draw_order(self, world, country, army, source, kind, line)
+        };
+        self.plans = plans;
+        if let Ok(id) = result {
+            let members = self.plans.plans[&id].assigned_divisions.clone();
+            self.refresh_automatic_orders(&members);
+            self.clean_references();
+        }
+        result
+    }
+    pub fn assign_front(
+        &mut self,
+        country: &str,
+        id: u64,
+        selection: &BTreeSet<u64>,
+    ) -> Result<(), String> {
+        self.validate_selection(country, &selection.iter().copied().collect::<Vec<_>>())?;
+        let f = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?;
+        let army = f.army;
+        let group = f.group;
+        if selection.iter().any(|d| {
+            !self.command.membership.get(d).is_some_and(|a| {
+                *a == army
+                    || group.is_some_and(|g| {
+                        self.command
+                            .armies
+                            .get(a)
+                            .is_some_and(|a| a.group == Some(g))
+                    })
+            })
+        }) {
+            return Err("Выбранные дивизии должны принадлежать этой армии или группе".into());
+        }
+        for f in self
+            .fronts
+            .fronts
+            .values_mut()
+            .filter(|f| f.country == country)
+        {
+            f.assigned_divisions.retain(|d| !selection.contains(d));
+            f.assignments.retain(|d, _| !selection.contains(d));
+            f.reserves.retain(|d| !selection.contains(d));
+            f.command_revision = u64::MAX;
+            f.revision += 1;
+        }
+        let f = self.fronts.fronts.get_mut(&id).unwrap();
+        f.assigned_divisions.extend(selection);
+        f.auto_include = false;
+        self.fronts.revision += 1;
+        self.resume_plans(country, &selection.iter().copied().collect::<Vec<_>>())?;
+        self.clean_references();
+        Ok(())
+    }
+    pub fn refresh_automatic_orders(&mut self, ids: &BTreeSet<u64>) {
+        for id in ids {
+            if self.fronts.manual.contains(id) || self.fronts.detached.contains(id) {
+                continue;
+            }
+            if let Some(d) = self.divisions.get_mut(id).filter(|d| {
+                d.battle.is_none()
+                    && !matches!(
+                        d.order,
+                        DivisionOrder::Retreat { .. } | DivisionOrder::Train { .. }
+                    )
+            }) {
+                d.order = DivisionOrder::Hold;
+                d.destination = None;
+                d.waypoints.clear();
+            }
+        }
+    }
+    pub fn merge_fronts(
+        &mut self,
+        world: &World,
+        country: &str,
+        a: u64,
+        b: u64,
+    ) -> Result<(), String> {
+        self.fronts.merge(world, country, a, b)?;
+        let primary: BTreeSet<_> = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| p.source_front == Some(a))
+            .map(|p| match p.order_type {
+                crate::operations::OrderType::Offensive
+                | crate::operations::OrderType::Spearhead => 0,
+                crate::operations::OrderType::Fallback => 1,
+                crate::operations::OrderType::AreaDefense => 2,
+            })
+            .collect();
+        self.plans.plans.retain(|_, p| {
+            p.source_front != Some(b)
+                || !primary.contains(&match p.order_type {
+                    crate::operations::OrderType::Offensive
+                    | crate::operations::OrderType::Spearhead => 0,
+                    crate::operations::OrderType::Fallback => 1,
+                    crate::operations::OrderType::AreaDefense => 2,
+                })
+        });
+        for p in self
+            .plans
+            .plans
+            .values_mut()
+            .filter(|p| p.source_front == Some(b))
+        {
+            p.source_front = Some(a);
+            p.source_revision = u64::MAX;
+            p.last_review = 0;
+        }
+        self.plans.revision += 1;
+        self.clean_references();
+        Ok(())
+    }
+    pub fn delete_front(&mut self, country: &str, id: u64) -> Result<(), String> {
+        let members = self
+            .fronts
+            .fronts
+            .get(&id)
+            .filter(|f| f.country == country)
+            .ok_or("Выберите свой фронт")?
+            .assigned_divisions
+            .clone();
+        self.fronts.delete(country, id)?;
+        self.refresh_automatic_orders(&members);
+        self.clean_references();
+        Ok(())
+    }
+    pub fn delete_plan(&mut self, country: &str, id: u64) -> Result<(), String> {
+        let members = self
+            .plans
+            .plans
+            .get(&id)
+            .filter(|p| p.country == country)
+            .ok_or("Выберите свой план")?
+            .assigned_divisions
+            .clone();
+        self.plans.delete(country, id)?;
+        self.refresh_automatic_orders(&members);
+        self.clean_references();
+        Ok(())
+    }
+    pub fn resume_plans(&mut self, country: &str, ids: &[u64]) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        for id in ids {
+            self.fronts.manual.remove(id);
+            self.fronts.manual_return.remove(id);
+            self.fronts.detached.remove(id);
+            if let Some(d) = self.divisions.get_mut(id) {
+                if d.battle.is_none() && !matches!(d.order, DivisionOrder::Retreat { .. }) {
+                    d.order = DivisionOrder::Hold;
+                    d.destination = None;
+                    d.waypoints.clear();
+                }
+            }
+        }
+        for f in self.fronts.fronts.values_mut() {
+            f.command_revision = u64::MAX;
+        }
+        for p in self.plans.plans.values_mut() {
+            p.last_review = 0;
+        }
+        Ok(())
+    }
+    pub fn detach_plans(&mut self, country: &str, ids: &[u64]) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        self.fronts.detached.extend(ids.iter().copied());
+        self.fronts.manual.extend(ids.iter().copied());
+        self.fronts.manual_return.retain(|id| !ids.contains(id));
+        for f in self.fronts.fronts.values_mut() {
+            f.command_revision = u64::MAX;
+        }
+        Ok(())
+    }
+    pub fn create_army(&mut self, country: &str, ids: &[u64], name: &str) -> Result<u64, String> {
+        self.validate_selection(country, ids)?;
+        Ok(self.command.create_army(country, name, ids))
+    }
+    pub fn assign_army(&mut self, country: &str, army: u64, ids: &[u64]) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        self.command.assign(country, army, ids)
+    }
+    fn validate_selection(&self, country: &str, ids: &[u64]) -> Result<(), String> {
+        if ids.is_empty() {
+            return Err("Сначала выделите дивизии".into());
+        }
+        if ids.iter().any(|id| {
+            !self
+                .divisions
+                .get(id)
+                .is_some_and(|d| d.country == country && !d.destroyed)
+        }) {
+            return Err("В выделении есть чужая или отсутствующая дивизия".into());
+        }
+        Ok(())
     }
     pub fn save_template(
         &mut self,
@@ -357,22 +887,14 @@ impl Warfare {
         if old_name.is_none() && army.templates.contains_key(&template.name) {
             return Err("Template name already exists".into());
         }
-        let cost = self.catalogue.edit_cost(old, &template)?;
+        let cost = self
+            .catalogue
+            .edit_cost_with_modifiers(old, &template, &army.modifiers)?;
         if army.army_xp + 1e-9 < cost {
             return Err(format!(
                 "Need {cost:.0} Army XP; available {:.1}",
                 army.army_xp
             ));
-        }
-        if let Some(name) = old_name {
-            if name != template.name
-                && self
-                    .divisions
-                    .values()
-                    .any(|d| d.country == country && d.template == name && !d.destroyed)
-            {
-                return Err("Rename a copy; active divisions reference this template".into());
-            }
         }
         if let Some(name) = old_name {
             if name != template.name {
@@ -382,6 +904,18 @@ impl Warfare {
         army.army_xp -= cost;
         army.templates
             .insert(template.name.clone(), template.clone());
+        if let Some(old) = old_name {
+            if old != template.name {
+                for d in self
+                    .divisions
+                    .values_mut()
+                    .filter(|d| d.country == country && d.template == old)
+                {
+                    d.template = template.name.clone();
+                }
+            }
+        }
+
         for d in self
             .divisions
             .values_mut()
@@ -399,6 +933,179 @@ impl Warfare {
             }
         }
         Ok(())
+    }
+    pub fn copy_template(&mut self, country: &str, source: &str, name: &str) -> Result<(), String> {
+        let army = self.countries.get_mut(country).ok_or("No country army")?;
+        if name.trim().is_empty() || army.templates.contains_key(name) {
+            return Err("Укажите свободное имя шаблона".into());
+        }
+        let mut t = army
+            .templates
+            .get(source)
+            .ok_or("Нет исходного шаблона")?
+            .clone();
+        t.name = name.into();
+        army.templates.insert(name.into(), t);
+        Ok(())
+    }
+    pub fn template_edit_cost(
+        &self,
+        country: &str,
+        old: Option<&str>,
+        new: &DivisionTemplate,
+    ) -> Result<f64, String> {
+        let army = self.countries.get(country).ok_or("No country army")?;
+        let empty = DivisionTemplate::default();
+        self.catalogue.edit_cost_with_modifiers(
+            old.and_then(|id| army.templates.get(id)).unwrap_or(&empty),
+            new,
+            &army.modifiers,
+        )
+    }
+    pub fn apply_template(
+        &mut self,
+        country: &str,
+        ids: &[u64],
+        name: &str,
+        production: &mut ProductionState,
+    ) -> Result<(), String> {
+        self.validate_selection(country, ids)?;
+        let army = self.countries.get(country).ok_or("No country army")?;
+        let t = army.templates.get(name).ok_or("Нет выбранного шаблона")?;
+        self.catalogue.validate_template(t, &army.modifiers, true)?;
+        let mut staged = Vec::new();
+        for id in ids {
+            let d = &self.divisions[id];
+            if d.battle.is_some() {
+                return Err("Сначала выведите дивизии из боя".into());
+            }
+            let stats = self
+                .catalogue
+                .aggregate(t, &army.modifiers, Some(&d.equipment))?;
+            staged.push((*id, stats));
+        }
+        for (id, stats) in staged {
+            let d = self.divisions.get_mut(&id).unwrap();
+            d.template = name.into();
+            d.hp = d.hp.min(stats.stats.hp);
+            d.organization = d.organization.min(stats.stats.organization);
+            d.derived = stats;
+            self.return_surplus(id, production);
+        }
+        Ok(())
+    }
+    pub fn return_surplus(&mut self, id: u64, production: &mut ProductionState) {
+        let Some(d) = self.divisions.get_mut(&id).filter(|d| !d.destroyed) else {
+            return;
+        };
+        let mut remaining: BTreeMap<_, _> = d
+            .derived
+            .equipment
+            .iter()
+            .map(|(k, v)| (k.clone(), v.ceil().max(0.0) as u64))
+            .collect();
+        let mut models: Vec<_> = d
+            .equipment
+            .keys()
+            .filter_map(|id| self.catalogue.equipment.get(id))
+            .collect();
+        models.sort_by(|a, b| b.year.cmp(&a.year).then(a.id.cmp(&b.id)));
+        for def in models {
+            let quantity = d.equipment.get_mut(&def.id).unwrap();
+            let needed = remaining.entry(def.archetype.clone()).or_default();
+            let keep = (*needed).min(u64::from(*quantity)) as u32;
+            let returned = *quantity - keep;
+            *needed -= u64::from(keep);
+            *quantity = keep;
+            if returned > 0 {
+                let stock = production
+                    .country_mut(&d.country)
+                    .model_stockpile
+                    .entry(def.id.clone())
+                    .or_default();
+                *stock = stock.saturating_add(u64::from(returned));
+            }
+        }
+        d.equipment.retain(|_, n| *n > 0);
+        let surplus = d
+            .manpower
+            .saturating_sub(d.derived.stats.manpower.ceil().max(0.0) as u32);
+        d.manpower -= surplus;
+        if surplus > 0 {
+            let army = self.countries.entry(d.country.clone()).or_default();
+            army.manpower_pool = army.manpower_pool.saturating_add(u64::from(surplus));
+        }
+        if let Some(army) = self.countries.get(&d.country) {
+            if let Some(t) = army.templates.get(&d.template) {
+                if let Ok(derived) =
+                    self.catalogue
+                        .aggregate(t, &army.modifiers, Some(&d.equipment))
+                {
+                    d.derived = derived;
+                }
+            }
+        }
+    }
+    fn refit_preferred_equipment(&mut self, id: u64, production: &mut ProductionState) {
+        let Some(d) = self
+            .divisions
+            .get_mut(&id)
+            .filter(|d| !d.destroyed && d.battle.is_none() && d.supply_fraction > 0.0)
+        else {
+            return;
+        };
+        let Some(army) = self.countries.get(&d.country) else {
+            return;
+        };
+        let Some(t) = army.templates.get(&d.template) else {
+            return;
+        };
+        let stock = &mut production.country_mut(&d.country).model_stockpile;
+        for (archetype, preferred) in &t.equipment_preferences {
+            if !self
+                .catalogue
+                .equipment_available(preferred, &army.modifiers)
+            {
+                continue;
+            }
+            if !self
+                .catalogue
+                .equipment
+                .get(preferred)
+                .is_some_and(|e| e.archetype == *archetype)
+            {
+                continue;
+            }
+            let old: Vec<_> = d
+                .equipment
+                .keys()
+                .filter(|id| {
+                    *id != preferred
+                        && self
+                            .catalogue
+                            .equipment
+                            .get(*id)
+                            .is_some_and(|e| e.archetype == *archetype)
+                })
+                .cloned()
+                .collect();
+            for model in old {
+                let count = d.equipment[&model];
+                let replacement = stock
+                    .get(preferred)
+                    .copied()
+                    .unwrap_or(0)
+                    .min(u64::from(count)) as u32;
+                if replacement == 0 {
+                    continue;
+                }
+                *stock.get_mut(preferred).unwrap() -= u64::from(replacement);
+                *stock.entry(model.clone()).or_default() += u64::from(replacement);
+                *d.equipment.get_mut(&model).unwrap() -= replacement;
+                *d.equipment.entry(preferred.clone()).or_default() += replacement;
+            }
+        }
+        d.equipment.retain(|_, n| *n > 0);
     }
     pub fn recruit(
         &mut self,
@@ -487,7 +1194,7 @@ impl Warfare {
             .country_mut(country)
             .create_model(model, category, 1, rules))
     }
-    fn equipment_fraction(&self, d: &Division) -> f64 {
+    pub(crate) fn equipment_fraction(&self, d: &Division) -> f64 {
         if d.derived.equipment.is_empty() {
             return 1.0;
         }
@@ -513,6 +1220,8 @@ impl Warfare {
     pub fn replenish(&mut self, production: &mut ProductionState) {
         let ids: Vec<_> = self.divisions.keys().copied().collect();
         for id in ids {
+            self.return_surplus(id, production);
+            self.refit_preferred_equipment(id, production);
             let Some(d) = self
                 .divisions
                 .get(&id)
@@ -584,9 +1293,10 @@ impl Warfare {
                 }
             }
         }
+        self.supply_recruitment(production);
     }
 
-    fn edge_allowed(&self, country: &str, from: u32, to: u32, world: &World) -> bool {
+    pub(crate) fn edge_allowed(&self, country: &str, from: u32, to: u32, world: &World) -> bool {
         let Some(edge) = world.geography.connection(from, to) else {
             return false;
         };
@@ -608,6 +1318,44 @@ impl Warfare {
             .provinces
             .get(&to)
             .is_some_and(|p| p.definition.kind == ProvinceKind::Land)
+    }
+    pub fn movement_distances(
+        &self,
+        country: &str,
+        from: u32,
+        world: &World,
+    ) -> BTreeMap<u32, f64> {
+        let Some(scale) = self.catalogue.rules.pixels_to_km else {
+            return BTreeMap::new();
+        };
+        let mut dist = BTreeMap::from([(from, 0.0f64)]);
+        let mut heap = BinaryHeap::from([Reverse((0u64, from))]);
+        while let Some(Reverse((bits, p))) = heap.pop() {
+            let cost = f64::from_bits(bits);
+            if cost > dist[&p] {
+                continue;
+            }
+            for edge in world.geography.land_neighbors(p) {
+                if !self.edge_allowed(country, p, edge.to, world)
+                    || !world
+                        .controller_of_province(edge.to)
+                        .is_some_and(|c| self.friendly(country, c))
+                {
+                    continue;
+                }
+                let Some(d) = world.geography.distance_in_pixels(p, edge.to) else {
+                    continue;
+                };
+                let terrain = &world.geography.provinces[&edge.to].definition.terrain;
+                let next = cost
+                    + (d * scale * self.catalogue.default_terrain(terrain).movement_cost).max(0.01);
+                if next < dist.get(&edge.to).copied().unwrap_or(f64::INFINITY) {
+                    dist.insert(edge.to, next);
+                    heap.push(Reverse((next.to_bits(), edge.to)));
+                }
+            }
+        }
+        dist
     }
     pub fn route(
         &self,
@@ -685,6 +1433,17 @@ impl Warfare {
         path.reverse();
         Ok(path)
     }
+    fn may_withdraw(&self, d: &Division, b: &LandBattle) -> Result<(), String> {
+        let key = if b.origins.contains_key(&d.id) {
+            "cannot_retreat_while_attacking"
+        } else {
+            "cannot_retreat_while_defending"
+        };
+        if d.ability_modifiers.get(key).is_some_and(|v| *v > 0.0) {
+            return Err("Действующая способность запрещает отход".into());
+        }
+        Ok(())
+    }
     pub fn stop(&mut self, country: &str, id: u64, world: &World) -> Result<(), String> {
         let d = self
             .divisions
@@ -696,12 +1455,17 @@ impl Warfare {
         }
         let battle = d.battle.and_then(|id| self.battles.get(&id)).cloned();
         if let Some(b) = &battle {
+            self.may_withdraw(d, b)?;
             self.battles
                 .get_mut(&b.id)
                 .unwrap()
                 .withdraw(id, &self.catalogue.rules)?;
             if !b.origins.contains_key(&id) {
                 self.retreat(id, b, world);
+                if !self.automatic_order {
+                    self.fronts.manual.insert(id);
+                    self.fronts.manual_return.remove(&id);
+                }
                 return Ok(());
             }
         }
@@ -710,6 +1474,10 @@ impl Warfare {
         d.order = DivisionOrder::Hold;
         d.destination = None;
         d.waypoints.clear();
+        if !self.automatic_order {
+            self.fronts.manual.insert(id);
+            self.fronts.manual_return.remove(&id);
+        }
         if battle.is_some() {
             d.attack_delay = self.catalogue.rules.attack_delay;
         }
@@ -771,6 +1539,7 @@ impl Warfare {
             }
             if d.battle.is_some() && !append {
                 let b = &self.battles[&d.battle.unwrap()];
+                self.may_withdraw(d, b)?;
                 if b.elapsed_hours < self.catalogue.rules.minimum_hours {
                     return Err(format!(
                         "Cannot withdraw before {} combat hours",
@@ -815,6 +1584,10 @@ impl Warfare {
             staged.push((id, path));
         }
         for (id, path) in staged {
+            if !self.automatic_order {
+                self.fronts.manual.insert(id);
+                self.fronts.manual_return.insert(id);
+            }
             if append && path.is_empty() {
                 continue;
             }
@@ -835,6 +1608,9 @@ impl Warfare {
                 .is_some_and(|b| !b.origins.contains_key(&id));
             if self.divisions[&id].battle.is_some() {
                 self.stop(country, id, world)?;
+            }
+            if !self.automatic_order {
+                self.fronts.manual_return.insert(id);
             }
             let d = self.divisions.get_mut(&id).unwrap();
             if !append {
@@ -907,7 +1683,12 @@ impl Warfare {
             }
         }
     }
-    fn environment(&self, battle: &LandBattle, world: &World, hour: u8) -> BattleEnvironment {
+    pub(crate) fn environment(
+        &self,
+        battle: &LandBattle,
+        world: &World,
+        hour: u8,
+    ) -> BattleEnvironment {
         let conditions = self
             .conditions
             .get(&battle.province)
@@ -940,6 +1721,82 @@ impl Warfare {
             defender_air: conditions.defender_air,
             ..Default::default()
         };
+        if self.air.enabled && self.air.region_at(battle.province).is_some() {
+            let attacker = battle
+                .attackers
+                .active
+                .iter()
+                .chain(&battle.attackers.reserves)
+                .find_map(|id| self.divisions.get(id))
+                .map(|d| d.country.as_str())
+                .unwrap_or("");
+            let defender = battle
+                .defenders
+                .active
+                .iter()
+                .chain(&battle.defenders.reserves)
+                .find_map(|id| self.divisions.get(id))
+                .map(|d| d.country.as_str())
+                .unwrap_or("");
+            env.attacker_air =
+                self.air
+                    .support(attacker, defender, battle.province, self.simulated_hours);
+            env.defender_air =
+                self.air
+                    .support(defender, attacker, battle.province, self.simulated_hours);
+            let region = self.air.region_at(battle.province);
+            let simultaneous = 1 + self
+                .battles
+                .values()
+                .filter(|b| {
+                    b.id != battle.id
+                        && b.outcome.is_none()
+                        && self.air.region_at(b.province) == region
+                })
+                .count();
+            // A sortie cannot hit every province with the wing's full strength.
+            for air in [&mut env.attacker_air, &mut env.defender_air] {
+                air.plane_attack_rolls /= simultaneous as f64;
+                air.cas_planes /= simultaneous as u32;
+            }
+            let aa = |ids: &[u64]| {
+                ids.iter()
+                    .filter_map(|id| self.divisions.get(id))
+                    .map(|d| d.derived.stats.air_attack)
+                    .sum::<f64>()
+                    .max(0.)
+            };
+            let attacker_aa = aa(&battle.attackers.active);
+            let defender_aa = aa(&battle.defenders.active);
+            env.attacker_air.aa_damage_reduction = self.catalogue.rules.aa_max_reduction
+                * defender_aa
+                / (defender_aa + self.air.rules.aa_effect_scale.max(1e-9));
+            env.defender_air.aa_damage_reduction = self.catalogue.rules.aa_max_reduction
+                * attacker_aa
+                / (attacker_aa + self.air.rules.aa_effect_scale.max(1e-9));
+        }
+        if self.air.enabled && self.air.region_at(battle.province).is_some() {
+            let attacker_width = battle
+                .attackers
+                .active
+                .iter()
+                .filter_map(|id| self.divisions.get(id))
+                .map(|d| d.derived.stats.width)
+                .sum::<f64>();
+            let defender_width = battle
+                .defenders
+                .active
+                .iter()
+                .filter_map(|id| self.divisions.get(id))
+                .map(|d| d.derived.stats.width)
+                .sum::<f64>();
+            env.attacker_air.ground_support_bonus *= (f64::from(env.attacker_air.cas_planes)
+                / (defender_width * self.catalogue.rules.cas_planes_per_width).max(1.))
+            .min(1.);
+            env.defender_air.ground_support_bonus *= (f64::from(env.defender_air.cas_planes)
+                / (attacker_width * self.catalogue.rules.cas_planes_per_width).max(1.))
+            .min(1.);
+        }
         if let Some(weather) = conditions
             .weather
             .and_then(|name| self.catalogue.weather.get(&name))
@@ -966,6 +1823,34 @@ impl Warfare {
         }
         env
     }
+    pub fn support_attack(
+        &mut self,
+        country: &str,
+        ids: &[u64],
+        province: u32,
+        world: &World,
+    ) -> Result<u64, String> {
+        let occupied = self.divisions.values().any(|d| {
+            d.province == province
+                && self.at_war(country, &d.country)
+                && d.fighting()
+                && !matches!(d.order, DivisionOrder::Retreat { .. })
+        });
+        if !occupied {
+            return Err(
+                "Поддержка атаки требует действительного противника в целевой провинции".into(),
+            );
+        }
+        let battle = self.attack(country, ids, province, world)?;
+        for id in ids {
+            let d = self.divisions.get_mut(id).unwrap();
+            d.order = DivisionOrder::SupportAttack { province };
+            d.destination = None;
+            d.waypoints.clear();
+        }
+        Ok(battle)
+    }
+
     pub fn attack(
         &mut self,
         country: &str,
@@ -1027,6 +1912,10 @@ impl Warfare {
                 return Err("Another attacking country already commands this battle".into());
             }
             for unit in attackers {
+                if !self.automatic_order {
+                    self.fronts.manual.insert(unit);
+                    self.fronts.manual_return.insert(unit);
+                }
                 let origin = self.divisions[&unit].province;
                 self.battles
                     .get_mut(&id)
@@ -1052,6 +1941,10 @@ impl Warfare {
             .collect();
         if defenders.is_empty() {
             for id in attackers {
+                if !self.automatic_order {
+                    self.fronts.manual.insert(id);
+                    self.fronts.manual_return.insert(id);
+                }
                 let d = self.divisions.get_mut(&id).unwrap();
                 d.entrenchment = 0.0;
                 d.order = DivisionOrder::Move {
@@ -1099,6 +1992,10 @@ impl Warfare {
             &self.catalogue.rules,
         );
         for unit in attackers.iter().chain(&defenders) {
+            if attackers.contains(unit) && !self.automatic_order {
+                self.fronts.manual.insert(*unit);
+                self.fronts.manual_return.insert(*unit);
+            }
             let d = self.divisions.get_mut(unit).unwrap();
             d.battle = Some(id);
             if attackers.contains(unit) {
@@ -1188,7 +2085,11 @@ impl Warfare {
             let d = self.divisions.get_mut(&id).unwrap();
             d.battle = None;
             d.attack_delay = self.catalogue.rules.attack_delay;
-            if was_attacker && outcome == BattleOutcome::AttackerWon && !d.destroyed {
+            if was_attacker
+                && outcome == BattleOutcome::AttackerWon
+                && !d.destroyed
+                && !matches!(d.order, DivisionOrder::SupportAttack { .. })
+            {
                 d.order = DivisionOrder::Move {
                     path: vec![battle.province],
                     progress_km: 0.0,
@@ -1282,9 +2183,48 @@ impl Warfare {
                 let mut speed =
                     d.derived.stats.speed * (1.0 + adjust).max(0.0) / terrain.movement_cost;
                 if d.derived.stats.fuel > 0.0 {
-                    speed *= d.fuel_fraction.clamp(0.0, 1.0);
+                    let fuel = d.fuel_fraction.clamp(0.0, 1.0);
+                    speed *= self.catalogue.rules.fuel_speed_penalty.map_or_else(
+                        || {
+                            if self.logistics.enabled {
+                                self.logistics.rules.minimum_fuel_speed
+                                    + (1. - self.logistics.rules.minimum_fuel_speed) * fuel
+                            } else {
+                                fuel
+                            }
+                        },
+                        |minimum| minimum + (1.0 - minimum) * fuel,
+                    );
                 }
-                speed *= d.supply_fraction.clamp(0.0, 1.0);
+                if let (Some(maximum), Some(impact)) = (
+                    self.catalogue.infrastructure_max,
+                    self.catalogue
+                        .literal_defines
+                        .get("NDefines.NMilitary.INFRASTRUCTURE_MOVEMENT_SPEED_IMPACT"),
+                ) {
+                    let infrastructure = world
+                        .provinces
+                        .get(&next)
+                        .and_then(|p| p.state_id)
+                        .and_then(|id| world.states.get(&id))
+                        .map_or(0, |s| s.economy.infrastructure);
+                    speed *=
+                        (1.0 + impact * f64::from(maximum.saturating_sub(infrastructure))).max(0.0);
+                }
+                speed *= (1.0
+                    + d.command.movement
+                    + d.ability_modifiers
+                        .get("army_speed_factor")
+                        .copied()
+                        .unwrap_or(0.0))
+                .max(0.0);
+                let supply = d.supply_fraction.clamp(0.0, 1.0);
+                speed *= if self.logistics.enabled {
+                    self.logistics.rules.minimum_supply_speed
+                        + (1. - self.logistics.rules.minimum_supply_speed) * supply
+                } else {
+                    supply
+                };
                 let org_fraction =
                     (d.organization / d.derived.stats.organization.max(1e-9)).clamp(0.0, 1.0);
                 speed *= 1.0 + self.catalogue.rules.zero_org_speed * (1.0 - org_fraction);
@@ -1329,11 +2269,11 @@ impl Warfare {
                     * scale;
                 let needed = (distance - progress).max(0.0) / speed;
                 let spent = needed.min(time_left);
+
                 let tag = d.country.clone();
                 let previous = d.province;
                 let d = self.divisions.get_mut(&id).unwrap();
-                d.organization =
-                    (d.organization + self.catalogue.rules.movement_org_loss * spent).max(0.0);
+
                 if strategic {
                     d.organization = d
                         .organization
@@ -1414,6 +2354,62 @@ impl Warfare {
         }
     }
 
+    fn complete_manual_orders(&mut self) {
+        // Saves made before temporary manual control was introduced still carry
+        // manual moving units. Persistent Hold/Exercise/detach stays untouched.
+        self.fronts.manual_return.extend(
+            self.fronts
+                .manual
+                .iter()
+                .filter(|id| {
+                    !self.fronts.detached.contains(id)
+                        && self.divisions.get(id).is_some_and(|d| {
+                            matches!(
+                                d.order,
+                                DivisionOrder::Move { .. }
+                                    | DivisionOrder::StrategicRedeployment { .. }
+                                    | DivisionOrder::Attack { .. }
+                                    | DivisionOrder::SupportAttack { .. }
+                            )
+                        })
+                })
+                .copied(),
+        );
+        let completed: Vec<_> = self
+            .fronts
+            .manual_return
+            .iter()
+            .copied()
+            .filter(|id| {
+                !self.fronts.detached.contains(id)
+                    && self.divisions.get(id).is_none_or(|d| {
+                        d.destroyed
+                            || (d.battle.is_none()
+                                && matches!(d.order, DivisionOrder::Hold)
+                                && d.destination.is_none()
+                                && d.waypoints.is_empty())
+                    })
+            })
+            .collect();
+        if completed.is_empty() {
+            return;
+        }
+        for id in &completed {
+            self.fronts.manual.remove(id);
+            self.fronts.manual_return.remove(id);
+        }
+        for f in self.fronts.fronts.values_mut() {
+            if completed.iter().any(|id| f.assigned_divisions.contains(id)) {
+                f.command_revision = u64::MAX;
+            }
+        }
+        for p in self.plans.plans.values_mut() {
+            if completed.iter().any(|id| p.assigned_divisions.contains(id)) {
+                p.last_review = 0;
+            }
+        }
+    }
+
     pub fn tick_hour(
         &mut self,
         world: &mut World,
@@ -1423,6 +2419,55 @@ impl Warfare {
         player: Option<&str>,
     ) {
         self.simulated_hours = elapsed;
+        let mut logistics = std::mem::take(&mut self.logistics);
+        logistics.tick(self, world, elapsed);
+        self.logistics = logistics;
+        let mut air = std::mem::take(&mut self.air);
+        air.tick(self, world, elapsed);
+        self.air = air;
+        self.complete_manual_orders();
+        self.tick_recruitment(world);
+        let initial_control_revision = world.control_revision;
+        self.fronts.active_orders = self.plans.active_divisions();
+        let mut fronts = std::mem::take(&mut self.fronts);
+        self.automatic_order = true;
+        fronts.tick(self, world);
+        self.automatic_order = false;
+        self.fronts = fronts;
+        let mut plans = std::mem::take(&mut self.plans);
+        self.automatic_order = true;
+        plans.tick(self, world, elapsed);
+        self.automatic_order = false;
+        self.plans = plans;
+        self.command.garrison_armies = self
+            .plans
+            .plans
+            .values()
+            .filter(|p| p.order_type == crate::operations::OrderType::AreaDefense)
+            .map(|p| p.army)
+            .collect();
+        self.abilities.tick(elapsed);
+        self.tick_command_power();
+        self.automatic_order = true;
+        self.tick_headquarters(world);
+        self.automatic_order = false;
+        self.command
+            .membership
+            .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
+        let bonuses: BTreeMap<_, _> = self
+            .divisions
+            .keys()
+            .map(|&id| {
+                let mut b = self.command.bonuses(id);
+                b.add(self.hq_bonus(id), 1.0);
+                (id, (b, self.unit_ability_modifiers(id)))
+            })
+            .collect();
+        for (id, (command, ability)) in bonuses {
+            let d = self.divisions.get_mut(&id).unwrap();
+            d.command = command;
+            d.ability_modifiers = ability;
+        }
         if self.divisions.is_empty() {
             return;
         }
@@ -1432,13 +2477,30 @@ impl Warfare {
                 let supply = 1.0
                     + (1.0 - d.supply_fraction.clamp(0.0, 1.0))
                         * self.catalogue.rules.out_of_supply_recovery;
-                d.organization = (d.organization + d.derived.stats.recovery * supply)
+                let moving = matches!(
+                    d.order,
+                    DivisionOrder::Move { .. }
+                        | DivisionOrder::Retreat { .. }
+                        | DivisionOrder::StrategicRedeployment { .. }
+                );
+                let movement = if moving {
+                    (1.0 + self.catalogue.rules.movement_recovery).max(0.0)
+                } else {
+                    1.0
+                };
+                d.organization = (d.organization + d.derived.stats.recovery * supply * movement)
                     .min(d.derived.stats.organization);
                 if matches!(d.order, DivisionOrder::Hold) {
-                    d.entrenchment = (d.entrenchment + self.catalogue.rules.dig_in_daily / 24.0)
+                    d.entrenchment = (d.entrenchment
+                        + self.catalogue.rules.dig_in_daily
+                            * (1.0
+                                + d.ability_modifiers
+                                    .get("dig_in_speed")
+                                    .copied()
+                                    .unwrap_or(0.0))
+                            .max(0.0)
+                            / 24.0)
                         .min(self.catalogue.rules.dig_in_cap + d.derived.stats.entrenchment);
-                    d.planning = (d.planning + self.catalogue.rules.planning_daily / 24.0)
-                        .min(self.catalogue.rules.planning_cap);
                 }
                 let strength = d.strength();
                 if let DivisionOrder::Train { hours } = &mut d.order {
@@ -1448,11 +2510,46 @@ impl Warfare {
                         d.experience = ExperienceLevel::Trained;
                     }
                 }
-            } else {
-                d.planning = (d.planning - self.catalogue.rules.planning_decay / 24.0).max(0.0);
+            }
+            let manual = self.fronts.manual.contains(&d.id) || self.fronts.detached.contains(&d.id);
+            let at_front = self.fronts.fronts.values().any(|f| {
+                f.assigned_divisions.contains(&d.id)
+                    && f.edges.iter().any(|e| e.friendly == d.province)
+            });
+            let modifiers = self.countries.get(&d.country).map(|a| &a.modifiers);
+            let get = |key: &str| modifiers.map_or(0.0, |m| m.value(key));
+            let cap = (self.catalogue.rules.planning_cap
+                + get("max_planning")
+                + d.command.planning_max
+                + d.ability_modifiers
+                    .get("max_planning")
+                    .copied()
+                    .unwrap_or(0.0))
+            .max(0.0);
+            if at_front && !manual && d.battle.is_none() && matches!(d.order, DivisionOrder::Hold) {
+                let speed = (1.0
+                    + get("planning_speed")
+                    + d.command.planning_speed
+                    + d.ability_modifiers
+                        .get("planning_speed")
+                        .copied()
+                        .unwrap_or(0.0))
+                .max(0.0)
+                    * (1.0 + d.derived.stats.initiative).max(0.0);
+                d.planning =
+                    (d.planning + self.catalogue.rules.planning_daily * speed / 24.0).min(cap);
+            } else if manual || d.battle.is_some() || !matches!(d.order, DivisionOrder::Hold) {
+                let decay = if manual {
+                    self.catalogue.rules.manual_planning_decay
+                } else {
+                    self.catalogue.rules.planning_decay
+                };
+                d.planning = (d.planning - decay / 24.0).max(0.0);
             }
         }
+        self.automatic_order = true;
         self.movement_step(world);
+        self.automatic_order = false;
         let battle_ids: Vec<_> = self
             .battles
             .iter()
@@ -1466,6 +2563,15 @@ impl Warfare {
             .collect();
         for id in battle_ids {
             let mut battle = self.battles.remove(&id).unwrap();
+            let active: Vec<_> = battle
+                .attackers
+                .active
+                .iter()
+                .chain(&battle.defenders.active)
+                .copied()
+                .collect();
+            self.command.gain_combat_xp(&active);
+            self.command.advance_levels(&mut self.rng);
             let env = self.environment(&battle, world, hour);
             if let Some(trace) = battle.step(
                 &mut self.divisions,
@@ -1507,6 +2613,7 @@ impl Warfare {
                 .iter()
                 .filter(|(_, d)| {
                     Some(d.country.as_str()) != player
+                        && !self.command.membership.contains_key(&d.id)
                         && d.fighting()
                         && d.battle.is_none()
                         && d.attack_delay == 0
@@ -1530,6 +2637,14 @@ impl Warfare {
                 let _ = self.attack(&tag, &[id], target, world);
             }
         }
+        if world.control_revision != initial_control_revision {
+            self.fronts.active_orders = self.plans.active_divisions();
+            let mut fronts = std::mem::take(&mut self.fronts);
+            self.automatic_order = true;
+            fronts.tick(self, world);
+            self.automatic_order = false;
+            self.fronts = fronts;
+        }
     }
 }
 
@@ -1544,6 +2659,36 @@ pub(crate) mod tests {
         let mut w = Warfare::new(c);
         w.ai_enabled = false;
         w
+    }
+    #[test]
+    fn support_attack_never_occupies_and_movement_modifies_regain_instead_of_draining_org() {
+        let mut world = world();
+        let mut w = army();
+        let a = division(1, "A", 1);
+        let mut support = division(2, "A", 1);
+        let b = division(3, "B", 2);
+        support.organization = 20.0;
+        support.derived.stats.recovery = 1.0;
+        support.derived.stats.speed = 0.01;
+        w.divisions = BTreeMap::from([(1, a), (2, support), (3, b)]);
+        w.declare_war("A", "B", &world).unwrap();
+        let id = w.attack("A", &[1], 2, &world).unwrap();
+        assert_eq!(w.support_attack("A", &[2], 2, &world).unwrap(), id);
+        let mut battle = w.battles[&id].clone();
+        battle.outcome = Some(BattleOutcome::AttackerWon);
+        w.finish_battle(&battle, &world);
+        assert!(matches!(w.divisions[&2].order, DivisionOrder::Hold));
+        assert!(matches!(w.divisions[&1].order, DivisionOrder::Move { .. }));
+        assert_eq!(w.divisions[&2].province, 1);
+        w.battles.clear();
+        w.divisions.remove(&1);
+        w.divisions.remove(&3);
+        world.set_province_controller(2, Some("A"));
+        w.issue_move("A", &[2], 2, &world, false, false).unwrap();
+        w.tick_hour(&mut world, GameDate::START, 12, 1, Some("A"));
+        assert!((w.divisions[&2].organization - 20.6).abs() < 1e-9);
+        assert_eq!(w.divisions[&2].province, 1);
+        assert!(w.support_attack("A", &[2], 3, &world).is_err());
     }
     #[test]
     fn replacing_a_move_cancels_the_previous_waypoints_and_stop_clears_intent() {
@@ -1668,7 +2813,7 @@ pub(crate) mod tests {
         w.move_to("A", &[1], 3, &world, false).unwrap();
         w.movement_step(&mut world);
         assert_eq!(w.divisions[&1].province, 3);
-        assert!(w.divisions[&1].organization < 60.0);
+        assert_eq!(w.divisions[&1].organization, 60.0);
     }
     #[test]
     fn defending_withdrawal_obeys_minimum_time_and_uses_a_friendly_retreat_route() {
@@ -1892,5 +3037,143 @@ mod research_registry_integration {
             )
             .unwrap();
         assert_eq!(once.stats.soft_attack, twice.stats.soft_attack);
+    }
+}
+
+#[cfg(test)]
+mod designer_transactions {
+    use super::*;
+    use crate::military_model::tests::{catalogue, template};
+    #[test]
+    fn editing_and_refilling_conserve_real_equipment_and_manpower() {
+        let mut db = catalogue();
+        db.units
+            .get_mut("infantry")
+            .unwrap()
+            .need
+            .insert("rifles".into(), 100.0);
+        let mut artillery = db.units["infantry"].clone();
+        artillery.id = "artillery".into();
+        artillery.need = BTreeMap::from([("guns".into(), 12.0)]);
+        artillery.stats.insert("combat_width".into(), 3.0);
+        artillery.stats.insert("manpower".into(), 500.0);
+        db.units.insert("artillery".into(), artillery);
+        for (id, archetype, attack) in [("rifle_1", "rifles", 10.0), ("gun_1", "guns", 30.0)] {
+            db.equipment.insert(
+                id.into(),
+                EquipmentDefinition {
+                    id: id.into(),
+                    archetype: archetype.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats: BTreeMap::from([("soft_attack".into(), attack)]),
+                    cost: 1.0,
+                    modular: false,
+                    source: "authored fixture".into(),
+                },
+            );
+        }
+        let mut w = Warfare::new(db);
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                manpower_pool: 1000,
+                ..Default::default()
+            },
+        );
+        let t = template();
+        w.countries
+            .get_mut("A")
+            .unwrap()
+            .templates
+            .insert(t.name.clone(), t.clone());
+        let world = super::tests::world();
+        let id = w
+            .spawn_history("A", &t.name, 1, "Existing", 1.0, 1.0, 0.3, &world)
+            .unwrap();
+        let mut changed = t.clone();
+        changed.name = "Combined".into();
+        changed.line.push(BattalionSlot {
+            unit: "artillery".into(),
+            column: 0,
+            row: 1,
+        });
+        changed.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: None,
+            row: 0,
+        });
+        assert!(
+            w.save_template("A", Some(&t.name), changed.clone())
+                .is_err()
+        );
+        assert_eq!(w.divisions[&id].template, t.name);
+        w.countries.get_mut("A").unwrap().army_xp = 15.0;
+        w.copy_template("A", &t.name, "Copy").unwrap();
+        assert_eq!(w.countries["A"].army_xp, 15.0);
+        w.save_template("A", Some(&t.name), changed.clone())
+            .unwrap();
+        assert_eq!(w.divisions[&id].template, "Combined");
+        assert_eq!(w.divisions[&id].equipment.get("gun_1"), None);
+        assert_eq!(w.divisions[&id].derived.stats.width, 5.0);
+        let before = w.divisions[&id].derived.stats.soft_attack;
+        let men = w.divisions[&id].derived.stats.manpower.ceil() as u32;
+        let missing = men - w.divisions[&id].manpower;
+        w.countries.get_mut("A").unwrap().manpower_pool = u64::from(missing);
+        let mut production = ProductionState::default();
+        production
+            .country_mut("A")
+            .model_stockpile
+            .insert("gun_1".into(), 12);
+        w.replenish(&mut production);
+        assert_eq!(w.divisions[&id].equipment["gun_1"], 12);
+        assert_eq!(production.country("A").unwrap().model_stockpile["gun_1"], 0);
+        assert_eq!(w.countries["A"].manpower_pool, 0);
+        assert!(w.divisions[&id].derived.stats.soft_attack > before);
+        let mut smaller = changed.clone();
+        smaller.line.retain(|s| s.unit == "infantry");
+        smaller.support.clear();
+        w.countries.get_mut("A").unwrap().army_xp = 15.0;
+        w.save_template("A", Some("Combined"), smaller).unwrap();
+        w.return_surplus(id, &mut production);
+        assert_eq!(
+            production.country("A").unwrap().model_stockpile["gun_1"],
+            12
+        );
+        assert_eq!(w.countries["A"].manpower_pool, u64::from(missing));
+        w.return_surplus(id, &mut production);
+        assert_eq!(
+            production.country("A").unwrap().model_stockpile["gun_1"],
+            12
+        );
+    }
+    #[test]
+    fn moving_battalions_is_free_and_regimental_support_requires_a_verified_cost() {
+        let mut db = catalogue();
+        let t = template();
+        let mut moved = t.clone();
+        moved.line[0].column = 1;
+        assert_eq!(db.edit_cost(&t, &moved).unwrap(), 0.0);
+        db.units.get_mut("engineer").unwrap().regimental = true;
+        let mut reg = t.clone();
+        reg.support.push(SupportSlot {
+            unit: "engineer".into(),
+            regiment: Some(0),
+            row: 0,
+        });
+        assert!(db.edit_cost(&t, &reg).is_err());
+        db.rules.regimental_support_edit_xp = Some(7.0);
+        assert_eq!(db.edit_cost(&t, &reg).unwrap(), 7.0);
+        let mut m = MilitaryModifiers::default();
+        m.country
+            .insert("unit_infantry_design_cost_factor".into(), -1.0);
+        let mut added = t.clone();
+        added.line.push(BattalionSlot {
+            unit: "infantry".into(),
+            column: 0,
+            row: 1,
+        });
+        assert_eq!(db.edit_cost_with_modifiers(&t, &added, &m).unwrap(), 0.0);
     }
 }

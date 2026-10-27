@@ -1,0 +1,5 @@
+recruit_character=TEST_general
+recruit_character=TEST_multi
+recruit_character=TEST_marshal
+set_oob=TEST_1936
+1939.1.1={set_oob=TEST_1939}

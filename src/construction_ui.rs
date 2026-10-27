@@ -301,13 +301,11 @@ pub fn draw(
     let trade = capacity.map_or(0, |stats| stats.trade);
     let active_lines: usize = queues
         .iter()
-        .filter(|(id, _)| {
-            world
-                .states
-                .get(id)
-                .is_some_and(|s| s.owner.as_deref() == Some(tag))
+        .map(|(&id, q)| {
+            q.iter()
+                .filter(|p| construction::project_belongs(world, id, p, tag))
+                .count()
         })
-        .map(|(_, q)| q.len())
         .sum();
 
     let stat_y = area.y + 43.0;

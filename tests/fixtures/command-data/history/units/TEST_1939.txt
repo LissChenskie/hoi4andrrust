@@ -1,0 +1,2 @@
+division_template={name=TestArmour regiments={light_armor={x=0 y=0}}}
+units={division={name=TestLater division_template=TestArmour location=1 start_experience_factor=0.1}}

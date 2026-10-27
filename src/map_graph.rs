@@ -102,6 +102,8 @@ pub struct ProvinceGeography {
     /// A future movement model must calibrate pixel distances to game distances.
     pub center: Option<MapPosition>,
     pub pixel_count: u64,
+    /// Additional scripted VP; every province also contributes the base 0.1.
+    pub victory_points: f64,
     pub bounds: Option<ProvinceBounds>,
 }
 
@@ -144,6 +146,9 @@ pub struct MapGraph {
     pub height: u32,
     pub wrap_x: bool,
     pub provinces: BTreeMap<u32, ProvinceGeography>,
+    /// Compressed physical land-border segments in raster coordinates. Built
+    /// once with the graph, shared by front hit testing and rendering.
+    pub border_segments: BTreeMap<(u32, u32), Vec<[u32; 4]>>,
     /// Retained script data, not an automatically granted passage permission.
     pub adjacency_rules_source: Option<String>,
     connections: BTreeMap<u32, Vec<Connection>>,
@@ -170,6 +175,14 @@ impl MapGraph {
         h.finish()
     }
 
+    pub fn snapshot_fingerprint(&self) -> u64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        self.source_fingerprint.hash(&mut h);
+        self.wrap_x.hash(&mut h);
+        format!("{:?}", self.connections).hash(&mut h);
+        self.adjacency_rules_source.hash(&mut h);
+        h.finish()
+    }
     pub fn matches_source(&self, width: u32, height: u32, rgba: &[u8], definition: &str) -> bool {
         self.source_fingerprint == Self::fingerprint(width, height, rgba, definition)
     }
@@ -203,10 +216,17 @@ impl MapGraph {
             .map(|x| (f64::from(x) * std::f64::consts::TAU / f64::from(width)).sin_cos())
             .collect();
         let mut borders = BTreeSet::new();
-        let mut add_border = |a: usize, b: usize| {
+        let mut border_segments = BTreeMap::<(u32, u32), Vec<[u32; 4]>>::new();
+        let mut add_border = |a: usize, b: usize, segment: [u32; 4]| {
             if a != usize::MAX && b != usize::MAX && a != b {
+                let land = definitions[a].kind == ProvinceKind::Land
+                    && definitions[b].kind == ProvinceKind::Land;
                 let (a, b) = (definitions[a].id, definitions[b].id);
-                borders.insert((a.min(b), a.max(b)));
+                let key = (a.min(b), a.max(b));
+                borders.insert(key);
+                if land {
+                    border_segments.entry(key).or_default().push(segment);
+                }
             }
         };
         for y in 0..height as usize {
@@ -245,14 +265,18 @@ impl MapGraph {
                     }
                 }
                 if x > 0 {
-                    add_border(i, current[x - 1]);
+                    add_border(
+                        i,
+                        current[x - 1],
+                        [x as u32, y as u32, x as u32, y as u32 + 1],
+                    );
                 }
                 if y > 0 {
-                    add_border(i, previous[x]);
+                    add_border(i, previous[x], [x as u32, y as u32, x as u32 + 1, y as u32]);
                 }
             }
             if wrap_x && w > 1 {
-                add_border(current[0], current[w - 1]);
+                add_border(current[0], current[w - 1], [0, y as u32, 0, y as u32 + 1]);
             }
             std::mem::swap(&mut current, &mut previous);
         }
@@ -278,12 +302,36 @@ impl MapGraph {
                         definition,
                         center,
                         pixel_count: t.count,
+                        victory_points: 0.0,
                         bounds: t.bounds,
                     },
                 )
             })
             .collect();
+        for segments in border_segments.values_mut() {
+            segments.sort_unstable_by_key(|s| {
+                if s[0] == s[2] {
+                    (0, s[0], s[1])
+                } else {
+                    (1, s[1], s[0])
+                }
+            });
+            let mut merged: Vec<[u32; 4]> = Vec::new();
+            for &s in segments.iter() {
+                if let Some(last) = merged.last_mut() {
+                    if last[2] == s[0] && last[3] == s[1] && (last[0] == last[2]) == (s[0] == s[2])
+                    {
+                        last[2] = s[2];
+                        last[3] = s[3];
+                        continue;
+                    }
+                }
+                merged.push(s);
+            }
+            *segments = merged;
+        }
         let mut graph = Self {
+            border_segments,
             width,
             height,
             wrap_x,

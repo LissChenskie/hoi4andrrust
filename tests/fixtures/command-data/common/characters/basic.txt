@@ -1,0 +1,14 @@
+# Original authored test data, not a historical commander.
+characters = {
+ TEST_general = {
+  name = TEST_GENERAL_NAME
+  portraits = { army = { small = GFX_own_placeholder } }
+  corps_commander = {
+   skill = 2 attack_skill = 3 defense_skill = 2 planning_skill = 1 logistics_skill = 4
+   traits = { test_organizer }
+   experience = 7.5
+   future_role_field = { value >= 2 }
+  }
+  future_character_field = { repeated = one repeated = two }
+ }
+}

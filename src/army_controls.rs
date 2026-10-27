@@ -95,6 +95,36 @@ pub struct Counter {
     pub ids: Vec<DivisionId>,
     pub rect: Rect,
 }
+#[derive(Debug, Clone)]
+pub struct BattleMarker {
+    pub id: u64,
+    pub rect: Rect,
+}
+pub fn battle_markers(
+    world: &World,
+    w: &Warfare,
+    tag: &str,
+    source: Rect,
+    area: Rect,
+) -> Vec<BattleMarker> {
+    w.battles
+        .values()
+        .filter(|b| {
+            b.outcome.is_none()
+                && b.origins
+                    .keys()
+                    .chain(&b.defenders.active)
+                    .chain(&b.defenders.reserves)
+                    .any(|id| w.divisions.get(id).is_some_and(|d| d.country == tag))
+        })
+        .filter_map(|b| {
+            let p = project(world, b.province, source, area)?;
+            let rect = Rect::new(p.x + 28.0, p.y + 17.0, 30.0, 30.0);
+            area.overlaps(&rect)
+                .then_some(BattleMarker { id: b.id, rect })
+        })
+        .collect()
+}
 pub fn project(world: &World, province: u32, source: Rect, area: Rect) -> Option<Vec2> {
     let p = world.geography.provinces.get(&province)?.center?;
     Some(vec2(

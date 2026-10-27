@@ -13,24 +13,44 @@ pub const EDGE: Color = Color::new(0.36, 0.39, 0.38, 1.0);
 
 /// Research content is clipped by the renderer, including partially visible
 /// cards and connectors. Scissors use physical framebuffer pixels on HiDPI.
-pub struct ClipGuard;
-pub fn clip(rect: Rect) -> ClipGuard {
+pub struct ClipGuard {
+    previous: Option<Rect>,
+}
+fn set_clip(rect: Option<Rect>) {
     let dpi = macroquad::window::screen_dpi_scale();
     unsafe {
-        macroquad::window::get_internal_gl().quad_gl.scissor(Some((
-            (rect.x * dpi).round() as i32,
-            (rect.y * dpi).round() as i32,
-            (rect.w * dpi).round().max(0.0) as i32,
-            (rect.h * dpi).round().max(0.0) as i32,
-        )));
+        macroquad::window::get_internal_gl()
+            .quad_gl
+            .scissor(rect.map(|r| {
+                (
+                    (r.x * dpi).round() as i32,
+                    (r.y * dpi).round() as i32,
+                    (r.w * dpi).round().max(0.0) as i32,
+                    (r.h * dpi).round().max(0.0) as i32,
+                )
+            }));
     }
-    ClipGuard
+}
+pub fn clip(rect: Rect) -> ClipGuard {
+    let previous = CLIP_RECT.with(|c| c.get());
+    let rect = previous.map_or(rect, |p| {
+        let x = p.x.max(rect.x);
+        let y = p.y.max(rect.y);
+        Rect::new(
+            x,
+            y,
+            (p.right().min(rect.right()) - x).max(0.0),
+            (p.bottom().min(rect.bottom()) - y).max(0.0),
+        )
+    });
+    CLIP_RECT.with(|c| c.set(Some(rect)));
+    set_clip(Some(rect));
+    ClipGuard { previous }
 }
 impl Drop for ClipGuard {
     fn drop(&mut self) {
-        unsafe {
-            macroquad::window::get_internal_gl().quad_gl.scissor(None);
-        }
+        CLIP_RECT.with(|c| c.set(self.previous));
+        set_clip(self.previous);
     }
 }
 
@@ -97,6 +117,9 @@ pub fn inside(rect: Rect) -> bool {
         return false;
     }
     let (mx, my) = mouse_position();
+    if CLIP_RECT.with(|c| c.get().is_some_and(|r| !r.contains(vec2(mx, my)))) {
+        return false;
+    }
     mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h
 }
 
@@ -221,14 +244,11 @@ pub fn label(text: &str, r: Rect, size: f32, color: Color) {
     }
     draw_ui_text(&shown, r.x, r.y + size, size, color);
 }
-/// Bounded multiline text for loading errors and other prose. Long path/ID
-/// tokens are split on character boundaries and overflow gets an ellipsis.
-pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
-    let step = size + 6.0;
-    let visible = (r.h / step).floor().max(0.0) as usize;
-    if r.w <= 1.0 || visible == 0 {
-        return;
-    }
+/// Actual wrapped height, allowing long details to scroll without truncation.
+pub fn paragraph_height(text: &str, width: f32, size: f32) -> f32 {
+    wrapped_lines(text, width, size).len() as f32 * (size + 6.0)
+}
+fn wrapped_lines(text: &str, width: f32, size: f32) -> Vec<String> {
     let mut lines = Vec::new();
     for source in text.lines() {
         let mut line = String::new();
@@ -238,7 +258,7 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             } else {
                 format!("{line} {word}")
             };
-            if measure_ui_text(&next, size as u16).width <= r.w {
+            if measure_ui_text(&next, size as u16).width <= width {
                 line = next;
                 continue;
             }
@@ -247,7 +267,7 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             }
             for ch in word.chars() {
                 let next = format!("{line}{ch}");
-                if !line.is_empty() && measure_ui_text(&next, size as u16).width > r.w {
+                if !line.is_empty() && measure_ui_text(&next, size as u16).width > width {
                     lines.push(std::mem::take(&mut line));
                 }
                 line.push(ch);
@@ -257,6 +277,16 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             lines.push(line);
         }
     }
+    lines
+}
+/// Bounded multiline text; long tokens split on characters and overflow gets an ellipsis.
+pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
+    let step = size + 6.0;
+    let visible = (r.h / step).floor().max(0.0) as usize;
+    if r.w <= 1.0 || visible == 0 {
+        return;
+    }
+    let lines = wrapped_lines(text, r.w, size);
     for (i, line) in lines.iter().take(visible).enumerate() {
         let mut shown = line.clone();
         if i + 1 == visible && lines.len() > visible {
@@ -332,6 +362,7 @@ struct TooltipState {
     anchor: Vec2,
 }
 thread_local! {
+    static CLIP_RECT: std::cell::Cell<Option<Rect>> = const {std::cell::Cell::new(None)};
     static SCROLL_DRAG: std::cell::RefCell<Option<(Rect,f32)>> = const { std::cell::RefCell::new(None) };
     static INPUT_BLOCKED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static TOOLTIPS: std::cell::RefCell<TooltipState> = std::cell::RefCell::new(TooltipState::default());

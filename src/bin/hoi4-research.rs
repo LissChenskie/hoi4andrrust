@@ -82,6 +82,24 @@ fn select_dlcs(
     }
     Ok(None)
 }
+/// The same explicit support-map subset is copied on export and --game audit.
+fn copy_support_map(game: &Path, output: &Path) -> Result<(), String> {
+    fs::create_dir_all(output.join("map")).map_err(|e| e.to_string())?;
+    for name in ["railways.txt", "supply_nodes.txt"] {
+        let source = game.join("map").join(name);
+        let target = output.join("map").join(name);
+        if source.is_file() && source != target {
+            fs::copy(source, target).map_err(|e| e.to_string())?;
+        }
+    }
+    if game != output {
+        copy_tree(
+            &game.join("map/strategicregions"),
+            &output.join("map/strategicregions"),
+        )?;
+    }
+    Ok(())
+}
 fn copy_metadata(game: &Path, output: &Path) -> Result<(), String> {
     for name in ["launcher-settings.json", "version.txt"] {
         if game.join(name).is_file() && game.join(name) != output.join(name) {
@@ -97,6 +115,7 @@ fn refresh_metadata(root: &Path, args: &[String]) -> Result<(), String> {
     }
     if let Some(game) = arg(args, "--game") {
         copy_metadata(Path::new(&game), root)?;
+        copy_support_map(Path::new(&game), root)?;
     }
     let mut install = installation(root);
     if !root.join("research-import.json").is_file() {
@@ -191,6 +210,12 @@ fn export(args: &[String]) -> Result<(), String> {
     fs::create_dir(&staging).map_err(|e| e.to_string())?;
     let operation = (|| {
         copy_metadata(&game, &staging)?;
+        copy_support_map(&game, &staging)?;
+        for name in ["military_support.json", "military-command-profile.json"] {
+            if output.join(name).is_file() {
+                fs::copy(output.join(name), staging.join(name)).map_err(|e| e.to_string())?;
+            }
+        }
         for rel in ["common", "history", "events", "localisation", "interface"] {
             copy_tree(&game.join(rel), &staging.join(rel))?;
         }
@@ -355,6 +380,37 @@ fn compile(root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn support_map_export_copies_real_networks_and_regions_only() {
+        let root = std::env::temp_dir().join(format!("hoi4-support-export-{}", std::process::id()));
+        let game = root.join("game");
+        let out = root.join("out");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(game.join("map/strategicregions")).unwrap();
+        fs::write(game.join("map/railways.txt"), "2 2 1 2").unwrap();
+        fs::write(game.join("map/supply_nodes.txt"), "1 2").unwrap();
+        fs::write(
+            game.join("map/strategicregions/a.txt"),
+            "strategic_region={id=1 provinces={1 2}}",
+        )
+        .unwrap();
+        fs::write(game.join("map/unrelated.bmp"), "not copied").unwrap();
+        copy_support_map(&game, &out).unwrap();
+        assert_eq!(
+            fs::read_to_string(out.join("map/railways.txt")).unwrap(),
+            "2 2 1 2"
+        );
+        assert!(out.join("map/supply_nodes.txt").is_file());
+        assert!(out.join("map/strategicregions/a.txt").is_file());
+        assert!(!out.join("map/unrelated.bmp").exists());
+        fs::write(game.join("map/railways.txt"), "3 2 1 2").unwrap();
+        copy_support_map(&game, &out).unwrap();
+        assert_eq!(
+            fs::read_to_string(out.join("map/railways.txt")).unwrap(),
+            "3 2 1 2"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn all_installed_is_explicit_and_requires_complete_metadata() {
         let installed = vec![

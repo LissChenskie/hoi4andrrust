@@ -1,12 +1,13 @@
 //! Units, equipment, templates and runtime divisions. Independent from graphics.
 use crate::combat_rules::CombatRules;
 use crate::research_data::Entry;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub type DivisionId = u64;
 pub type StatBlock = BTreeMap<String, f64>;
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
     pub soft_attack: f64,
     pub hard_attack: f64,
@@ -70,7 +71,7 @@ impl Stats {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TerrainAdjustment {
     pub attack: f64,
     pub defense: f64,
@@ -86,7 +87,7 @@ impl TerrainAdjustment {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EquipmentDefinition {
     pub id: String,
     pub archetype: String,
@@ -99,7 +100,7 @@ pub struct EquipmentDefinition {
     pub source: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BattalionDefinition {
     pub id: String,
     pub group: String,
@@ -108,6 +109,8 @@ pub struct BattalionDefinition {
     pub divisional: bool,
     pub regimental: bool,
     pub affects_speed: bool,
+    #[serde(default)]
+    pub equipment_speed_multiplier: bool,
     pub stats: StatBlock,
     pub need: BTreeMap<String, f64>,
     pub terrain: BTreeMap<String, TerrainAdjustment>,
@@ -115,27 +118,30 @@ pub struct BattalionDefinition {
     pub source: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BattalionSlot {
     pub unit: String,
     pub column: usize,
     pub row: usize,
 }
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupportSlot {
     pub unit: String,
     pub regiment: Option<usize>,
     pub row: usize,
 }
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DivisionTemplate {
     pub name: String,
     pub line: Vec<BattalionSlot>,
     pub support: Vec<SupportSlot>,
     pub locked: bool,
+    pub icon: String,
+    pub division_type: Option<String>,
+    pub equipment_preferences: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TechnologyEffects {
     pub units: BTreeMap<String, StatBlock>,
     pub equipment: BTreeMap<String, StatBlock>,
@@ -146,19 +152,19 @@ pub struct TechnologyEffects {
     pub conditional_unlocks: Vec<ConditionalUnlock>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum UnlockKind {
     Unit,
     Equipment,
 }
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConditionalUnlock {
     pub kind: UnlockKind,
     pub conditions: Vec<Entry>,
     pub ids: BTreeSet<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TerrainDefinition {
     pub width: f64,
     pub extra_width: f64,
@@ -180,7 +186,7 @@ impl Default for TerrainDefinition {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tactic {
     pub id: String,
     pub attacker: bool,
@@ -199,9 +205,15 @@ pub struct Tactic {
     pub movement: f64,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MilitaryCatalogue {
     pub rules: CombatRules,
+    pub source_version: Option<String>,
+    pub infrastructure_max: Option<u16>,
+    pub source_checksum: Option<String>,
+    pub literal_defines: BTreeMap<String, f64>,
+    pub literal_arrays: BTreeMap<String, Vec<f64>>,
+    pub localisation: BTreeMap<String, String>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
     pub technologies: BTreeMap<String, TechnologyEffects>,
@@ -212,7 +224,7 @@ pub struct MilitaryCatalogue {
     pub source_files: BTreeMap<String, u64>,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MilitaryModifiers {
     pub country: StatBlock,
     pub unit: BTreeMap<String, StatBlock>,
@@ -263,8 +275,9 @@ impl MilitaryModifiers {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DerivedTemplate {
+    pub fuel_stats: Stats,
     pub stats: Stats,
     pub equipment: BTreeMap<String, f64>,
     pub model_requirements: BTreeMap<String, f64>,
@@ -274,6 +287,10 @@ pub struct DerivedTemplate {
 }
 
 impl MilitaryCatalogue {
+    pub fn label<'a>(&'a self, id: &'a str) -> &'a str {
+        self.localisation.get(id).map_or(id, String::as_str)
+    }
+
     pub fn default_terrain(&self, id: &str) -> TerrainDefinition {
         self.terrains.get(id).cloned().unwrap_or_else(|| {
             let (width, extra_width) = match id {
@@ -388,67 +405,95 @@ impl MilitaryCatalogue {
         Ok(())
     }
     pub fn edit_cost(&self, old: &DivisionTemplate, new: &DivisionTemplate) -> Result<f64, String> {
-        if old.locked {
+        self.edit_cost_with_modifiers(old, new, &MilitaryModifiers::default())
+    }
+    pub fn edit_cost_with_modifiers(
+        &self,
+        old: &DivisionTemplate,
+        new: &DivisionTemplate,
+        m: &MilitaryModifiers,
+    ) -> Result<f64, String> {
+        if old.locked && (old.line != new.line || old.support != new.support) {
             return Err("This template is locked".into());
         }
-        self.validate_template(new, &MilitaryModifiers::default(), false)?;
-        let old_positions: BTreeMap<_, _> = old
-            .line
-            .iter()
-            .map(|s| ((s.column, s.row), &s.unit))
-            .collect();
-        let new_positions: BTreeMap<_, _> = new
-            .line
-            .iter()
-            .map(|s| ((s.column, s.row), &s.unit))
-            .collect();
-        let positions: BTreeSet<_> = old_positions
-            .keys()
-            .chain(new_positions.keys())
-            .copied()
-            .collect();
-        let changed = positions
-            .iter()
-            .filter(|p| old_positions.get(p) != new_positions.get(p))
-            .count();
-        let old_support: BTreeMap<_, _> = old
+        self.validate_template(new, m, false)?;
+        let change = |old: Vec<String>, new: Vec<String>, base: f64| {
+            let mut before = BTreeMap::<String, usize>::new();
+            let mut after = BTreeMap::<String, usize>::new();
+            for u in old {
+                *before.entry(u).or_default() += 1;
+            }
+            for u in new {
+                *after.entry(u).or_default() += 1;
+            }
+            let ids: BTreeSet<_> = before.keys().chain(after.keys()).collect();
+            let mut add = 0.0;
+            let mut remove = 0.0;
+            for id in ids {
+                let a = after.get(id).copied().unwrap_or(0);
+                let b = before.get(id).copied().unwrap_or(0);
+                let price =
+                    base * (1.0 + m.value(&format!("unit_{id}_design_cost_factor"))).max(0.0);
+                add += a.saturating_sub(b) as f64 * price;
+                remove += b.saturating_sub(a) as f64 * price;
+            }
+            add.max(remove)
+        };
+        let line = change(
+            old.line.iter().map(|s| s.unit.clone()).collect(),
+            new.line.iter().map(|s| s.unit.clone()).collect(),
+            self.rules.line_edit_xp,
+        );
+        let support = change(
+            old.support
+                .iter()
+                .filter(|s| s.regiment.is_none())
+                .map(|s| s.unit.clone())
+                .collect(),
+            new.support
+                .iter()
+                .filter(|s| s.regiment.is_none())
+                .map(|s| s.unit.clone())
+                .collect(),
+            self.rules.support_edit_xp,
+        );
+        let old_reg: Vec<_> = old
             .support
             .iter()
-            .map(|s| ((s.regiment, s.row), &s.unit))
+            .filter(|s| s.regiment.is_some())
+            .map(|s| format!("{}:{}", s.regiment.unwrap(), s.unit))
             .collect();
-        let new_support: BTreeMap<_, _> = new
+        let new_reg: Vec<_> = new
             .support
             .iter()
-            .map(|s| ((s.regiment, s.row), &s.unit))
+            .filter(|s| s.regiment.is_some())
+            .map(|s| format!("{}:{}", s.regiment.unwrap(), s.unit))
             .collect();
-        let support_positions: BTreeSet<_> = old_support
-            .keys()
-            .chain(new_support.keys())
-            .copied()
-            .collect();
-        let support_changes = support_positions
-            .iter()
-            .filter(|p| old_support.get(p) != new_support.get(p))
-            .count();
-        let old_groups: BTreeSet<_> = old
-            .line
-            .iter()
-            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
-            .collect();
-        let new_groups: BTreeSet<_> = new
-            .line
-            .iter()
-            .filter_map(|s| self.units.get(&s.unit).map(|u| &u.group))
-            .collect();
+        let regimental = if old_reg == new_reg {
+            0.0
+        } else {
+            change(
+                old_reg,
+                new_reg,
+                self.rules
+                    .regimental_support_edit_xp
+                    .ok_or("Regimental Support edit cost was not imported for this version")?,
+            )
+        };
+        let groups = |t: &DivisionTemplate| {
+            t.line
+                .iter()
+                .filter_map(|s| self.units.get(&s.unit).map(|u| u.group.clone()))
+                .collect::<BTreeSet<_>>()
+        };
+        let old_groups = groups(old);
+        let new_groups = groups(new);
         let extra = new_groups
             .difference(&old_groups)
             .count()
             .saturating_sub(usize::from(old_groups.is_empty()));
-        Ok(changed as f64 * self.rules.line_edit_xp
-            + support_changes as f64 * self.rules.support_edit_xp
-            + extra as f64 * self.rules.new_group_xp)
+        Ok(line + support + regimental + extra as f64 * self.rules.new_group_xp)
     }
-
     /// Equipment combat stats are averages per archetype, not multiplied by the
     /// number of rifles/tanks. Need counts determine cost and completeness.
     pub fn aggregate(
@@ -464,6 +509,8 @@ impl MilitaryCatalogue {
         let mut hardness = 0.0;
         let mut speed = f64::INFINITY;
         let mut count = 0usize;
+        let mut supply_factor = m.value("supply_consumption_factor");
+        let mut fuel_factor = m.value("fuel_consumption_factor");
         for (id, is_support) in t
             .line
             .iter()
@@ -479,6 +526,7 @@ impl MilitaryCatalogue {
             }
             let mut s = Stats::from_block(&values);
             let mut eq = StatBlock::new();
+            let mut equipment_speed: f64 = 0.0;
             for (archetype, need) in &u.need {
                 *result.equipment.entry(archetype.clone()).or_default() += *need;
                 let selected: Vec<(&EquipmentDefinition, f64)> = if let Some(inventory) = inventory
@@ -502,13 +550,22 @@ impl MilitaryCatalogue {
                         })
                         .collect()
                 } else {
-                    self.best_equipment(archetype, m)
+                    t.equipment_preferences
+                        .get(archetype)
+                        .and_then(|id| self.equipment.get(id))
+                        .filter(|e| e.archetype == *archetype && self.equipment_available(&e.id, m))
+                        .or_else(|| self.best_equipment(archetype, m))
                         .map(|e| vec![(e, 1.0)])
                         .unwrap_or_default()
                 };
                 if selected.is_empty() && inventory.is_none() {
                     return Err(format!("No usable equipment for {archetype}"));
                 }
+                let archetype_speed: f64 = selected
+                    .iter()
+                    .map(|(e, w)| e.stats.get("maximum_speed").copied().unwrap_or(0.0) * w)
+                    .sum();
+                equipment_speed = equipment_speed.max(archetype_speed);
                 for (e, weight) in selected {
                     result.equipment_cost += need * e.cost * weight;
                     *result.model_requirements.entry(e.id.clone()).or_default() += need * weight;
@@ -544,15 +601,39 @@ impl MilitaryCatalogue {
                 s.air_attack = adjusted("air_attack");
                 s.hardness =
                     (s.hardness + eq.get("hardness").copied().unwrap_or(0.0)).clamp(0.0, 1.0);
-                let equipment_speed = eq.get("maximum_speed").copied().unwrap_or(0.0);
                 if equipment_speed > 0.0 {
-                    s.speed = if s.speed > 0.0 {
+                    s.speed = if u.equipment_speed_multiplier {
+                        equipment_speed
+                            * (1.0 + values.get("maximum_speed").copied().unwrap_or(0.0)).max(0.0)
+                    } else if s.speed > 0.0 {
                         s.speed.min(equipment_speed)
                     } else {
                         equipment_speed
                     };
                 }
+                if u.equipment_speed_multiplier {
+                    s.fuel = adjusted("fuel_consumption")
+                        * values
+                            .get("own_equipment_fuel_consumption_mult")
+                            .copied()
+                            .unwrap_or(1.0)
+                            .max(0.0);
+                }
                 s.reliability = eq.get("reliability").copied().unwrap_or(0.0);
+            }
+            supply_factor += values
+                .get("supply_consumption_factor")
+                .copied()
+                .unwrap_or(0.0);
+            fuel_factor += values
+                .get("fuel_consumption_factor")
+                .copied()
+                .unwrap_or(0.0);
+            if s.fuel > 0.0 {
+                result.fuel_stats.soft_attack += s.soft_attack;
+                result.fuel_stats.hard_attack += s.hard_attack;
+                result.fuel_stats.defense += s.defense;
+                result.fuel_stats.breakthrough += s.breakthrough;
             }
             let a = &mut result.stats;
             a.soft_attack += s.soft_attack;
@@ -607,18 +688,40 @@ impl MilitaryCatalogue {
         };
         a.armor = combine(&armor, self.rules.armor_max_weight);
         a.piercing = combine(&piercing, self.rules.piercing_max_weight);
+        let total_equipment: f64 = result.model_requirements.values().sum();
+        a.reliability = if total_equipment > 0.0 {
+            result
+                .model_requirements
+                .iter()
+                .filter_map(|(id, n)| {
+                    self.equipment
+                        .get(id)
+                        .map(|e| n * e.stats.get("reliability").copied().unwrap_or(0.0))
+                })
+                .sum::<f64>()
+                / total_equipment
+        } else {
+            0.0
+        };
         a.speed = if speed.is_finite() { speed } else { 0.0 };
-        a.supply *= (1.0 + m.value("supply_consumption_factor")).max(0.0);
+        a.supply *= (1.0 + supply_factor).max(0.0);
+        a.fuel *= (1.0 + fuel_factor).max(0.0);
         a.organization *= (1.0 + m.value("army_org_factor")).max(0.0);
         a.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
         a.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
         a.defense *= (1.0 + m.value("army_defence_factor")).max(0.0);
-        a.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        a.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0)
+            * (1.0 + m.value("breakthrough_factor")).max(0.0);
+        result.fuel_stats.soft_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        result.fuel_stats.hard_attack *= (1.0 + m.value("army_attack_factor")).max(0.0);
+        result.fuel_stats.defense *= (1.0 + m.value("army_defence_factor")).max(0.0);
+        result.fuel_stats.breakthrough *= (1.0 + m.value("army_defence_factor")).max(0.0)
+            * (1.0 + m.value("breakthrough_factor")).max(0.0);
         Ok(result)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExperienceLevel {
     Green,
     Trained,
@@ -638,23 +741,24 @@ impl ExperienceLevel {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DivisionOrder {
     Hold,
     Move { path: Vec<u32>, progress_km: f64 },
     Attack { province: u32 },
+    SupportAttack { province: u32 },
     Retreat { destination: u32, progress_km: f64 },
     StrategicRedeployment { path: Vec<u32>, progress_km: f64 },
     Train { hours: f64 },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MoveObjective {
     pub province: u32,
     pub strategic: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Division {
     pub id: DivisionId,
     pub name: String,
@@ -673,6 +777,8 @@ pub struct Division {
     pub planning: f64,
     pub supply_fraction: f64,
     pub fuel_fraction: f64,
+    pub command: crate::command::CommanderBonuses,
+    pub ability_modifiers: StatBlock,
     pub commander_attack: f64,
     pub commander_defense: f64,
     pub reinforce_bonus: f64,
@@ -729,11 +835,12 @@ impl Division {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CountryArmy {
     pub templates: BTreeMap<String, DivisionTemplate>,
     pub manpower_pool: u64,
     pub army_xp: f64,
+    pub command_power: Option<f64>,
     pub modifiers: MilitaryModifiers,
     pub base_modifiers: StatBlock,
     pub history_expected: usize,
@@ -870,6 +977,7 @@ pub(crate) mod tests {
                     divisional: true,
                     regimental: false,
                     affects_speed: group != "support",
+                    equipment_speed_multiplier: false,
                     stats: StatBlock::from([
                         ("max_strength".into(), hp),
                         ("max_organisation".into(), org),
@@ -924,6 +1032,8 @@ pub(crate) mod tests {
             planning: 0.0,
             supply_fraction: 1.0,
             fuel_fraction: 1.0,
+            command: Default::default(),
+            ability_modifiers: Default::default(),
             commander_attack: 0.0,
             commander_defense: 0.0,
             reinforce_bonus: 0.0,
