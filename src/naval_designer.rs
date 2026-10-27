@@ -135,8 +135,10 @@ impl NavalDesignerCatalogue {
             let explicitly_unlocked = modifiers.unlocked_modules.contains(selected)
                 || modifiers.unlocked_modules.contains(&module.category)
                 || research.is_some_and(|r| {
-                    r.unlocks.contains(&format!("enable_equipment_modules:{selected}"))
-                        || r.unlocks.contains(&format!("enable_equipment_modules:{}",module.category))
+                    r.unlocks
+                        .contains(&format!("enable_equipment_modules:{selected}"))
+                        || r.unlocks
+                            .contains(&format!("enable_equipment_modules:{}", module.category))
                 });
             if !module.active && !is_default && !explicitly_unlocked {
                 return Err(format!("Модуль {selected} ещё не изучен"));
