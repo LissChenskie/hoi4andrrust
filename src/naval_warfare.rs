@@ -905,6 +905,34 @@ mod tests {
     }
 
     #[test]
+    fn navy_commanders_are_national_unique_and_survive_save() {
+        let mut navy = NavalState::default();
+        for (id, tag) in [(1, "A"), (2, "A"), (3, "B")] {
+            navy.task_forces.insert(id, NavalTaskForce {
+                id, country: tag.into(), name: format!("Fleet {id}"),
+                base: 1, mission: NavalMission::Hold,
+                regions: BTreeSet::new(), ships: Vec::new(),
+            });
+        }
+        for tag in ["A","B"] {
+            navy.admirals.insert((tag.into(), "Commander".into()), NavalAdmiral {
+                country: tag.into(), name: "Commander".into(), skill: 3, attack: 2,
+                defense: 3, maneuvering: 4, coordination: 2, traits: BTreeSet::new(),
+            });
+        }
+        navy.assign_admiral("A",1,Some("Commander")).unwrap();
+        assert!(navy.assign_admiral("A",2,Some("Commander")).is_err());
+        assert!(navy.assign_admiral("B",1,Some("Commander")).is_err());
+        navy.assign_admiral("B",3,Some("Commander")).unwrap();
+        let json = serde_json::to_string(&navy).unwrap();
+        let mut restored: NavalState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.admiral_for(1).unwrap().maneuvering, 4);
+        restored.assign_admiral("A",1,None).unwrap();
+        restored.assign_admiral("A",2,Some("Commander")).unwrap();
+        assert_eq!(restored.admiral_for(2).unwrap().skill, 3);
+    }
+
+    #[test]
     fn missions_cycle_through_actual_naval_commands() {
         let mut m = NavalMission::Hold;
         for _ in 0..5 {
