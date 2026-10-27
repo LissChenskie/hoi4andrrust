@@ -28,8 +28,11 @@ pub enum CarrierStance {
 }
 impl CarrierStance {
     pub const ALL: [Self; 5] = [
-        Self::FullyDefensive, Self::Cautious, Self::Balanced,
-        Self::Active, Self::Aggressive,
+        Self::FullyDefensive,
+        Self::Cautious,
+        Self::Balanced,
+        Self::Active,
+        Self::Aggressive,
     ];
     pub fn label(self) -> &'static str {
         match self {
@@ -51,9 +54,11 @@ impl CarrierStance {
             Self::Aggressive => 1.0,
         }
     }
-    pub fn defensive_fraction(self) -> f64 { 1.0 - self.offensive_fraction() }
+    pub fn defensive_fraction(self) -> f64 {
+        1.0 - self.offensive_fraction()
+    }
     pub fn next(self) -> Self {
-        let index=Self::ALL.iter().position(|v| *v == self).unwrap_or(2);
+        let index = Self::ALL.iter().position(|v| *v == self).unwrap_or(2);
         Self::ALL[(index + 1) % Self::ALL.len()]
     }
 }
@@ -138,18 +143,25 @@ impl NavalState {
         self.carrier_stances.get(&tf).copied().unwrap_or_default()
     }
     pub fn set_carrier_stance(
-        &mut self, country: &str, tf: u64, stance: CarrierStance, w: &Warfare,
+        &mut self,
+        country: &str,
+        tf: u64,
+        stance: CarrierStance,
+        w: &Warfare,
     ) -> Result<(), String> {
-        let force=self.task_forces.get(&tf).ok_or("Флот не найден")?;
+        let force = self.task_forces.get(&tf).ok_or("Флот не найден")?;
         if force.country != country {
             return Err("Нельзя менять настройку чужого флота".into());
         }
-        if !force.ships.iter().enumerate().any(|(index,_)|
-            self.carrier_capacity(tf,index,w)>0)
+        if !force
+            .ships
+            .iter()
+            .enumerate()
+            .any(|(index, _)| self.carrier_capacity(tf, index, w) > 0)
         {
             return Err("В соединении нет действующего авианосца".into());
         }
-        self.carrier_stances.insert(tf,stance);
+        self.carrier_stances.insert(tf, stance);
         Ok(())
     }
     pub fn carrier_capacity(&self, tf: u64, index: usize, w: &Warfare) -> u32 {
@@ -320,8 +332,10 @@ impl NavalState {
                 .copied()
                 .unwrap_or(0.)
         });
-        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0)
-            * self.carrier_stance(src).offensive_fraction()).clamp(0.0, 1.0);
+        let efficiency = (base_sortie_fraction
+            * (1.0 + sortie_modifier).max(0.0)
+            * self.carrier_stance(src).offensive_fraction())
+        .clamp(0.0, 1.0);
         let defending_fraction = self.carrier_stance(dst).defensive_fraction();
         let enemy_fighters = self
             .carrier_wings
@@ -521,46 +535,60 @@ mod tests {
     }
     #[test]
     fn official_five_carrier_stances_have_exact_published_split() {
-        let expected=[0.0,0.25,0.50,0.75,1.0];
-        for (stance,portion) in CarrierStance::ALL.iter().zip(expected) {
-            assert_eq!(stance.offensive_fraction(),portion);
-            assert_eq!(stance.defensive_fraction(),1.0-portion);
+        let expected = [0.0, 0.25, 0.50, 0.75, 1.0];
+        for (stance, portion) in CarrierStance::ALL.iter().zip(expected) {
+            assert_eq!(stance.offensive_fraction(), portion);
+            assert_eq!(stance.defensive_fraction(), 1.0 - portion);
         }
-        assert_eq!(CarrierStance::Aggressive.next(),CarrierStance::FullyDefensive);
-        assert_eq!(CarrierStance::default(),CarrierStance::Balanced);
+        assert_eq!(
+            CarrierStance::Aggressive.next(),
+            CarrierStance::FullyDefensive
+        );
+        assert_eq!(CarrierStance::default(), CarrierStance::Balanced);
     }
     #[test]
     fn stance_orders_check_national_authority_and_are_save_compatible() {
-        let (w,mut navy)=fixture();
-        assert!(navy.set_carrier_stance("B",1,CarrierStance::Aggressive,&w).is_err());
-        assert!(navy.set_carrier_stance("B",2,CarrierStance::Aggressive,&w).is_err());
-        navy.set_carrier_stance("A",1,CarrierStance::FullyDefensive,&w).unwrap();
-        assert_eq!(navy.carrier_stance(1),CarrierStance::FullyDefensive);
-        let json=serde_json::to_string(&navy).unwrap();
-        let saved:NavalState=serde_json::from_str(&json).unwrap();
-        assert_eq!(saved.carrier_stance(1),CarrierStance::FullyDefensive);
-        let mut old:serde_json::Value=serde_json::from_str(&json).unwrap();
+        let (w, mut navy) = fixture();
+        assert!(
+            navy.set_carrier_stance("B", 1, CarrierStance::Aggressive, &w)
+                .is_err()
+        );
+        assert!(
+            navy.set_carrier_stance("B", 2, CarrierStance::Aggressive, &w)
+                .is_err()
+        );
+        navy.set_carrier_stance("A", 1, CarrierStance::FullyDefensive, &w)
+            .unwrap();
+        assert_eq!(navy.carrier_stance(1), CarrierStance::FullyDefensive);
+        let json = serde_json::to_string(&navy).unwrap();
+        let saved: NavalState = serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.carrier_stance(1), CarrierStance::FullyDefensive);
+        let mut old: serde_json::Value = serde_json::from_str(&json).unwrap();
         old.as_object_mut().unwrap().remove("carrier_stances");
-        let old:NavalState=serde_json::from_value(old).unwrap();
-        assert_eq!(old.carrier_stance(1),CarrierStance::Balanced);
+        let old: NavalState = serde_json::from_value(old).unwrap();
+        assert_eq!(old.carrier_stance(1), CarrierStance::Balanced);
     }
     #[test]
     fn stance_limits_offensive_sorties_without_spawning_or_sacrificing_planes() {
-        let (w,mut navy)=fixture();
-        navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",10,&w).unwrap();
-        navy.carrier_wings.get_mut(&(1,0)).unwrap()[0].planes=10;
-        navy.set_carrier_stance("A",1,CarrierStance::FullyDefensive,&w).unwrap();
-        assert!(navy.carrier_air_strike(1,2,&w,4).is_empty());
-        assert_eq!(navy.carrier_wings[&(1,0)][0].last_launch,None);
-        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,10);
-        navy.set_carrier_stance("A",1,CarrierStance::Cautious,&w).unwrap();
-        let first=navy.carrier_air_strike(1,2,&w,4);
-        assert_eq!(first[0].aircraft_launched,3);
-        navy.set_carrier_stance("A",1,CarrierStance::Aggressive,&w).unwrap();
-        assert!(navy.carrier_air_strike(1,2,&w,5).is_empty());
-        let next=navy.carrier_air_strike(1,2,&w,8);
-        assert_eq!(next[0].aircraft_launched,10);
-        assert_eq!(navy.carrier_wings[&(1,0)][0].sorties,13);
+        let (w, mut navy) = fixture();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w)
+            .unwrap();
+        navy.carrier_wings.get_mut(&(1, 0)).unwrap()[0].planes = 10;
+        navy.set_carrier_stance("A", 1, CarrierStance::FullyDefensive, &w)
+            .unwrap();
+        assert!(navy.carrier_air_strike(1, 2, &w, 4).is_empty());
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].last_launch, None);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 10);
+        navy.set_carrier_stance("A", 1, CarrierStance::Cautious, &w)
+            .unwrap();
+        let first = navy.carrier_air_strike(1, 2, &w, 4);
+        assert_eq!(first[0].aircraft_launched, 3);
+        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w)
+            .unwrap();
+        assert!(navy.carrier_air_strike(1, 2, &w, 5).is_empty());
+        let next = navy.carrier_air_strike(1, 2, &w, 8);
+        assert_eq!(next[0].aircraft_launched, 10);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].sorties, 13);
     }
 
     #[test]
@@ -602,7 +630,8 @@ mod tests {
     fn imported_air_defines_override_the_old_nonexistent_names() {
         let (mut w, mut navy) = fixture();
         // Preserve the define-only regression independently of carrier stance.
-        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w).unwrap();
+        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w)
+            .unwrap();
         {
             let cat = std::sync::Arc::make_mut(&mut w.catalogue);
             cat.literal_defines.insert(
@@ -680,7 +709,8 @@ mod tests {
     #[test]
     fn inventory_funded_airgroups_launch_only_when_present_and_respect_cooldowns() {
         let (w, mut navy) = fixture();
-        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w).unwrap();
+        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w)
+            .unwrap();
         let world = test_world();
         navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
             .unwrap();
