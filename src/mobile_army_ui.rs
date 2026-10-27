@@ -371,15 +371,32 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                             AirMission::Interception => AirMission::CloseAirSupport,
                             AirMission::CloseAirSupport => AirMission::Standby,
                         };
-                        let res = w.air.assign(tag, a.id, next, target);
+                        let res = w.air.rebase_and_assign(
+                            tag,
+                            a.id,
+                            a.base,
+                            next,
+                            target,
+                            world,
+                            &w.catalogue,
+                        );
                         result(view, res, "Миссия назначена");
                     }
                     if rows.button("Назначить выбранные регион и базу", false)
                     {
-                        if let Some(base) = base {
-                            w.air.wings.get_mut(&a.id).unwrap().base = base;
-                        }
-                        let res = w.air.assign(tag, a.id, a.mission, target);
+                        let res = base
+                            .ok_or_else(|| "Выберите доступную авиабазу".to_owned())
+                            .and_then(|base| {
+                                w.air.rebase_and_assign(
+                                    tag,
+                                    a.id,
+                                    base,
+                                    a.mission,
+                                    target,
+                                    world,
+                                    &w.catalogue,
+                                )
+                            });
                         result(view, res, "Регион и база назначены");
                     }
                 }
