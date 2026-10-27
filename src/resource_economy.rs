@@ -87,6 +87,16 @@ impl ResourceEconomy {
         world: &mut World,
         policies: &BTreeMap<String, CountryConstructionPolicy>,
     ) {
+        self.settle_with_wars(world, policies, &std::collections::BTreeSet::new());
+    }
+
+    /// Active war automatically suspends direct resource deals between rivals.
+    pub fn settle_with_wars(
+        &mut self,
+        world: &mut World,
+        policies: &BTreeMap<String, CountryConstructionPolicy>,
+        wars: &std::collections::BTreeSet<(String, String)>,
+    ) {
         world.trade_factory_income.clear();
         let mut reports: BTreeMap<String, CountryResources> = world
             .countries
@@ -142,7 +152,13 @@ impl ResourceEconomy {
             );
         }
         for deal in &self.deals {
-            if deal.buyer == deal.seller
+            let rivals = if deal.buyer < deal.seller {
+                (deal.buyer.clone(), deal.seller.clone())
+            } else {
+                (deal.seller.clone(), deal.buyer.clone())
+            };
+            if wars.contains(&rivals)
+                || deal.buyer == deal.seller
                 || deal.factories == 0
                 || !reports.contains_key(&deal.buyer)
                 || !reports.contains_key(&deal.seller)
