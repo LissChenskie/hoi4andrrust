@@ -244,6 +244,13 @@ impl GameSession {
             &mut self.production,
             self.clock.date,
         );
+        // Naval OOBs use the same selected historical bookmarks as the land
+        // and air forces. Hull types are never manufactured as placeholders.
+        self.military.naval = crate::naval_warfare::import_naval_oob(
+            root,
+            &self.world,
+            &self.military,
+        );
         // Starting motorized hubs must claim vehicles from historical stockpiles.
         self.military.logistics.reserve_trucks(
             &mut self.production,
