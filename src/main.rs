@@ -39,6 +39,7 @@ mod production_ui;
 mod recruitment;
 mod recruitment_ui;
 mod resource_economy;
+mod trade_routes;
 pub use hoi4_mobile::pdx;
 pub use hoi4_mobile::research;
 pub use hoi4_mobile::research_data;

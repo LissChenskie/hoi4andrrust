@@ -327,7 +327,16 @@ impl GameSession {
             })
             .collect();
         self.resources
-            .settle_with_wars(&mut self.world, &policies, &self.military.wars);
+            .settle_with_transport(&mut self.world, &policies, &self.military);
+        // The naval supply network uses the convoys not reserved for commerce.
+        for tag in &tags {
+            let committed = self
+                .resources
+                .last
+                .get(tag)
+                .map_or(0, |report| report.trade_convoys_used);
+            self.military.logistics.set_trade_convoys(tag, committed);
+        }
         // Oil is not stockpiled as a raw material: the same delivered
         // oil flow funds fuel conversion every subsequent simulation hour.
         for tag in &tags {
