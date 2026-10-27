@@ -156,6 +156,9 @@ pub struct NavalState {
     /// Country-owned immutable blueprints referenced by ship variants.
     pub designs: BTreeMap<String, crate::naval_designer::NavalDesign>,
     pub next_design_id: u64,
+    /// On-deck squadrons, keyed by task force and ship index.
+    #[serde(default, with = "save_pairs")]
+    pub carrier_wings: BTreeMap<(u64, usize), Vec<crate::naval_carrier::CarrierAirGroup>>,
     pub rules: NavalRules,
     /// Fractional expected losses carried forward to preserve determinism.
     #[serde(default, with = "save_pairs")]
