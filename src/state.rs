@@ -60,6 +60,7 @@ pub struct StateDefinition {
 pub struct StateMembership {
     pub state_by_province: HashMap<u32, u32>,
     pub economy_by_state: HashMap<u32, StateEconomy>,
+    pub resources_by_state: HashMap<u32, std::collections::BTreeMap<String, u32>>,
     pub shared_slots_by_state: HashMap<u32, u16>,
     pub state_count: usize,
 }
@@ -625,6 +626,7 @@ pub fn load_state_membership_at(
 
         for mut state in definitions {
             state.economy = economy_at(&source, state.id, date)?;
+            let resources = resources_at(&source, state.id, date)?;
             if !state_ids.insert(state.id) {
                 return Err(format!(
                     "Duplicate state ID {} (found in {})",
@@ -633,6 +635,7 @@ pub fn load_state_membership_at(
                 ));
             }
             membership.economy_by_state.insert(state.id, state.economy);
+            membership.resources_by_state.insert(state.id, resources);
             let shared_slots = state
                 .state_category
                 .as_ref()
@@ -904,4 +907,84 @@ mod victory_point_regressions {
         assert_eq!(late[&1], 20.0);
         assert_eq!(late[&2], 10.0);
     }
+}
+
+#[cfg(test)]
+mod resource_history_tests {
+    use super::*;
+
+    #[test]
+    fn resources_preserve_categories_and_dated_bookmarks() {
+        let file = "state = { id=1 provinces={1} resources = { steel=12 oil=5 coal=9 } history={ 1937.1.1={ resources={steel=20 oil=4 coal=9} } 1942.1.1={resources={steel=100}} } }";
+        let start = resources_at(file, 1, crate::game::GameDate::START).unwrap();
+        assert_eq!(start["steel"], 12);
+        assert_eq!(start["oil"], 5);
+        assert_eq!(start["coal"], 9);
+        let later = resources_at(
+            file,
+            1,
+            crate::game::GameDate {
+                year: 1938,
+                month: 1,
+                day: 1,
+            },
+        )
+        .unwrap();
+        assert_eq!(later["steel"], 20);
+        assert_eq!(later["oil"], 4);
+        assert_eq!(later["coal"], 9);
+    }
+}
+
+/// State resource deposits from authoritative history, retaining unknown types
+/// (including coal) without hard-coded, invented geographical values.
+pub fn resources_at(
+    source: &str,
+    state_id: u32,
+    date: crate::game::GameDate,
+) -> Result<std::collections::BTreeMap<String, u32>, String> {
+    use crate::pdx::{Entry, atom, block, parse_pdx};
+    fn apply(
+        entries: &[Entry],
+        date: crate::game::GameDate,
+        out: &mut std::collections::BTreeMap<String, u32>,
+    ) {
+        let mut dated = Vec::new();
+        for entry in entries {
+            if entry.key == "resources" {
+                if let Some(values) = entry.block() {
+                    for value in values {
+                        if let Some(n) = value
+                            .atom()
+                            .and_then(|raw| raw.parse::<f64>().ok())
+                            .filter(|v| v.is_finite() && *v >= 0.0)
+                        {
+                            out.insert(value.key.clone(), n.floor().min(u32::MAX as f64) as u32);
+                        }
+                    }
+                }
+            }
+            if let Some(at) = hoi4_mobile::research_script::parse_date(&entry.key) {
+                if at <= date {
+                    dated.push((at, entry));
+                }
+            }
+        }
+        dated.sort_by_key(|(at, _)| *at);
+        for (_, entry) in dated {
+            apply(entry.block().unwrap_or(&[]), date, out);
+        }
+    }
+    let parsed = parse_pdx(source)?;
+    let mut out = std::collections::BTreeMap::new();
+    if let Some(state_block) = parsed
+        .iter()
+        .filter(|e| e.key == "state")
+        .filter_map(Entry::block)
+        .find(|b| atom(b, "id").and_then(|s| s.parse::<u32>().ok()) == Some(state_id))
+    {
+        apply(state_block, date, &mut out);
+        apply(block(state_block, "history").unwrap_or(&[]), date, &mut out);
+    }
+    Ok(out)
 }

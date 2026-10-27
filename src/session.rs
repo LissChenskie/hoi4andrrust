@@ -10,6 +10,7 @@ use crate::construction::{
 use crate::game::GameState;
 use crate::production::{ProductionRules, ProductionState};
 use crate::research::{ResearchCatalogue, ResearchRules, ResearchWorld};
+use crate::resource_economy::ResourceEconomy;
 use crate::world::World;
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -30,6 +31,8 @@ pub struct GameSession {
     pub base_shared_slots: BTreeMap<u32, u16>,
     pub construction: BTreeMap<String, CountryConstruction>,
     pub production: ProductionState,
+    #[serde(default)]
+    pub resources: ResourceEconomy,
     pub research: ResearchWorld,
     pub military: crate::warfare::Warfare,
 }
@@ -60,6 +63,7 @@ impl GameSession {
             player_country: None,
             construction_queues: ConstructionQueues::new(),
             production: ProductionState::default(),
+            resources: ResourceEconomy::default(),
             research: ResearchWorld::default(),
             military: crate::warfare::Warfare::default(),
         }
@@ -308,13 +312,66 @@ impl GameSession {
             .iter()
             .map(|(id, e)| (id.clone(), e.cost))
             .collect();
+        // Each midnight reroutes daily resources after the previous day's
+        // territorial changes. Imported resources are a flow, not a stockpile.
+        // Ignore yesterday's import payments when determining today's budget.
+        let policies: BTreeMap<_, _> = tags
+            .iter()
+            .map(|tag| {
+                let mut policy = self
+                    .construction
+                    .get(tag)
+                    .map_or(CountryConstructionPolicy::default(), |c| c.policy);
+                policy.trade_civilian_factories = 0;
+                (tag.clone(), policy)
+            })
+            .collect();
+        self.resources
+            .settle_with_wars(&mut self.world, &policies, &self.military.wars);
+        // Oil is not stockpiled as a raw material: the same delivered
+        // oil flow funds fuel conversion every subsequent simulation hour.
         for tag in &tags {
+            let delivered_oil = self
+                .resources
+                .last
+                .get(tag)
+                .and_then(|r| r.available.get("oil"))
+                .copied()
+                .unwrap_or(0);
+            self.military
+                .logistics
+                .countries
+                .entry(tag.clone())
+                .or_default()
+                .oil_supply_daily = if self.world.resources_by_state.is_empty() {
+                None
+            } else {
+                Some(f64::from(delivered_oil))
+            };
+        }
+        for tag in &tags {
+            self.construction
+                .entry(tag.clone())
+                .or_default()
+                .policy
+                .trade_civilian_factories = self
+                .resources
+                .last
+                .get(tag)
+                .map_or(0, |r| r.factories_spent);
             if let Some(economy) = self.world.country_economy(tag) {
                 let effective = production.for_research(self.research.country(tag));
-                self.production.country_mut(tag).tick_with_models(
+                let mut pool = self
+                    .resources
+                    .last
+                    .get(tag)
+                    .map_or_else(BTreeMap::new, |r| r.available.clone());
+                self.production.country_mut(tag).tick_with_resource_pool(
                     economy.military_factories,
                     &effective,
                     &costs,
+                    &self.military.catalogue.equipment_resources,
+                    &mut pool,
                 );
             }
         }

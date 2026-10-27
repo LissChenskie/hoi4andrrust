@@ -63,6 +63,8 @@ pub struct ProductionRules {
     pub powered_fraction: f64,
     pub factory_output_bonus: f64,
     pub resource_factor: f64,
+    /// Output penalty per missing unit of a required resource, per factory.
+    pub resource_lack_penalty: f64,
     pub starting_efficiency: f64,
     pub efficiency_cap: f64,
     pub efficiency_growth: f64,
@@ -80,6 +82,7 @@ impl Default for ProductionRules {
             powered_fraction: 1.0,
             factory_output_bonus: 0.0,
             resource_factor: 1.0,
+            resource_lack_penalty: 0.05,
             starting_efficiency: 0.10,
             efficiency_cap: 0.50,
             efficiency_growth: 0.001,
@@ -117,6 +120,13 @@ impl ProductionRules {
             {
                 *field = value * scale;
             }
+        }
+        if let Some(penalty) = defines
+            .get("NDefines.NProduction.PRODUCTION_RESOURCE_LACK_PENALTY")
+            .copied()
+            .filter(|v| v.is_finite() && *v <= 0.0)
+        {
+            r.resource_lack_penalty = (-penalty).clamp(0.0, 1.0);
         }
         r.starting_efficiency = r.starting_efficiency.min(r.efficiency_cap);
         r
@@ -194,6 +204,9 @@ pub struct CountryProduction {
     pub lines: Vec<ProductionLine>,
     pub stockpile: BTreeMap<Equipment, u64>,
     pub model_stockpile: BTreeMap<String, u64>,
+    /// Average material availability factor for each line's last production day.
+    #[serde(default)]
+    pub last_day_resource_factors: BTreeMap<u64, f64>,
     #[serde(default)]
     pub starting_data_applied: bool,
     next_id: u64,
@@ -352,7 +365,28 @@ impl CountryProduction {
         rules: &ProductionRules,
         model_costs: &BTreeMap<String, f64>,
     ) {
+        self.tick_with_resource_pool(
+            available_factories,
+            rules,
+            model_costs,
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        );
+    }
+
+    /// Assign finite non-stockpiled resources per factory in line priority
+    /// order. One missing resource penalizes only the affected factory, not
+    /// every line uniformly. Each factory consumes all inputs it can obtain.
+    pub fn tick_with_resource_pool(
+        &mut self,
+        available_factories: u32,
+        rules: &ProductionRules,
+        model_costs: &BTreeMap<String, f64>,
+        resource_costs: &BTreeMap<String, BTreeMap<String, u32>>,
+        resource_pool: &mut BTreeMap<String, u32>,
+    ) {
         let allocations = self.allocations(available_factories, rules);
+        self.last_day_resource_factors.clear();
         let ic_per_factory = rules.ic_per_factory();
         for (line, allocation) in self.lines.iter_mut().zip(allocations) {
             line.last_day_units = 0;
@@ -360,7 +394,29 @@ impl CountryProduction {
             if allocation.assigned == 0 || line.blocked_reason.is_some() {
                 continue;
             }
-            let ic = allocation.assigned as f64 * ic_per_factory * line.efficiency.max(0.0);
+            let inputs = line
+                .model
+                .as_ref()
+                .and_then(|model| resource_costs.get(model));
+            let mut available_factor_sum = 0.0;
+            for _ in 0..allocation.assigned {
+                let mut maximum_missing = 0;
+                if let Some(inputs) = inputs {
+                    for (resource, &needed) in inputs {
+                        let remaining = resource_pool.entry(resource.clone()).or_default();
+                        let shortfall = needed.saturating_sub(*remaining);
+                        maximum_missing = maximum_missing.max(shortfall);
+                        *remaining = remaining.saturating_sub(needed);
+                    }
+                }
+                available_factor_sum += (1.0
+                    - f64::from(maximum_missing) * rules.resource_lack_penalty)
+                    .clamp(0.0, 1.0);
+            }
+            let resource_factor = available_factor_sum / f64::from(allocation.assigned);
+            self.last_day_resource_factors
+                .insert(line.id, resource_factor);
+            let ic = available_factor_sum * ic_per_factory * line.efficiency.max(0.0);
             if !ic.is_finite() || ic <= 0.0 {
                 continue;
             }
@@ -663,5 +719,44 @@ mod historical_line_regressions {
         assert!(c.allocations(5, &rules).iter().all(|a| a.assigned == 0));
         c.tick_with_models(5, &rules, &BTreeMap::from([("rifle_1".into(), 1.0)]));
         assert_eq!(c.model_stockpile["rifle_1"], 3);
+    }
+}
+
+#[cfg(test)]
+mod material_allocation_tests {
+    use super::*;
+    #[test]
+    fn shortage_is_prioritized_per_factory_and_by_line_not_uniformly() {
+        let rules = ProductionRules {
+            resource_lack_penalty: 0.05,
+            ..Default::default()
+        };
+        let mut c = CountryProduction::default();
+        let top = c.create_model("steel_model", Equipment::InfantryKit, 2, &rules);
+        let bottom = c.create_model("steel_model", Equipment::InfantryKit, 2, &rules);
+        let costs = BTreeMap::from([("steel_model".into(), 1.0)]);
+        let inputs =
+            BTreeMap::from([("steel_model".into(), BTreeMap::from([("steel".into(), 2)]))]);
+        let mut pool = BTreeMap::from([("steel".into(), 5)]);
+        c.tick_with_resource_pool(4, &rules, &costs, &inputs, &mut pool);
+        assert_eq!(pool["steel"], 0);
+        assert_eq!(c.last_day_resource_factors[&top], 1.0);
+        assert!((c.last_day_resource_factors[&bottom] - 0.925).abs() < 1e-10);
+        assert!(c.lines[0].last_day_ic > c.lines[1].last_day_ic);
+    }
+    #[test]
+    fn materials_are_daily_flows_without_persisted_stocks() {
+        let rules = ProductionRules::default();
+        let mut c = CountryProduction::default();
+        let id = c.create_model("test", Equipment::InfantryKit, 1, &rules);
+        let costs = BTreeMap::from([("test".into(), 1.0)]);
+        let inputs = BTreeMap::from([("test".into(), BTreeMap::from([("rubber".into(), 1)]))]);
+        let mut pool = BTreeMap::from([("rubber".into(), 0)]);
+        c.tick_with_resource_pool(1, &rules, &costs, &inputs, &mut pool);
+        assert!((c.last_day_resource_factors[&id] - 0.95).abs() < 1e-9);
+        pool.insert("rubber".into(), 1);
+        c.tick_with_resource_pool(1, &rules, &costs, &inputs, &mut pool);
+        assert_eq!(c.last_day_resource_factors[&id], 1.0);
+        assert_eq!(pool["rubber"], 0);
     }
 }

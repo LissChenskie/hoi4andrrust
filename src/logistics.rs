@@ -81,6 +81,9 @@ pub struct CountryLogistics {
     pub fuel_capacity_base: Option<f64>,
     /// Explicit extraction/import input, in fuel units/day. No free oil is invented.
     pub fuel_income_daily: f64,
+    /// Domestic plus delivered imported oil in resources/day; computed by
+    /// the daily trade market. None retains legacy support-import profiles.
+    pub oil_supply_daily: Option<f64>,
     pub convoys: u64,
     pub trucks: u64,
     pub truck_models: BTreeMap<String, u64>,
@@ -610,12 +613,13 @@ impl LogisticsState {
             let refineries = world
                 .country_economy(tag)
                 .map_or(0, |e| e.synthetic_refineries);
-            let oil = self
-                .oil_by_state
-                .iter()
-                .filter(|(id, _)| world.state_controller(**id) == Some(tag.as_str()))
-                .map(|(_, n)| *n)
-                .sum::<f64>();
+            let oil = c.oil_supply_daily.unwrap_or_else(|| {
+                self.oil_by_state
+                    .iter()
+                    .filter(|(id, _)| world.state_controller(**id) == Some(tag.as_str()))
+                    .map(|(_, n)| *n)
+                    .sum::<f64>()
+            });
             let silos = world.country_economy(tag).map_or(0, |e| e.fuel_silos);
             // Remember the fixed capacity once, rather than treating yesterday's
             // computed silo capacity as another permanent national bonus.

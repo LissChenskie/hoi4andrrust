@@ -46,6 +46,7 @@ fn military_fingerprint(w: &crate::warfare::Warfare) -> Result<u64, String> {
         rules,
         units,
         equipment,
+        &db.equipment_resources,
         &db.technologies,
         &db.terrains,
         &db.weather,

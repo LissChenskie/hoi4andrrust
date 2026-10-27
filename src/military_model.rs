@@ -216,6 +216,9 @@ pub struct MilitaryCatalogue {
     pub localisation: BTreeMap<String, String>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
+    /// Imported per-factory material demand for each concrete equipment model.
+    #[serde(default)]
+    pub equipment_resources: BTreeMap<String, BTreeMap<String, u32>>,
     pub technologies: BTreeMap<String, TechnologyEffects>,
     pub terrains: BTreeMap<String, TerrainDefinition>,
     pub weather: BTreeMap<String, StatBlock>,
