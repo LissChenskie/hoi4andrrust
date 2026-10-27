@@ -10,10 +10,10 @@ use crate::{
     ui_layout::Layout,
 };
 use crate::{
+    naval_warfare::{NavalMission, NavalState},
     production::ProductionState,
     research::ResearchWorld,
     resource_economy::{ResourceEconomy, TradeDeal, TradeLaw},
-    naval_warfare::{NavalMission, NavalState},
     warfare::Warfare,
     world::World,
 };
@@ -1183,7 +1183,17 @@ pub fn draw_panel(
         ),
         Panel::Trade => trade(h, world, tag, w, resources, x, y, width, r.bottom() - 8.0),
         Panel::Logistics => logistics(h, tag, w, prod, x, y, width, r.bottom() - 8.0),
-        Panel::Navy => navy(h, world, tag, w, x, y, width, r.bottom() - 8.0, &mut actions),
+        Panel::Navy => navy(
+            h,
+            world,
+            tag,
+            w,
+            x,
+            y,
+            width,
+            r.bottom() - 8.0,
+            &mut actions,
+        ),
         Panel::Focus => focus(h, x, y, width, r.bottom() - 8.0),
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
     }
@@ -1702,39 +1712,76 @@ fn trade(
 }
 
 fn navy(
-    h: &mut Hud, world: &World, tag: &str, w: &Warfare,
-    x: f32, y: f32, width: f32, bottom: f32, actions: &mut Vec<Action>,
+    h: &mut Hud,
+    world: &World,
+    tag: &str,
+    w: &Warfare,
+    x: f32,
+    y: f32,
+    width: f32,
+    bottom: f32,
+    actions: &mut Vec<Action>,
 ) {
-    let sea_regions: Vec<u32> = w.air.regions.iter()
-        .filter(|(_, provinces)| provinces.iter().any(|p|
-            world.geography.provinces.get(p).is_some_and(|g|
-                g.definition.kind == crate::map_graph::ProvinceKind::Sea)))
-        .map(|(&id, _)| id).collect();
-    let port = w.conditions.iter()
+    let sea_regions: Vec<u32> = w
+        .air
+        .regions
+        .iter()
+        .filter(|(_, provinces)| {
+            provinces.iter().any(|p| {
+                world
+                    .geography
+                    .provinces
+                    .get(p)
+                    .is_some_and(|g| g.definition.kind == crate::map_graph::ProvinceKind::Sea)
+            })
+        })
+        .map(|(&id, _)| id)
+        .collect();
+    let port = w
+        .conditions
+        .iter()
         .find(|(id, c)| c.naval_base > 0 && world.controller_of_province(**id) == Some(tag))
         .map(|(&id, _)| id);
     let dockyards = world.country_economy(tag).map_or(0, |e| e.dockyards);
-    let forces: Vec<_> = w.naval.task_forces.values()
-        .filter(|f| f.country == tag).collect();
+    let forces: Vec<_> = w
+        .naval
+        .task_forces
+        .values()
+        .filter(|f| f.country == tag)
+        .collect();
     ui::label(
-        &format!("Флот: {} соединений · Верфей: {} · Кораблей: {}",
-            forces.len(), dockyards, forces.iter().map(|f| f.ships.len()).sum::<usize>()),
-        Rect::new(x, y, width, 22.0), 12.0, ui::TEXT,
+        &format!(
+            "Флот: {} соединений · Верфей: {} · Кораблей: {}",
+            forces.len(),
+            dockyards,
+            forces.iter().map(|f| f.ships.len()).sum::<usize>()
+        ),
+        Rect::new(x, y, width, 22.0),
+        12.0,
+        ui::TEXT,
     );
     let mut yy = y + 27.0;
     if sea_regions.is_empty() {
-        ui::label("Морские регионы не импортированы",
-            Rect::new(x, yy, width, 22.0), 12.0, ui::GOLD);
+        ui::label(
+            "Морские регионы не импортированы",
+            Rect::new(x, yy, width, 22.0),
+            12.0,
+            ui::GOLD,
+        );
     } else {
         h.naval_region_index %= sea_regions.len();
         let region = sea_regions[h.naval_region_index];
         let bw = width.min(42.0);
         if ui::small_button("◀", Rect::new(x, yy, bw, 27.0), false) {
-            h.naval_region_index = (h.naval_region_index + sea_regions.len() - 1) % sea_regions.len();
+            h.naval_region_index =
+                (h.naval_region_index + sea_regions.len() - 1) % sea_regions.len();
         }
-        ui::label(&format!("Морской регион #{region}"),
+        ui::label(
+            &format!("Морской регион #{region}"),
             Rect::new(x + bw + 5.0, yy + 3.0, width - 2.0 * bw - 10.0, 21.0),
-            12.0, ui::TEXT);
+            12.0,
+            ui::TEXT,
+        );
         if ui::small_button("▶", Rect::new(x + width - bw, yy, bw, 27.0), false) {
             h.naval_region_index = (h.naval_region_index + 1) % sea_regions.len();
         }
@@ -1745,24 +1792,37 @@ fn navy(
     let max_visible = ((bottom - yy - 149.0) / 48.0).max(0.0) as usize;
     let max_visible = max_visible.min(6);
     if forces.is_empty() {
-        ui::label("Стартовый флот не найден — проверьте OOB",
-            Rect::new(x, yy, width, 21.0), 11.0, ui::MUTED);
+        ui::label(
+            "Стартовый флот не найден — проверьте OOB",
+            Rect::new(x, yy, width, 21.0),
+            11.0,
+            ui::MUTED,
+        );
     } else {
-        h.scroll = h.scroll.min(forces.len().saturating_sub(max_visible.max(1)));
+        h.scroll = h
+            .scroll
+            .min(forces.len().saturating_sub(max_visible.max(1)));
         for force in forces.iter().skip(h.scroll).take(max_visible.max(1)) {
-            if yy + 42.0 > bottom - 124.0 { break; }
+            if yy + 42.0 > bottom - 124.0 {
+                break;
+            }
             ui::row_bg(Rect::new(x, yy, width, 43.0), false, false);
             ui::label(
                 &format!("{} · {} кораблей", force.name, force.ships.len()),
                 Rect::new(x + 5.0, yy + 2.0, width - 10.0, 19.0),
-                11.0, ui::TEXT);
+                11.0,
+                ui::TEXT,
+            );
             if ui::small_button(
                 &format!("{} →", force.mission.label()),
-                Rect::new(x + 4.0, yy + 21.0, width - 8.0, 21.0), false,
+                Rect::new(x + 4.0, yy + 21.0, width - 8.0, 21.0),
+                false,
             ) {
                 let next = force.mission.next();
                 actions.push(Action::NavalOrder(
-                    force.id, next, sea_regions.get(h.naval_region_index).copied().unwrap_or(0),
+                    force.id,
+                    next,
+                    sea_regions.get(h.naval_region_index).copied().unwrap_or(0),
                 ));
             }
             yy += 48.0;
@@ -1772,23 +1832,36 @@ fn navy(
             if ui::small_button("Предыдущие", Rect::new(x, yy, bw, 25.0), false) {
                 h.scroll = h.scroll.saturating_sub(1);
             }
-            if ui::small_button("Следующие", Rect::new(x + bw + 8.0, yy, bw, 25.0), false) {
+            if ui::small_button("Следующие", Rect::new(x + bw + 8.0, yy, bw, 25.0), false)
+            {
                 h.scroll = (h.scroll + 1).min(forces.len() - max_visible.max(1));
             }
         }
     }
     let mut yy = (bottom - 116.0).max(yy + 6.0);
-    if yy + 107.0 > bottom { return; }
+    if yy + 107.0 > bottom {
+        return;
+    }
     ui::section("СТРОИТЕЛЬСТВО КОРАБЛЕЙ", x, yy, width);
     yy += 26.0;
-    let models: Vec<_> = w.countries.get(tag).map(|army| {
-        w.catalogue.equipment.values()
-            .filter(|e| NavalState::can_build_ship(&w.catalogue, &e.id, &army.modifiers))
-            .collect::<Vec<_>>()
-    }).unwrap_or_default();
+    let models: Vec<_> = w
+        .countries
+        .get(tag)
+        .map(|army| {
+            w.catalogue
+                .equipment
+                .values()
+                .filter(|e| NavalState::can_build_ship(&w.catalogue, &e.id, &army.modifiers))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     if models.is_empty() {
-        ui::label("Нет исследованных конструкций кораблей",
-            Rect::new(x, yy, width, 22.0), 11.0, ui::MUTED);
+        ui::label(
+            "Нет исследованных конструкций кораблей",
+            Rect::new(x, yy, width, 22.0),
+            11.0,
+            ui::MUTED,
+        );
         return;
     }
     h.naval_hull_index %= models.len();
@@ -1800,13 +1873,18 @@ fn navy(
     ui::label(
         &format!("{} · {:.0} IC", w.catalogue.label(&model.id), model.cost),
         Rect::new(x + bw + 4.0, yy + 2.0, width - 2.0 * bw - 8.0, 20.0),
-        11.0, ui::TEXT,
+        11.0,
+        ui::TEXT,
     );
     if ui::small_button("▶", Rect::new(x + width - bw, yy, bw, 24.0), false) {
         h.naval_hull_index = (h.naval_hull_index + 1) % models.len();
     }
     yy += 29.0;
-    if ui::small_button("Поставить на верфи (до 5)", Rect::new(x, yy, width, 27.0), false) {
+    if ui::small_button(
+        "Поставить на верфи (до 5)",
+        Rect::new(x, yy, width, 27.0),
+        false,
+    ) {
         if let Some(base) = port {
             actions.push(Action::NavalQueueShip(model.id.clone(), base));
         } else {
@@ -1816,7 +1894,9 @@ fn navy(
     let in_queue = w.naval.shipbuilding.get(tag).map_or(0, |lines| lines.len());
     ui::label(
         &format!("Очередь кораблей: {in_queue} · Порт: {}", port.unwrap_or(0)),
-        Rect::new(x, yy + 30.0, width, 18.0), 11.0, ui::MUTED,
+        Rect::new(x, yy + 30.0, width, 18.0),
+        11.0,
+        ui::MUTED,
     );
 }
 
