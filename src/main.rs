@@ -2225,6 +2225,7 @@ fn draw_map_viewer(
     construction_view: &mut construction_ui::ConstructionView,
     production_view: &mut production_ui::ProductionView,
     production_state: &mut production::ProductionState,
+    resource_state: &mut resource_economy::ResourceEconomy,
     production_rules: &production::ProductionRules,
     research_world: &mut research::ResearchWorld,
     research_catalogue: &research::ResearchCatalogue,
@@ -2688,6 +2689,7 @@ fn draw_map_viewer(
         player_country,
         military,
         production_state,
+        resource_state,
         selected.map(|p| p.0),
     );
     for action in actions {
@@ -3360,6 +3362,7 @@ async fn main() {
                     construction_queues: construction_queue,
                     construction: country_construction,
                     production: production_state,
+                    resources: resource_state,
                     research: research_world,
                     military,
                     ..
@@ -3404,6 +3407,7 @@ async fn main() {
                     &mut construction_view,
                     &mut production_view,
                     production_state,
+                    resource_state,
                     &production_rules,
                     research_world,
                     &research_catalogue,
