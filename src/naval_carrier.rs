@@ -6,7 +6,6 @@ use crate::{
     production::ProductionState, warfare::Warfare,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CarrierAirGroup {
     pub model: String,
@@ -233,6 +232,10 @@ impl NavalState {
                     .unwrap_or(0.)
             })
             .sum::<f64>();
+        let enemy_hp: Vec<f64> = enemy.ships.iter()
+            .map(|ship|self.ship_stats(ship,w)
+                .and_then(|s|s.get("max_strength")).copied().unwrap_or(100.).max(1.))
+            .collect();
         for (&(force_id, ship_idx), groups) in &mut self.carrier_wings {
             if force_id != src {
                 continue;
@@ -270,15 +273,7 @@ impl NavalState {
                     .copied()
                     .unwrap_or(0.)
                     .max(0.);
-                let enemy_hp = enemy
-                    .ships
-                    .get(target_idx)
-                    .and_then(|ship| self.ship_stats(ship, w))
-                    .and_then(|s| s.get("max_strength"))
-                    .copied()
-                    .unwrap_or(100.)
-                    .max(1.);
-                let damage = attack * launch as f64 * air_damage / enemy_hp;
+                let damage = attack * launch as f64 * air_damage / enemy_hp[target_idx];
                 // Carrier fighters and AA both reduce attacking aircraft.
                 let loss_ratio = (enemy_fighters * 0.0002 + enemy_aa * 0.0005).clamp(0., 0.5);
                 group.loss_debt += launch as f64 * loss_ratio;
