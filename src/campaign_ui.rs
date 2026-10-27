@@ -1851,7 +1851,8 @@ fn naval_designer_view(
             .get(slot)
             .or_else(|| schema.default_modules.get(slot))
             .map(String::as_str)
-            .unwrap_or("empty").to_owned();
+            .unwrap_or("empty")
+            .to_owned();
         let index = modules.iter().position(|m| m == &current).unwrap_or(0);
         if ui::small_button("◀", Rect::new(x, y, arrow, 27.0), false) {
             let new = (index + modules.len() - 1) % modules.len();
