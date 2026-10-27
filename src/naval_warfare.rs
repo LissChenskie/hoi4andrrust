@@ -526,7 +526,7 @@ impl NavalState {
             let name = format!("{} №{}", model, self.next_id.saturating_add(1));
             let ship = NavalShip {
                 name,
-                model,
+                model: model.clone(),
                 definition: warfare
                     .catalogue
                     .equipment
