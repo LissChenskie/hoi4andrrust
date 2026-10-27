@@ -2233,6 +2233,12 @@ fn handle_hud_action(
                 };
             }
         }
+        Action::NavalAssignAdmiral(id, name) => {
+            if let Some(tag) = tag {
+                hud.notice = military.naval.assign_admiral(tag, id, name.as_deref())
+                    .map_or_else(|e| e, |_| "Адмирал назначен или снят".into());
+            }
+        }
         Action::Save => hud.save_requested = true,
         Action::Load => hud.load_requested = true,
         Action::MainMenu => {}
