@@ -272,7 +272,9 @@ impl MilitaryModifiers {
                 result
                     .unlocked_equipment
                     .extend(effect.unlock_equipment.iter().cloned());
-                result.unlocked_modules.extend(effect.unlock_modules.iter().cloned());
+                result
+                    .unlocked_modules
+                    .extend(effect.unlock_modules.iter().cloned());
                 result
                     .unlocked_tactics
                     .extend(effect.unlock_tactics.iter().cloned());
