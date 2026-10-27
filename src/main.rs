@@ -14,6 +14,7 @@ mod construction_map;
 mod construction_ui;
 mod division_designer_ui;
 mod logistics;
+mod naval_warfare;
 mod mobile_army_ui;
 mod support_import;
 #[cfg(test)]
