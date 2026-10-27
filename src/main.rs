@@ -18,6 +18,7 @@ mod mobile_army_ui;
 mod naval_carrier;
 mod naval_combat;
 mod naval_designer;
+mod naval_refit;
 mod naval_warfare;
 mod support_import;
 #[cfg(test)]
