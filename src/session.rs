@@ -326,7 +326,8 @@ impl GameSession {
                 (tag.clone(), policy)
             })
             .collect();
-        self.resources.settle(&mut self.world, &policies);
+        self.resources
+            .settle_with_wars(&mut self.world, &policies, &self.military.wars);
         // Oil is not stockpiled as a raw material: the same delivered
         // oil flow funds fuel conversion every subsequent simulation hour.
         for tag in &tags {
