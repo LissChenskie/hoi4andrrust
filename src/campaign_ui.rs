@@ -1492,13 +1492,23 @@ fn diplomacy(
     let _ = actions;
 }
 fn trade(
-    h: &mut Hud, world: &World, tag: &str, market: &mut ResourceEconomy,
-    x: f32, y: f32, width: f32, bottom: f32,
+    h: &mut Hud,
+    world: &World,
+    tag: &str,
+    market: &mut ResourceEconomy,
+    x: f32,
+    y: f32,
+    width: f32,
+    bottom: f32,
 ) {
     const MATERIALS: [(&str, &str); 7] = [
-        ("oil", "Нефть"), ("steel", "Сталь"), ("aluminium", "Алюминий"),
-        ("rubber", "Резина"), ("tungsten", "Вольфрам"),
-        ("chromium", "Хром"), ("coal", "Уголь"),
+        ("oil", "Нефть"),
+        ("steel", "Сталь"),
+        ("aluminium", "Алюминий"),
+        ("rubber", "Резина"),
+        ("tungsten", "Вольфрам"),
+        ("chromium", "Хром"),
+        ("coal", "Уголь"),
     ];
     let law = market.laws.get(tag).copied().unwrap_or_default();
     let law_text = match law {
@@ -1510,33 +1520,53 @@ fn trade(
     };
     ui::label(
         "Ресурсы за сутки: добыча / внутренний остаток / импорт",
-        Rect::new(x, y, width, 23.0), 12.0, ui::TEXT,
+        Rect::new(x, y, width, 23.0),
+        12.0,
+        ui::TEXT,
     );
     let report = market.last.get(tag);
     let mut yy = y + 29.0;
     for (key, label) in MATERIALS {
-        if yy + 25.0 > bottom { return; }
+        if yy + 25.0 > bottom {
+            return;
+        }
         ui::row_bg(Rect::new(x, yy, width, 25.0), false, false);
-        let mined = report.and_then(|r| r.extracted.get(key)).copied().unwrap_or(0);
-        let retained = report.and_then(|r| r.available.get(key)).copied().unwrap_or(0);
-        let imported = report.and_then(|r| r.imported.get(key)).copied().unwrap_or(0);
+        let mined = report
+            .and_then(|r| r.extracted.get(key))
+            .copied()
+            .unwrap_or(0);
+        let retained = report
+            .and_then(|r| r.available.get(key))
+            .copied()
+            .unwrap_or(0);
+        let imported = report
+            .and_then(|r| r.imported.get(key))
+            .copied()
+            .unwrap_or(0);
         ui::label(
             &format!("{label}  {mined} / {retained} / +{imported}"),
-            Rect::new(x + 8.0, yy + 3.0, width - 16.0, 20.0), 12.0, ui::TEXT,
+            Rect::new(x + 8.0, yy + 3.0, width - 16.0, 20.0),
+            12.0,
+            ui::TEXT,
         );
         yy += 27.0;
     }
     let factories_spent = report.map_or(0, |r| r.factories_spent);
     let factories_received = report.map_or(0, |r| r.factories_received);
-    if yy + 50.0 > bottom { return; }
+    if yy + 50.0 > bottom {
+        return;
+    }
     ui::label(
         &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received}"),
-        Rect::new(x, yy + 4.0, width, 21.0), 12.0, ui::GOLD,
+        Rect::new(x, yy + 4.0, width, 21.0),
+        12.0,
+        ui::GOLD,
     );
     yy += 27.0;
     if ui::small_button(
         &format!("Закон: {law_text}   [сменить]"),
-        Rect::new(x, yy, width, 29.0), false,
+        Rect::new(x, yy, width, 29.0),
+        false,
     ) {
         let next = match law {
             TradeLaw::Unset | TradeLaw::ClosedEconomy => TradeLaw::FreeTrade,
@@ -1548,11 +1578,19 @@ fn trade(
         h.notice = "Новый торговый закон применяется со следующих игровых суток".into();
     }
     yy += 37.0;
-    if yy + 86.0 > bottom { return; }
+    if yy + 86.0 > bottom {
+        return;
+    }
     ui::section("ИМПОРТ — ЦЕНА 1 ФАБРИКА ЗА ДО 8 ЕДИНИЦ", x, yy, width);
     yy += 28.0;
-    let sellers: Vec<_> = world.countries.keys().filter(|country| country.as_str() != tag).collect();
-    if sellers.is_empty() { return; }
+    let sellers: Vec<_> = world
+        .countries
+        .keys()
+        .filter(|country| country.as_str() != tag)
+        .collect();
+    if sellers.is_empty() {
+        return;
+    }
     h.trade_partner_index %= sellers.len();
     h.trade_resource_index %= MATERIALS.len();
     let seller = sellers[h.trade_partner_index];
@@ -1562,8 +1600,10 @@ fn trade(
         h.trade_partner_index = (h.trade_partner_index + sellers.len() - 1) % sellers.len();
     }
     ui::label(
-        seller, Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
-        13.0, ui::TEXT,
+        seller,
+        Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
+        13.0,
+        ui::TEXT,
     );
     if ui::small_button("▶", Rect::new(x + width - button, yy, button, 27.0), false) {
         h.trade_partner_index = (h.trade_partner_index + 1) % sellers.len();
@@ -1573,35 +1613,52 @@ fn trade(
         h.trade_resource_index = (h.trade_resource_index + MATERIALS.len() - 1) % MATERIALS.len();
     }
     ui::label(
-        label, Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
-        13.0, ui::TEXT,
+        label,
+        Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
+        13.0,
+        ui::TEXT,
     );
     if ui::small_button("▶", Rect::new(x + width - button, yy, button, 27.0), false) {
         h.trade_resource_index = (h.trade_resource_index + 1) % MATERIALS.len();
     }
     yy += 33.0;
-    if yy + 65.0 > bottom { return; }
+    if yy + 65.0 > bottom {
+        return;
+    }
     if ui::small_button("−", Rect::new(x, yy, button, 28.0), false) {
         h.trade_factories = h.trade_factories.saturating_sub(1).max(1);
     }
     ui::label(
         &format!("Фабрики на импорт: {}", h.trade_factories),
         Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
-        12.0, ui::TEXT,
+        12.0,
+        ui::TEXT,
     );
     if ui::small_button("+", Rect::new(x + width - button, yy, button, 28.0), false) {
         h.trade_factories = (h.trade_factories + 1).min(99);
     }
     yy += 33.0;
     let deal = TradeDeal {
-        buyer: tag.into(), seller: seller.clone(), resource: resource.into(),
+        buyer: tag.into(),
+        seller: seller.clone(),
+        resource: resource.into(),
         factories: h.trade_factories,
     };
-    if ui::small_button("Купить / изменить", Rect::new(x, yy, width * 0.62 - 3.0, 30.0), false) {
-        h.notice = market.set_deal(world, deal).map_or_else(|e| e,
-            |_| "Торговый договор вступит в силу со следующих игровых суток".into());
+    if ui::small_button(
+        "Купить / изменить",
+        Rect::new(x, yy, width * 0.62 - 3.0, 30.0),
+        false,
+    ) {
+        h.notice = market.set_deal(world, deal).map_or_else(
+            |e| e,
+            |_| "Торговый договор вступит в силу со следующих игровых суток".into(),
+        );
     }
-    if ui::small_button("Отменить", Rect::new(x + width * 0.62, yy, width * 0.38, 30.0), false) {
+    if ui::small_button(
+        "Отменить",
+        Rect::new(x + width * 0.62, yy, width * 0.38, 30.0),
+        false,
+    ) {
         h.notice = if market.cancel_deal(tag, seller, resource) {
             "Договор отменён".into()
         } else {
