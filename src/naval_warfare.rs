@@ -368,8 +368,10 @@ impl NavalState {
     )->Result<u64,String> {
         let design=self.designs.get(design_id).ok_or("Проект не найден")?;
         if design.country != tag {return Err("Проект принадлежит другой стране".into());}
-        if !Self::can_build_ship(&w.catalogue,&design.hull,&w.countries.get(tag)
-            .ok_or("Страна отсутствует")?.modifiers) {return Err("Корпус ещё не исследован".into());}
+        let modifiers=&w.countries.get(tag).ok_or("Страна отсутствует")?.modifiers;
+        let can_build=w.catalogue.equipment.get(&design.hull).is_some_and(|e|
+            e.buildable && (e.active || modifiers.unlocked_equipment.contains(&design.hull)));
+        if !can_build {return Err("Корпус ещё не исследован".into());}
         if dockyards==0 || world.controller_of_province(base)!=Some(tag)
             || w.conditions.get(&base).is_none_or(|c|c.naval_base==0)
         {return Err("Для постройки нужна доступная морская база".into());}
@@ -426,8 +428,11 @@ impl NavalState {
             line.last_day_ic = 0.0;
             let blueprint=self.designs.get(&line.model);
             let model=blueprint.map_or(line.model.as_str(),|d|d.hull.as_str());
+            let buildable=warfare.catalogue.equipment.get(model).is_some_and(|e|
+                e.buildable && (e.active || modifiers.unlocked_equipment.contains(model))
+                && (blueprint.is_some() || !e.modular));
             if blueprint.is_some_and(|d|d.country!=tag)
-                || !Self::can_build_ship(&warfare.catalogue, model, modifiers)
+                || !buildable
                 || world.controller_of_province(line.base) != Some(tag)
                 || warfare
                     .conditions
@@ -569,18 +574,18 @@ impl NavalState {
             })
             .flat_map(|f| f.ships.iter())
             .filter_map(|s| {
-                let e = w.catalogue.equipment.get(&s.model)?;
+                let e = self.ship_stats(s,w)?;
                 let stat = match mission {
                     NavalMission::ConvoyRaiding => {
-                        e.stats.get("torpedo_attack").copied().unwrap_or(0.0)
-                            + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.1
+                        e.get("torpedo_attack").copied().unwrap_or(0.0)
+                            + e.get("surface_detection").copied().unwrap_or(0.0) * 0.1
                     }
                     NavalMission::ConvoyEscort => {
-                        e.stats.get("sub_detection").copied().unwrap_or(0.0)
-                            + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.3
+                        e.get("sub_detection").copied().unwrap_or(0.0)
+                            + e.get("surface_detection").copied().unwrap_or(0.0) * 0.3
                     }
                     NavalMission::Patrol | NavalMission::StrikeForce => {
-                        e.stats.get("surface_detection").copied().unwrap_or(0.0)
+                        e.get("surface_detection").copied().unwrap_or(0.0)
                     }
                     NavalMission::Hold => 0.0,
                 };
