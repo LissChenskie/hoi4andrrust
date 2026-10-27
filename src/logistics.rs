@@ -467,8 +467,11 @@ impl LogisticsState {
                 flow.add(
                     a,
                     b,
-                    country.convoys.saturating_sub(country.trade_convoys_committed) as f64
-                        * self.rules.supply_per_convoy / count,
+                    country
+                        .convoys
+                        .saturating_sub(country.trade_convoys_committed) as f64
+                        * self.rules.supply_per_convoy
+                        / count,
                 );
                 for &p in ps {
                     let cap =
