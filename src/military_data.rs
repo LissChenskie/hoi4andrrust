@@ -143,6 +143,7 @@ struct RawEquipment {
     buildable: bool,
     year: u32,
     stats: StatBlock,
+    resources: Option<BTreeMap<String, u32>>,
     modules: BTreeMap<String, String>,
     requires_modules: bool,
     source: String,
@@ -612,6 +613,14 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
                                 buildable: yes(b, "is_buildable", true),
                                 year: number(b, "year", 0.0).max(0.0) as u32,
                                 stats: stats(b, &vars),
+                                resources: block(b, "resources").map(|values| values
+                                    .iter()
+                                    .filter_map(|entry| {
+                                        let n = entry.atom().and_then(|a| scalar_value(a, &vars, 0))?;
+                                        if !n.is_finite() || n < 0.0 { return None; }
+                                        Some((entry.key.clone(), n.floor().min(u32::MAX as f64) as u32))
+                                    })
+                                    .collect()),
                                 modules: module_values,
                                 requires_modules: find(b, "module_slots")
                                     .is_some_and(|e| e.atom() != Some("none")),
@@ -631,6 +640,28 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
         }
     }
     db.equipment = resolved;
+    // Equipment inherits resource costs unless its own resources block overrides
+    // them. Unknown or modular variant costs remain explicit unverified data.
+    fn inherited_resources(
+        id: &str,
+        raw: &BTreeMap<String, RawEquipment>,
+        visited: &mut BTreeSet<String>,
+    ) -> BTreeMap<String, u32> {
+        if !visited.insert(id.into()) { return BTreeMap::new(); }
+        let result = raw.get(id).map_or_else(BTreeMap::new, |e| {
+            e.resources.clone().unwrap_or_else(|| {
+                e.archetype.as_deref().map_or_else(BTreeMap::new, |p| inherited_resources(p, raw, visited))
+            })
+        });
+        visited.remove(id);
+        result
+    }
+    for id in db.equipment.keys() {
+        let costs = inherited_resources(id, &raw, &mut BTreeSet::new());
+        if !costs.is_empty() {
+            db.equipment_resources.insert(id.clone(), costs);
+        }
+    }
     for path in layered_files(&layers, "common/units", false, "txt") {
         match fs::read_to_string(&path) {
             Ok(source) => {
