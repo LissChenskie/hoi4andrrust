@@ -322,6 +322,9 @@ impl Warfare {
                             "enable_equipments" => {
                                 effect.unlock_equipment.insert(id.clone());
                             }
+                            "enable_equipment_modules" => {
+                                effect.unlock_modules.insert(id.clone());
+                            }
                             "enable_tactic" => {
                                 effect.unlock_tactics.insert(id.clone());
                             }
@@ -356,6 +359,9 @@ impl Warfare {
                             }
                             "enable_equipments" => {
                                 m.unlocked_equipment.insert(id.into());
+                            }
+                            "enable_equipment_modules" => {
+                                m.unlocked_modules.insert(id.into());
                             }
                             "enable_tactic" => {
                                 m.unlocked_tactics.insert(id.into());
