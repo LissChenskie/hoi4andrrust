@@ -245,8 +245,13 @@ impl NavalState {
         // Cached contacts are invalidated when an order changes, a force
         // disappears or neither opponent still operates in the same region.
         self.spotting.retain(|&(region, a, b), _| {
-            self.task_forces.get(&a).is_some_and(|f| f.regions.contains(&region) && f.mission != NavalMission::Hold)
-            && self.task_forces.get(&b).is_some_and(|f| f.regions.contains(&region) && f.mission != NavalMission::Hold)
+            self.task_forces
+                .get(&a)
+                .is_some_and(|f| f.regions.contains(&region) && f.mission != NavalMission::Hold)
+                && self
+                    .task_forces
+                    .get(&b)
+                    .is_some_and(|f| f.regions.contains(&region) && f.mission != NavalMission::Hold)
         });
         let mut active = Vec::new();
         let mut fuel_efficiency = BTreeMap::new();
@@ -334,12 +339,18 @@ impl NavalState {
                         })
                         .sum::<f64>()
                 };
-                let admiral_spotting = self.admiral_for(a).map_or(0., |v| f64::from(v.maneuvering) * 0.02)
-                    + self.admiral_for(b).map_or(0., |v| f64::from(v.maneuvering) * 0.02);
+                let admiral_spotting = self
+                    .admiral_for(a)
+                    .map_or(0., |v| f64::from(v.maneuvering) * 0.02)
+                    + self
+                        .admiral_for(b)
+                        .map_or(0., |v| f64::from(v.maneuvering) * 0.02);
                 let doctrine_spotting = buff(warfare, &ours.country, "naval_detection")
                     + buff(warfare, &theirs.country, "naval_detection");
-                let speed = (strength(a) + strength(b)).max(1.) * rules.spotting_per_hour
-                    * (1. + admiral_spotting + doctrine_spotting).max(0.) / 100.;
+                let speed = (strength(a) + strength(b)).max(1.)
+                    * rules.spotting_per_hour
+                    * (1. + admiral_spotting + doctrine_spotting).max(0.)
+                    / 100.;
                 let progress = self.spotting.entry(key).or_default();
                 *progress =
                     (*progress + speed * fuel_efficiency[&a].min(fuel_efficiency[&b])).min(1.);
@@ -451,12 +462,12 @@ impl NavalState {
                     let hit_profile = 100. * target.visibility / (target.speed * 0.5 + 20.);
                     let base_chance = rules.base_hit * (hit_profile / profile).min(1.);
                     // Navy doctrines and scenario admirals are already imported,
-                // so their modifiers apply to every combat round.
-                let admiral = self.admiral_for(src);
-                let commander_hit = admiral.map_or(0., |v| f64::from(v.attack) * 0.025);
-                let doctrine_hit = buff(w, country, "naval_hit_chance")
-                    + buff(w, country, "naval_coordination");
-                let bonus = (1. + commander_hit + doctrine_hit).max(0.);
+                    // so their modifiers apply to every combat round.
+                    let admiral = self.admiral_for(src);
+                    let commander_hit = admiral.map_or(0., |v| f64::from(v.attack) * 0.025);
+                    let doctrine_hit = buff(w, country, "naval_hit_chance")
+                        + buff(w, country, "naval_coordination");
+                    let bonus = (1. + commander_hit + doctrine_hit).max(0.);
                     let chance = (base_chance * bonus * base).clamp(rules.min_hit, 1.);
                     if dice(seed ^ 0xABCDEF) >= chance {
                         continue;
@@ -516,11 +527,17 @@ impl NavalState {
         }
         // A damaged task force is recalled instead of being magically
         // repaired while its mission is still active at sea.
-        for id in [a,b] {
-            let retreat = self.task_forces.get(&id).is_some_and(|force|
-                force.ships.iter().enumerate().any(|(idx,ship)|
-                    ship.strength > 0. && (ship.strength < 0.25
-                        || self.conditions.get(&(id,idx)).is_some_and(|c| c.organisation < 0.10))));
+        for id in [a, b] {
+            let retreat = self.task_forces.get(&id).is_some_and(|force| {
+                force.ships.iter().enumerate().any(|(idx, ship)| {
+                    ship.strength > 0.
+                        && (ship.strength < 0.25
+                            || self
+                                .conditions
+                                .get(&(id, idx))
+                                .is_some_and(|c| c.organisation < 0.10))
+                })
+            });
             if retreat {
                 if let Some(force) = self.task_forces.get_mut(&id) {
                     force.mission = NavalMission::Hold;
