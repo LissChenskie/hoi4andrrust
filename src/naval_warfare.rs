@@ -677,30 +677,44 @@ mod tests {
     use super::*;
     #[test]
     fn naval_raiding_reduces_imports_and_escorts_protect_them() {
+        use crate::map_graph::MapGraph;
         use crate::military_model::{CountryArmy, EquipmentDefinition};
         use crate::resource_economy::{CountryResources, ResourceEconomy, TradeShipment};
         use crate::trade_routes::TradeRoute;
-        use crate::map_graph::MapGraph;
         use std::collections::HashMap;
-        let definition = "1;1;0;0;land;true;plains;1\n2;2;0;0;sea;false;ocean;0\n3;3;0;0;land;true;plains;1";
-        let pixels = [1_u8, 2, 3].into_iter().flat_map(|id| [id, 0, 0, 255]).collect::<Vec<_>>();
+        let definition =
+            "1;1;0;0;land;true;plains;1\n2;2;0;0;sea;false;ocean;0\n3;3;0;0;land;true;plains;1";
+        let pixels = [1_u8, 2, 3]
+            .into_iter()
+            .flat_map(|id| [id, 0, 0, 255])
+            .collect::<Vec<_>>();
         let mut world = World::from_map_data(
             &HashMap::from([(1, 1), (3, 3)]),
             &HashMap::from([(1, "A".into()), (3, "B".into())]),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
         world.geography = MapGraph::from_rgba(3, 1, &pixels, definition, false).unwrap();
         let mut db = MilitaryCatalogue::default();
         for (model, attr, power) in [
             ("ship_hull_submarine_1", "torpedo_attack", 20.0),
-            ("ship_hull_light_1", "sub_detection", 50.0)
+            ("ship_hull_light_1", "sub_detection", 50.0),
         ] {
-            db.equipment.insert(model.into(), EquipmentDefinition {
-                id: model.into(), archetype: model.into(), year: 1936,
-                active: true, buildable: true,
-                stats: BTreeMap::from([(attr.into(), power)]),
-                cost: 100.0, modular: false, source: "test".into(),
-            });
+            db.equipment.insert(
+                model.into(),
+                EquipmentDefinition {
+                    id: model.into(),
+                    archetype: model.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats: BTreeMap::from([(attr.into(), power)]),
+                    cost: 100.0,
+                    modular: false,
+                    source: "test".into(),
+                },
+            );
         }
         let mut warfare = Warfare::new(db);
         for tag in ["A", "B", "R"] {
@@ -708,34 +722,58 @@ mod tests {
         }
         warfare.wars.insert(("A".into(), "R".into()));
         warfare.air.regions.insert(10, BTreeSet::from([2]));
-        warfare.logistics.countries.entry("A".into()).or_default().convoys = 2;
+        warfare
+            .logistics
+            .countries
+            .entry("A".into())
+            .or_default()
+            .convoys = 2;
 
         let make_force = |id, country: &str, mission, model: &str| NavalTaskForce {
-            id, country: country.into(), name: format!("{country} Fleet"), base: 0,
-            mission, regions: BTreeSet::from([10]),
+            id,
+            country: country.into(),
+            name: format!("{country} Fleet"),
+            base: 0,
+            mission,
+            regions: BTreeSet::from([10]),
             ships: vec![NavalShip {
-                name: model.into(), model: model.into(),
-                definition: String::new(), variant: None, strength: 1.0,
+                name: model.into(),
+                model: model.into(),
+                definition: String::new(),
+                variant: None,
+                strength: 1.0,
             }],
         };
         let mut naval = NavalState::default();
-        naval.task_forces.insert(1, make_force(1, "R",
-            NavalMission::ConvoyRaiding, "ship_hull_submarine_1"));
+        naval.task_forces.insert(
+            1,
+            make_force(1, "R", NavalMission::ConvoyRaiding, "ship_hull_submarine_1"),
+        );
         let key = ("A".into(), "B".into(), "steel".into());
         naval.loss_progress.insert(key.clone(), 0.5);
         let mut shipping = ResourceEconomy::default();
-        shipping.last.insert("A".into(), CountryResources {
-            imported: BTreeMap::from([("steel".into(), 16)]),
-            available: BTreeMap::from([("steel".into(), 16)]),
-            trade_convoys_used: 2, ..Default::default()
-        });
+        shipping.last.insert(
+            "A".into(),
+            CountryResources {
+                imported: BTreeMap::from([("steel".into(), 16)]),
+                available: BTreeMap::from([("steel".into(), 16)]),
+                trade_convoys_used: 2,
+                ..Default::default()
+            },
+        );
         shipping.last_shipments.push(TradeShipment {
-            buyer: "A".into(), seller: "B".into(),
-            resource: "steel".into(), factories: 2,
-            contracted: 16, delivered: 16,
-            required_convoys: 2, assigned_convoys: 2,
+            buyer: "A".into(),
+            seller: "B".into(),
+            resource: "steel".into(),
+            factories: 2,
+            contracted: 16,
+            delivered: 16,
+            required_convoys: 2,
+            assigned_convoys: 2,
             route: TradeRoute::Sea {
-                origin_port: 1, destination_port: 3, sea_provinces: vec![2]
+                origin_port: 1,
+                destination_port: 3,
+                sea_provinces: vec![2],
             },
         });
         let original = shipping.clone();
@@ -744,8 +782,10 @@ mod tests {
         assert_eq!(losses.get("A"), Some(&1));
         assert_eq!(shipping.last["A"].imported["steel"], 8);
         assert_eq!(shipping.last["A"].trade_convoys_used, 1);
-        naval.task_forces.insert(2, make_force(2, "A",
-            NavalMission::ConvoyEscort, "ship_hull_light_1"));
+        naval.task_forces.insert(
+            2,
+            make_force(2, "A", NavalMission::ConvoyEscort, "ship_hull_light_1"),
+        );
         naval.loss_progress.insert(key, 0.5);
         shipping = original;
         losses.clear();
