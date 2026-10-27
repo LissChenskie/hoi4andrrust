@@ -360,6 +360,7 @@ pub enum Action {
     NavalQueueDesign(String, u32),
     NavalQueueRefit(u64, usize, String),
     NavalAssignCarrierWing(u64, usize, String, u32),
+    NavalSetCarrierStance(u64, crate::naval_carrier::CarrierStance),
 }
 
 fn icon_button(icon: Icon, r: Rect, active: bool, title: &str, body: &str) -> bool {
@@ -2073,7 +2074,21 @@ fn naval_carrier_view(
     if ui::small_button("▶", Rect::new(x + width - arrow, y, arrow, 27.0), false) {
         h.naval_carrier_index = (h.naval_carrier_index + 1) % carriers.len();
     }
-    y += 42.0;
+    y += 37.0;
+    let stance = w.naval.carrier_stance(id);
+    let next = stance.next();
+    if ui::small_button(
+        &format!(
+            "Позиция флота: {} (атака {:.0}% / защита {:.0}%) →",
+            stance.label(),
+            stance.offensive_fraction() * 100.0,
+            stance.defensive_fraction() * 100.0,
+        ),
+        Rect::new(x, y, width, 29.0), false,
+    ) {
+        actions.push(Action::NavalSetCarrierStance(id, next));
+    }
+    y += 35.0;
     let groups = w.naval.carrier_wings.get(&(id, index));
     let deployed = groups.map_or(0, |gs| gs.iter().map(|g| g.planes).sum::<u32>());
     let reserved = groups.map_or(0, |gs| gs.iter().map(|g| g.target).sum::<u32>());
