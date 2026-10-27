@@ -70,6 +70,7 @@ impl Warfare {
     pub fn new(catalogue: MilitaryCatalogue) -> Self {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
+            naval: Default::default(),
             logistics: Default::default(),
             air: Default::default(),
             command: Default::default(),
