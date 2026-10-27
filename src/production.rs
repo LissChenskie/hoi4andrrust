@@ -394,7 +394,10 @@ impl CountryProduction {
             if allocation.assigned == 0 || line.blocked_reason.is_some() {
                 continue;
             }
-            let inputs = line.model.as_ref().and_then(|model| resource_costs.get(model));
+            let inputs = line
+                .model
+                .as_ref()
+                .and_then(|model| resource_costs.get(model));
             let mut available_factor_sum = 0.0;
             for _ in 0..allocation.assigned {
                 let mut maximum_missing = 0;
@@ -406,11 +409,13 @@ impl CountryProduction {
                         *remaining = remaining.saturating_sub(needed);
                     }
                 }
-                available_factor_sum +=
-                    (1.0 - f64::from(maximum_missing) * rules.resource_lack_penalty).clamp(0.0, 1.0);
+                available_factor_sum += (1.0
+                    - f64::from(maximum_missing) * rules.resource_lack_penalty)
+                    .clamp(0.0, 1.0);
             }
             let resource_factor = available_factor_sum / f64::from(allocation.assigned);
-            self.last_day_resource_factors.insert(line.id, resource_factor);
+            self.last_day_resource_factors
+                .insert(line.id, resource_factor);
             let ic = available_factor_sum * ic_per_factory * line.efficiency.max(0.0);
             if !ic.is_finite() || ic <= 0.0 {
                 continue;
@@ -722,12 +727,16 @@ mod material_allocation_tests {
     use super::*;
     #[test]
     fn shortage_is_prioritized_per_factory_and_by_line_not_uniformly() {
-        let rules = ProductionRules { resource_lack_penalty: 0.05, ..Default::default() };
+        let rules = ProductionRules {
+            resource_lack_penalty: 0.05,
+            ..Default::default()
+        };
         let mut c = CountryProduction::default();
         let top = c.create_model("steel_model", Equipment::InfantryKit, 2, &rules);
         let bottom = c.create_model("steel_model", Equipment::InfantryKit, 2, &rules);
         let costs = BTreeMap::from([("steel_model".into(), 1.0)]);
-        let inputs = BTreeMap::from([("steel_model".into(), BTreeMap::from([("steel".into(), 2)]))]);
+        let inputs =
+            BTreeMap::from([("steel_model".into(), BTreeMap::from([("steel".into(), 2)]))]);
         let mut pool = BTreeMap::from([("steel".into(), 5)]);
         c.tick_with_resource_pool(4, &rules, &costs, &inputs, &mut pool);
         assert_eq!(pool["steel"], 0);
