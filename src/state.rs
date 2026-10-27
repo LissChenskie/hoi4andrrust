@@ -920,7 +920,16 @@ mod resource_history_tests {
         assert_eq!(start["steel"], 12);
         assert_eq!(start["oil"], 5);
         assert_eq!(start["coal"], 9);
-        let later = resources_at(file, 1, crate::game::GameDate { year: 1938, month: 1, day: 1 }).unwrap();
+        let later = resources_at(
+            file,
+            1,
+            crate::game::GameDate {
+                year: 1938,
+                month: 1,
+                day: 1,
+            },
+        )
+        .unwrap();
         assert_eq!(later["steel"], 20);
         assert_eq!(later["oil"], 4);
         assert_eq!(later["coal"], 9);
@@ -935,13 +944,19 @@ pub fn resources_at(
     date: crate::game::GameDate,
 ) -> Result<std::collections::BTreeMap<String, u32>, String> {
     use crate::pdx::{Entry, atom, block, parse_pdx};
-    fn apply(entries: &[Entry], date: crate::game::GameDate, out: &mut std::collections::BTreeMap<String, u32>) {
+    fn apply(
+        entries: &[Entry],
+        date: crate::game::GameDate,
+        out: &mut std::collections::BTreeMap<String, u32>,
+    ) {
         let mut dated = Vec::new();
         for entry in entries {
             if entry.key == "resources" {
                 if let Some(values) = entry.block() {
                     for value in values {
-                        if let Some(n) = value.atom().and_then(|raw| raw.parse::<f64>().ok())
+                        if let Some(n) = value
+                            .atom()
+                            .and_then(|raw| raw.parse::<f64>().ok())
                             .filter(|v| v.is_finite() && *v >= 0.0)
                         {
                             out.insert(value.key.clone(), n.floor().min(u32::MAX as f64) as u32);
@@ -962,7 +977,8 @@ pub fn resources_at(
     }
     let parsed = parse_pdx(source)?;
     let mut out = std::collections::BTreeMap::new();
-    if let Some(state_block) = parsed.iter()
+    if let Some(state_block) = parsed
+        .iter()
         .filter(|e| e.key == "state")
         .filter_map(Entry::block)
         .find(|b| atom(b, "id").and_then(|s| s.parse::<u32>().ok()) == Some(state_id))
