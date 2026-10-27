@@ -170,9 +170,11 @@ impl NavalState {
             if !self.admirals.contains_key(&(tag.into(), name.into())) {
                 return Err("Адмирал не найден в истории этой страны".into());
             }
-            if self.assigned_admirals.iter()
-                .any(|(&id, current)| id != tf && current == name && self.task_forces.get(&id).is_some_and(|f| f.country == tag))
-            {
+            if self.assigned_admirals.iter().any(|(&id, current)| {
+                id != tf
+                    && current == name
+                    && self.task_forces.get(&id).is_some_and(|f| f.country == tag)
+            }) {
                 return Err("Этот адмирал уже руководит другим соединением".into());
             }
             self.assigned_admirals.insert(tf, name.into());
@@ -184,7 +186,7 @@ impl NavalState {
     pub fn admiral_for(&self, id: u64) -> Option<&NavalAdmiral> {
         let tf = self.task_forces.get(&id)?;
         let name = self.assigned_admirals.get(&id)?;
-        self.admirals.get(&(tf.country.clone(),name.clone()))
+        self.admirals.get(&(tf.country.clone(), name.clone()))
     }
     pub fn add_historical(
         &mut self,
@@ -627,34 +629,61 @@ impl NavalState {
 /// history files used by the land army importer. Traits are preserved even
 /// before every scripted trait effect has an implemented consumer.
 pub fn import_navy_leaders(
-    root: &Path, warfare: &Warfare, today: crate::game::GameDate, navy: &mut NavalState,
+    root: &Path,
+    warfare: &Warfare,
+    today: crate::game::GameDate,
+    navy: &mut NavalState,
 ) {
     use crate::military_data::{atom, block, layered_files};
-    let files = layered_files(&crate::military_data::data_layers(root),
-        "history/countries", false, "txt");
+    let files = layered_files(
+        &crate::military_data::data_layers(root),
+        "history/countries",
+        false,
+        "txt",
+    );
     for (tag, country) in &warfare.countries {
         let name = format!("{tag} -");
-        let Some(file) = files.iter().find(|p| p.file_name().and_then(|s|s.to_str())
-            .is_some_and(|s| s.starts_with(&name) || s == format!("{tag}.txt")))
-        else {continue};
-        let Ok(source) = std::fs::read_to_string(file) else {continue};
-        let Ok(parsed) = crate::pdx::parse_pdx_compatible(&source) else {continue};
-        let (resolved, _) = crate::history_conditions::resolve(
-            &parsed.entries, tag, &country.modifiers, today,
-        );
+        let Some(file) = files.iter().find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(&name) || s == format!("{tag}.txt"))
+        }) else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(parsed) = crate::pdx::parse_pdx_compatible(&source) else {
+            continue;
+        };
+        let (resolved, _) =
+            crate::history_conditions::resolve(&parsed.entries, tag, &country.modifiers, today);
         for e in resolved.iter().filter(|e| e.key == "create_navy_leader") {
-            let Some(props) = e.block() else {continue};
-            let Some(name) = atom(props,"name") else {continue};
-            let val = |k: &str| atom(props,k).and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
-            let traits = block(props,"traits").unwrap_or(&[]).iter()
-                .map(|e|e.key.clone()).collect();
+            let Some(props) = e.block() else { continue };
+            let Some(name) = atom(props, "name") else {
+                continue;
+            };
+            let val = |k: &str| {
+                atom(props, k)
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0)
+            };
+            let traits = block(props, "traits")
+                .unwrap_or(&[])
+                .iter()
+                .map(|e| e.key.clone())
+                .collect();
             let admiral = NavalAdmiral {
-                country: tag.clone(), name: name.into(), skill: val("skill"),
-                attack: val("attack_skill"), defense: val("defense_skill"),
-                maneuvering: val("maneuvering_skill"), coordination: val("coordination_skill"),
+                country: tag.clone(),
+                name: name.into(),
+                skill: val("skill"),
+                attack: val("attack_skill"),
+                defense: val("defense_skill"),
+                maneuvering: val("maneuvering_skill"),
+                coordination: val("coordination_skill"),
                 traits,
             };
-            navy.admirals.insert((tag.clone(),name.into()),admiral);
+            navy.admirals.insert((tag.clone(), name.into()), admiral);
         }
     }
 }
