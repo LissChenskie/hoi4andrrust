@@ -1567,13 +1567,21 @@ fn trade(
     if yy + 29.0 > bottom {
         return;
     }
-    let total_convoys = warfare.logistics.countries.get(tag).map_or(0, |c| c.convoys);
+    let total_convoys = warfare
+        .logistics
+        .countries
+        .get(tag)
+        .map_or(0, |c| c.convoys);
     let used_convoys = report.map_or(0, |r| r.trade_convoys_used);
-    let disrupted = market.last_shipments.iter()
+    let disrupted = market
+        .last_shipments
+        .iter()
         .filter(|s| s.buyer == tag && s.delivered < s.contracted)
         .count();
     ui::label(
-        &format!("Торговые конвои: {used_convoys}/{total_convoys}   Неполные поставки: {disrupted}"),
+        &format!(
+            "Торговые конвои: {used_convoys}/{total_convoys}   Неполные поставки: {disrupted}"
+        ),
         Rect::new(x, yy + 2.0, width, 23.0),
         12.0,
         if disrupted > 0 { ui::GOLD } else { ui::TEXT },
