@@ -232,9 +232,16 @@ impl NavalState {
                     .unwrap_or(0.)
             })
             .sum::<f64>();
-        let enemy_hp: Vec<f64> = enemy.ships.iter()
-            .map(|ship|self.ship_stats(ship,w)
-                .and_then(|s|s.get("max_strength")).copied().unwrap_or(100.).max(1.))
+        let enemy_hp: Vec<f64> = enemy
+            .ships
+            .iter()
+            .map(|ship| {
+                self.ship_stats(ship, w)
+                    .and_then(|s| s.get("max_strength"))
+                    .copied()
+                    .unwrap_or(100.)
+                    .max(1.)
+            })
             .collect();
         for (&(force_id, ship_idx), groups) in &mut self.carrier_wings {
             if force_id != src {
