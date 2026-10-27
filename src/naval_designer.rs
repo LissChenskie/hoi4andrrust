@@ -474,6 +474,74 @@ mod tests {
     use super::*;
     use crate::military_model::{EquipmentDefinition, MilitaryModifiers};
     #[test]
+    fn module_count_limits_use_or_selectors_empty_slots_and_strict_comparisons() {
+        let mut data=NavalDesignerCatalogue::default();
+        for id in ["radar_a","radar_b","sonar"] {
+            data.modules.insert(id.into(), NavalModule {
+                category: if id=="sonar" {"sonar"} else {"radar"}.into(),
+                active:true,..Default::default()
+            });
+        }
+        let radar=NavalSlot {
+            required:false,categories:BTreeSet::from(["radar".into(),"sonar".into()])
+        };
+        let base="ship_hull_light_1";
+        data.hulls.insert(base.into(),NavalHull {
+            base_stats:StatBlock::from([("build_cost_ic".into(),100.)]),
+            slots:BTreeMap::from([
+                ("special_1".into(),radar.clone()),
+                ("special_2".into(),radar.clone()),
+                ("special_3".into(),radar),
+            ]),
+            module_count_limits:vec![
+                NavalModuleCountLimit {
+                    modules:BTreeSet::from(["radar_a".into()]),
+                    categories:BTreeSet::from(["sonar".into()]),
+                    relation:CountRelation::Less,count:2,title:None
+                },
+                NavalModuleCountLimit {
+                    modules:BTreeSet::from(["empty".into()]),categories:BTreeSet::new(),
+                    relation:CountRelation::Greater,count:0,title:None
+                },
+            ],
+            ..Default::default()
+        });
+        let mut db=MilitaryCatalogue::default();
+        db.equipment.insert(base.into(),EquipmentDefinition {
+            id:base.into(),archetype:"ship_hull_light".into(),year:1936,
+            active:true,buildable:true,stats:StatBlock::new(),cost:100.,
+            modular:false,source:"fixture".into()
+        });
+        let mods=MilitaryModifiers::default();
+        let one=BTreeMap::from([("special_1".into(),"radar_a".into())]);
+        assert!(data.construct("A","one",base,&one,&db,&mods,None).is_ok());
+        let two=BTreeMap::from([
+            ("special_1".into(),"radar_a".into()),("special_2".into(),"sonar".into())
+        ]);
+        assert!(data.construct("A","two",base,&two,&db,&mods,None).is_err());
+        let all=BTreeMap::from([
+            ("special_1".into(),"radar_b".into()),
+            ("special_2".into(),"radar_b".into()),
+            ("special_3".into(),"radar_b".into()),
+        ]);
+        assert!(data.construct("A","all",base,&all,&db,&mods,None).is_err());
+        // A child with the exact same selectors replaces the inherited limit.
+        let child="ship_hull_light_2";
+        let parent=data.hulls.get(base).unwrap();
+        let mut overridden=parent.module_count_limits[0].clone();
+        overridden.relation=CountRelation::Any;
+        data.hulls.insert(child.into(),NavalHull {
+            parent:Some(base.into()),
+            module_count_limits:vec![overridden],..Default::default()
+        });
+        let mut def=db.equipment[base].clone();
+        def.id=child.into();
+        db.equipment.insert(child.into(),def);
+        assert!(data.construct("A","child",child,&two,&db,&mods,None).is_ok());
+        assert!(data.construct("A","child-empty",child,&all,&db,&mods,None).is_err());
+    }
+
+    #[test]
     fn required_slots_categories_and_unlocks_control_blueprints() {
         let mut data = NavalDesignerCatalogue::default();
         data.modules.insert(
