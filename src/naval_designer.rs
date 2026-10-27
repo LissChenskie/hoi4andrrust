@@ -132,12 +132,12 @@ impl NavalDesignerCatalogue {
                 return Err(format!("Модуль {selected} не разрешён для {slot}"));
             }
             let is_default = h.default_modules.get(slot).is_some_and(|s| s == selected);
-            let explicitly_unlocked = research.is_some_and(|r| {
-                r.unlocks
-                    .contains(&format!("enable_equipment_modules:{selected}"))
-                    || r.unlocks
-                        .contains(&format!("enable_equipment_modules:{}", module.category))
-            });
+            let explicitly_unlocked = modifiers.unlocked_modules.contains(selected)
+                || modifiers.unlocked_modules.contains(&module.category)
+                || research.is_some_and(|r| {
+                    r.unlocks.contains(&format!("enable_equipment_modules:{selected}"))
+                        || r.unlocks.contains(&format!("enable_equipment_modules:{}",module.category))
+                });
             if !module.active && !is_default && !explicitly_unlocked {
                 return Err(format!("Модуль {selected} ещё не изучен"));
             }
