@@ -82,11 +82,15 @@ impl Default for TradeConvoyRules {
 }
 impl TradeConvoyRules {
     pub fn required(self, resources: u32, sea_steps: usize) -> u64 {
-        if resources == 0 || sea_steps == 0 { return 0; }
+        if resources == 0 || sea_steps == 0 {
+            return 0;
+        }
         let units = u64::from(self.resource_units_per_convoy.max(1));
         let distance = u64::from(self.sea_provinces_per_distance_step.max(1));
         let distance_factor = (sea_steps as u64).div_ceil(distance).max(1);
-        u64::from(resources).div_ceil(units).saturating_mul(distance_factor)
+        u64::from(resources)
+            .div_ceil(units)
+            .saturating_mul(distance_factor)
     }
 }
 
@@ -265,14 +269,24 @@ impl ResourceEconomy {
             }
             let contracted = remaining.min(used_factories.saturating_mul(8));
             let route = if let Some(w) = warfare {
-                routes.entry((deal.buyer.clone(), deal.seller.clone())).or_insert_with(|| {
-                    trade_routes::find_route(world, w, &deal.buyer, &deal.seller,
-                        &w.logistics.blocked_sea)
-                }).clone()
+                routes
+                    .entry((deal.buyer.clone(), deal.seller.clone()))
+                    .or_insert_with(|| {
+                        trade_routes::find_route(
+                            world,
+                            w,
+                            &deal.buyer,
+                            &deal.seller,
+                            &w.logistics.blocked_sea,
+                        )
+                    })
+                    .clone()
             } else {
                 // Compatibility for isolated existing resource-only tests.
                 // The real campaign always calls settle_with_transport.
-                TradeRoute::Land { provinces: Vec::new() }
+                TradeRoute::Land {
+                    provinces: Vec::new(),
+                }
             };
             let (delivered, required_convoys, assigned_convoys) = match &route {
                 TradeRoute::Land { .. } => (contracted, 0, 0),
@@ -284,9 +298,11 @@ impl ResourceEconomy {
                     *available -= assigned;
                     let fulfilled = if required > 0 {
                         (u64::from(contracted) * assigned / required) as u32
-                    } else { 0 };
+                    } else {
+                        0
+                    };
                     (fulfilled, required, assigned)
-                },
+                }
             };
             // A non-existent route prevents a contract; a connected route with
             // a convoy shortage still ties up the paid factories until cancelled.
@@ -443,9 +459,18 @@ mod maritime_trade_tests {
 
     fn scenario(convoys: u64, overland: bool) -> (World, Warfare, ResourceEconomy) {
         let definition = (1..=5)
-            .map(|i| format!("{i};{i};0;0;{};true;plains;1",
-                if overland || i <= 2 || i == 5 { "land" } else { "sea" }))
-            .collect::<Vec<_>>().join("\n");
+            .map(|i| {
+                format!(
+                    "{i};{i};0;0;{};true;plains;1",
+                    if overland || i <= 2 || i == 5 {
+                        "land"
+                    } else {
+                        "sea"
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         let rgba = (1u8..=5).flat_map(|i| [i, 0, 0, 255]).collect::<Vec<_>>();
         let map = MapGraph::from_rgba(5, 1, &rgba, &definition, false).unwrap();
         let mut memberships = HashMap::from([(1, 1), (2, 1), (5, 5)]);
@@ -457,40 +482,92 @@ mod maritime_trade_tests {
             owners.insert(4, "N".into());
         }
         let mut world = World::from_map_data(
-            &memberships, &owners, &HashMap::new(),
+            &memberships,
+            &owners,
+            &HashMap::new(),
             &HashMap::from([
-                (1, StateEconomy { civilian_factories: 4, ..Default::default() }),
-                (5, StateEconomy { civilian_factories: 2, ..Default::default() }),
+                (
+                    1,
+                    StateEconomy {
+                        civilian_factories: 4,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    5,
+                    StateEconomy {
+                        civilian_factories: 2,
+                        ..Default::default()
+                    },
+                ),
             ]),
-            &HashMap::new()
+            &HashMap::new(),
         );
         world.geography = map;
-        world.resources_by_state.insert(5, BTreeMap::from([
-            ("steel".into(), 40), ("oil".into(), 20)
-        ]));
+        world.resources_by_state.insert(
+            5,
+            BTreeMap::from([("steel".into(), 40), ("oil".into(), 20)]),
+        );
         let mut war = Warfare::default();
-        war.logistics.countries.insert("A".into(), CountryLogistics {
-            capital: Some(1), convoys, ..Default::default()
-        });
-        war.logistics.countries.insert("B".into(), CountryLogistics {
-            capital: Some(5), ..Default::default()
-        });
-        war.conditions.insert(2, ProvinceConditions { naval_base: 1, ..Default::default() });
-        war.conditions.insert(5, ProvinceConditions { naval_base: 1, ..Default::default() });
+        war.logistics.countries.insert(
+            "A".into(),
+            CountryLogistics {
+                capital: Some(1),
+                convoys,
+                ..Default::default()
+            },
+        );
+        war.logistics.countries.insert(
+            "B".into(),
+            CountryLogistics {
+                capital: Some(5),
+                ..Default::default()
+            },
+        );
+        war.conditions.insert(
+            2,
+            ProvinceConditions {
+                naval_base: 1,
+                ..Default::default()
+            },
+        );
+        war.conditions.insert(
+            5,
+            ProvinceConditions {
+                naval_base: 1,
+                ..Default::default()
+            },
+        );
         let mut market = ResourceEconomy::default();
         market.laws.insert("B".into(), TradeLaw::FreeTrade);
-        market.set_deal(&world, TradeDeal {
-            buyer: "A".into(), seller: "B".into(), resource: "steel".into(), factories: 2,
-        }).unwrap();
+        market
+            .set_deal(
+                &world,
+                TradeDeal {
+                    buyer: "A".into(),
+                    seller: "B".into(),
+                    resource: "steel".into(),
+                    factories: 2,
+                },
+            )
+            .unwrap();
         (world, war, market)
     }
 
     #[test]
     fn shipping_uses_convoys_and_prevents_duplicate_allocation() {
         let (mut world, war, mut market) = scenario(1, false);
-        market.set_deal(&world, TradeDeal {
-            buyer: "A".into(), seller: "B".into(), resource: "oil".into(), factories: 1,
-        }).unwrap();
+        market
+            .set_deal(
+                &world,
+                TradeDeal {
+                    buyer: "A".into(),
+                    seller: "B".into(),
+                    resource: "oil".into(),
+                    factories: 1,
+                },
+            )
+            .unwrap();
         market.settle_with_transport(&mut world, &BTreeMap::new(), &war);
         assert_eq!(market.last_shipments.len(), 2);
         assert_eq!(market.last_shipments[0].required_convoys, 2);
@@ -517,7 +594,10 @@ mod maritime_trade_tests {
         market.settle_with_transport(&mut world, &BTreeMap::new(), &war);
         assert_eq!(market.last["A"].imported["steel"], 16);
         assert_eq!(market.last["A"].trade_convoys_used, 0);
-        assert!(matches!(market.last_shipments[0].route, TradeRoute::Land { .. }));
+        assert!(matches!(
+            market.last_shipments[0].route,
+            TradeRoute::Land { .. }
+        ));
     }
 
     #[test]
@@ -528,7 +608,10 @@ mod maritime_trade_tests {
         assert_eq!(market.last["A"].factories_spent, 0);
         assert!(market.last["A"].imported.is_empty());
         assert_eq!(market.last["B"].factories_received, 0);
-        assert!(matches!(market.last_shipments[0].route, TradeRoute::Unavailable { .. }));
+        assert!(matches!(
+            market.last_shipments[0].route,
+            TradeRoute::Unavailable { .. }
+        ));
     }
 
     #[test]
