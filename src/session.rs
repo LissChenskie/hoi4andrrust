@@ -255,6 +255,9 @@ impl GameSession {
         construction::initialize_builders(&self.world, &mut self.construction_queues);
         let control_revision = self.world.control_revision;
         let completed_day = self.clock.advance_one_hour();
+        self.military
+            .air
+            .replenish(&mut self.production, &self.world);
         self.military.tick_hour(
             &mut self.world,
             self.clock.date,

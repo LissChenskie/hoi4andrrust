@@ -78,6 +78,10 @@ pub struct AttackTrace {
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct HourTrace {
+    #[serde(default)]
+    pub attacker_air: AirSupport,
+    #[serde(default)]
+    pub defender_air: AirSupport,
     pub hour: u32,
     pub rng_start: Option<u64>,
     pub rng_end: Option<u64>,
@@ -638,6 +642,8 @@ impl LandBattle {
         self.elapsed_hours += 1;
         let mut trace = HourTrace {
             hour: self.elapsed_hours,
+            attacker_air: env.attacker_air.clone(),
+            defender_air: env.defender_air.clone(),
             rng_start: rng.checkpoint(),
             ..Default::default()
         };

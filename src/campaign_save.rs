@@ -139,8 +139,19 @@ impl GameSession {
             }
         }
         // All validation is complete; move the immutable shared data only now.
-        s.world.geography = std::mem::take(&mut self.world.geography);
         s.military.catalogue = self.military.catalogue.clone();
+        // Old snapshots have no support state. Migrate once from the already
+        // loaded campaign data; new saves retain their consumed resources.
+        if !s.military.logistics.enabled && self.military.logistics.enabled {
+            s.military.logistics = self.military.logistics.clone();
+        }
+        if !s.military.air.enabled && self.military.air.enabled {
+            s.military.air = self.military.air.clone();
+        }
+        s.military.logistics.validate(&self.world)?;
+        s.military.air.validate(&self.world, &s.military)?;
+        s.military.air.reindex();
+        s.world.geography = std::mem::take(&mut self.world.geography);
         s.military.command.data = self.military.command.data.clone();
         s.military.fronts.rebuild_after_restore(&s.world);
         let mut plans = std::mem::take(&mut s.military.plans);

@@ -24,6 +24,10 @@ pub struct ProvinceConditions {
 }
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
+    #[serde(default)]
+    pub logistics: crate::logistics::LogisticsState,
+    #[serde(default)]
+    pub air: crate::air_warfare::AirState,
     pub command: crate::command::CommandState,
     pub abilities: crate::command_abilities::AbilityState,
     pub fronts: crate::frontline::FrontState,
@@ -64,6 +68,8 @@ impl Warfare {
     pub fn new(catalogue: MilitaryCatalogue) -> Self {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
+            logistics: Default::default(),
+            air: Default::default(),
             command: Default::default(),
             abilities: Default::default(),
             fronts: Default::default(),
@@ -1677,7 +1683,12 @@ impl Warfare {
             }
         }
     }
-    fn environment(&self, battle: &LandBattle, world: &World, hour: u8) -> BattleEnvironment {
+    pub(crate) fn environment(
+        &self,
+        battle: &LandBattle,
+        world: &World,
+        hour: u8,
+    ) -> BattleEnvironment {
         let conditions = self
             .conditions
             .get(&battle.province)
@@ -1710,6 +1721,82 @@ impl Warfare {
             defender_air: conditions.defender_air,
             ..Default::default()
         };
+        if self.air.enabled && self.air.region_at(battle.province).is_some() {
+            let attacker = battle
+                .attackers
+                .active
+                .iter()
+                .chain(&battle.attackers.reserves)
+                .find_map(|id| self.divisions.get(id))
+                .map(|d| d.country.as_str())
+                .unwrap_or("");
+            let defender = battle
+                .defenders
+                .active
+                .iter()
+                .chain(&battle.defenders.reserves)
+                .find_map(|id| self.divisions.get(id))
+                .map(|d| d.country.as_str())
+                .unwrap_or("");
+            env.attacker_air =
+                self.air
+                    .support(attacker, defender, battle.province, self.simulated_hours);
+            env.defender_air =
+                self.air
+                    .support(defender, attacker, battle.province, self.simulated_hours);
+            let region = self.air.region_at(battle.province);
+            let simultaneous = 1 + self
+                .battles
+                .values()
+                .filter(|b| {
+                    b.id != battle.id
+                        && b.outcome.is_none()
+                        && self.air.region_at(b.province) == region
+                })
+                .count();
+            // A sortie cannot hit every province with the wing's full strength.
+            for air in [&mut env.attacker_air, &mut env.defender_air] {
+                air.plane_attack_rolls /= simultaneous as f64;
+                air.cas_planes /= simultaneous as u32;
+            }
+            let aa = |ids: &[u64]| {
+                ids.iter()
+                    .filter_map(|id| self.divisions.get(id))
+                    .map(|d| d.derived.stats.air_attack)
+                    .sum::<f64>()
+                    .max(0.)
+            };
+            let attacker_aa = aa(&battle.attackers.active);
+            let defender_aa = aa(&battle.defenders.active);
+            env.attacker_air.aa_damage_reduction = self.catalogue.rules.aa_max_reduction
+                * defender_aa
+                / (defender_aa + self.air.rules.aa_effect_scale.max(1e-9));
+            env.defender_air.aa_damage_reduction = self.catalogue.rules.aa_max_reduction
+                * attacker_aa
+                / (attacker_aa + self.air.rules.aa_effect_scale.max(1e-9));
+        }
+        if self.air.enabled && self.air.region_at(battle.province).is_some() {
+            let attacker_width = battle
+                .attackers
+                .active
+                .iter()
+                .filter_map(|id| self.divisions.get(id))
+                .map(|d| d.derived.stats.width)
+                .sum::<f64>();
+            let defender_width = battle
+                .defenders
+                .active
+                .iter()
+                .filter_map(|id| self.divisions.get(id))
+                .map(|d| d.derived.stats.width)
+                .sum::<f64>();
+            env.attacker_air.ground_support_bonus *= (f64::from(env.attacker_air.cas_planes)
+                / (defender_width * self.catalogue.rules.cas_planes_per_width).max(1.))
+            .min(1.);
+            env.defender_air.ground_support_bonus *= (f64::from(env.defender_air.cas_planes)
+                / (attacker_width * self.catalogue.rules.cas_planes_per_width).max(1.))
+            .min(1.);
+        }
         if let Some(weather) = conditions
             .weather
             .and_then(|name| self.catalogue.weather.get(&name))
@@ -2097,11 +2184,17 @@ impl Warfare {
                     d.derived.stats.speed * (1.0 + adjust).max(0.0) / terrain.movement_cost;
                 if d.derived.stats.fuel > 0.0 {
                     let fuel = d.fuel_fraction.clamp(0.0, 1.0);
-                    speed *= self
-                        .catalogue
-                        .rules
-                        .fuel_speed_penalty
-                        .map_or(fuel, |minimum| minimum + (1.0 - minimum) * fuel);
+                    speed *= self.catalogue.rules.fuel_speed_penalty.map_or_else(
+                        || {
+                            if self.logistics.enabled {
+                                self.logistics.rules.minimum_fuel_speed
+                                    + (1. - self.logistics.rules.minimum_fuel_speed) * fuel
+                            } else {
+                                fuel
+                            }
+                        },
+                        |minimum| minimum + (1.0 - minimum) * fuel,
+                    );
                 }
                 if let (Some(maximum), Some(impact)) = (
                     self.catalogue.infrastructure_max,
@@ -2125,7 +2218,13 @@ impl Warfare {
                         .copied()
                         .unwrap_or(0.0))
                 .max(0.0);
-                speed *= d.supply_fraction.clamp(0.0, 1.0);
+                let supply = d.supply_fraction.clamp(0.0, 1.0);
+                speed *= if self.logistics.enabled {
+                    self.logistics.rules.minimum_supply_speed
+                        + (1. - self.logistics.rules.minimum_supply_speed) * supply
+                } else {
+                    supply
+                };
                 let org_fraction =
                     (d.organization / d.derived.stats.organization.max(1e-9)).clamp(0.0, 1.0);
                 speed *= 1.0 + self.catalogue.rules.zero_org_speed * (1.0 - org_fraction);
@@ -2320,6 +2419,12 @@ impl Warfare {
         player: Option<&str>,
     ) {
         self.simulated_hours = elapsed;
+        let mut logistics = std::mem::take(&mut self.logistics);
+        logistics.tick(self, world, elapsed);
+        self.logistics = logistics;
+        let mut air = std::mem::take(&mut self.air);
+        air.tick(self, world, elapsed);
+        self.air = air;
         self.complete_manual_orders();
         self.tick_recruitment(world);
         let initial_control_revision = world.control_revision;

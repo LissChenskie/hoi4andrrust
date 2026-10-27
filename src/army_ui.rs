@@ -169,6 +169,12 @@ impl ArmyView {
     pub fn navigation_panel(&self) -> crate::campaign_ui::Panel {
         match self.page {
             Page::Recruitment | Page::Templates => crate::campaign_ui::Panel::Recruitment,
+            Page::Command
+                if !self.mobile.advanced
+                    && self.mobile.page == crate::mobile_army_ui::MobilePage::Logistics =>
+            {
+                crate::campaign_ui::Panel::Air
+            }
             Page::Command => crate::campaign_ui::Panel::Officer,
             _ => crate::campaign_ui::Panel::Army,
         }

@@ -103,6 +103,19 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
             ui::GOLD,
         );
         y += 24.0;
+        ui::tooltip(
+            Rect::new(r.x, y - 24., r.w, 23.),
+            "Авиация за этот час",
+            &format!(
+                "CAS: {} / {}\nВражеское превосходство: {:.0}% / {:.0}%\nУменьшение CAS через ПВО: {:.0}% / {:.0}%",
+                h.attacker_air.cas_planes,
+                h.defender_air.cas_planes,
+                h.attacker_air.enemy_superiority * 100.,
+                h.defender_air.enemy_superiority * 100.,
+                h.attacker_air.aa_damage_reduction * 100.,
+                h.defender_air.aa_damage_reduction * 100.
+            ),
+        );
         let tactics = |id: &str| {
             if id.is_empty() || id == "neutral/unavailable" {
                 "—".to_owned()
@@ -201,13 +214,21 @@ pub fn draw(tag: &str, w: &mut Warfare, view: &mut ArmyView, r: Rect) {
             row,
             &d.name,
             &format!(
-                "{} · HP {:.1}/{:.1} · Организация {:.1}/{:.1} · снабжение {:.0}%",
+                "{} · HP {:.1}/{:.1} · Организация {:.1}/{:.1} · снабжение {:.0}% · топливо {:.0}%\n{}",
                 d.country,
                 d.hp,
                 d.derived.stats.hp,
                 d.organization,
                 d.derived.stats.organization,
-                d.supply_fraction * 100.0
+                d.supply_fraction * 100.0,
+                d.fuel_fraction * 100.0,
+                w.logistics
+                    .divisions
+                    .get(id)
+                    .map_or(String::new(), |s| format!(
+                        "{} · запас {:.2} · износ {} ед.",
+                        s.reason, s.supply, s.equipment_lost
+                    ))
             ),
         );
     }

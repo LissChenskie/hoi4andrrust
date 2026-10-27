@@ -133,7 +133,6 @@ impl Panel {
                 | Self::Agency
                 | Self::Focus
                 | Self::Navy
-                | Self::Air
         )
     }
 }
@@ -207,6 +206,10 @@ impl Hud {
             Some(Panel::Army) => a.open = true,
             Some(Panel::Recruitment) => a.show_recruitment(),
             Some(Panel::Officer) => a.show_command(false),
+            Some(Panel::Air) => {
+                a.show_command(false);
+                a.mobile.page = crate::mobile_army_ui::MobilePage::Logistics;
+            }
             _ => {}
         }
     }
@@ -241,7 +244,7 @@ impl Hud {
             Some(Panel::Construction) => !c.open,
             Some(Panel::Production) => !p.open,
             Some(Panel::Research) => !r.open,
-            Some(Panel::Army | Panel::Recruitment | Panel::Officer) => !a.open,
+            Some(Panel::Army | Panel::Recruitment | Panel::Officer | Panel::Air) => !a.open,
             _ => false,
         };
         if closed {
@@ -442,6 +445,24 @@ pub fn draw_chrome(
     let factories = economy.civilian_factories + economy.military_factories + economy.dockyards;
     let manpower = number(army.map_or(0, |a| a.manpower_pool));
     let xp = army.map_or("—".into(), |a| format!("{:.0}", a.army_xp));
+    let support = tag.and_then(|t| w.logistics.countries.get(t));
+    let fuel_body=support.map_or("Нет исходных топливных данных".into(),|c|format!("Запас {:.0} / {:.0}; расход за час {:.1}. Дивизии и авиация расходуют один национальный запас. Нажмите для управления.",c.fuel,c.fuel_capacity,c.fuel_used_last_hour));
+    let mut demand = 0.;
+    let mut received = 0.;
+    for d in w
+        .divisions
+        .values()
+        .filter(|d| !d.destroyed && Some(d.country.as_str()) == tag)
+    {
+        let n = crate::logistics::supply_demand(d);
+        demand += n;
+        received += n * d.supply_fraction.clamp(0., 1.);
+    }
+    let supply_label = if demand > 0. && w.logistics.enabled {
+        format!("{:.0}%", received / demand * 100.)
+    } else {
+        "—".into()
+    };
     let metrics = [
         (
             Icon::Power,
@@ -480,17 +501,17 @@ pub fn draw_chrome(
         ),
         (
             Icon::Fuel,
-            "—".into(),
+            support.map_or("—".into(), |c| number(c.fuel.max(0.) as u64)),
             "Топливо",
-            "ЗАГЛУШКА · Национальный топливный баланс ещё не рассчитывается.",
-            false,
+            fuel_body.as_str(),
+            support.is_some(),
         ),
         (
             Icon::Convoy,
-            "—".into(),
+            support.map_or("—".into(), |c| number(c.convoys)),
             "Конвои",
-            "ЗАГЛУШКА · Производство и маршруты конвоев ещё не реализованы.",
-            false,
+            "Парк конвоев ограничивает морское снабжение через порты. Морское производство и бои флотов пока не моделируются. Нажмите для управления.",
+            support.is_some(),
         ),
         (
             Icon::Command,
@@ -521,15 +542,15 @@ pub fn draw_chrome(
             Icon::Air,
             "—".into(),
             "Опыт авиации",
-            "ЗАГЛУШКА · Воздушная система ещё не реализована.",
+            "Опыт авиации пока не начисляется. Региональные воздушные миссии доступны через кнопку авиации.",
             false,
         ),
         (
             Icon::Supply,
-            "—".into(),
+            supply_label,
             "Снабжение",
-            "ЗАГЛУШКА · Национальная логистическая сеть ещё не рассчитывается.",
-            false,
+            "Обеспеченность действующих дивизий с учётом доставки и переносимых запасов. Нажмите для просмотра сети, моторизации и топлива.",
+            w.logistics.enabled,
         ),
         (
             Icon::Nuclear,
@@ -559,6 +580,15 @@ pub fn draw_chrome(
             body,
             *live,
         );
+    }
+    if is_mouse_button_pressed(MouseButton::Left) {
+        for (i, (icon, _, _, _, _)) in metrics.iter().take(count).enumerate() {
+            if matches!(icon, Icon::Fuel | Icon::Convoy | Icon::Supply)
+                && ui::inside(Rect::new(start + i as f32 * mw, y, mw, 30.))
+            {
+                actions.push(Action::Open(Panel::Air));
+            }
+        }
     }
     let nav_y = if l.compact { 70.0 } else { 35.0 * l.scale };
     let nav_h = l.top - nav_y - 4.0;
@@ -1089,6 +1119,7 @@ pub fn draw_panel(
             | Panel::Army
             | Panel::Recruitment
             | Panel::Officer
+            | Panel::Air
     ) {
         return Vec::new();
     }
@@ -1998,6 +2029,22 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, province: u32) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn existing_air_button_opens_real_mission_inspector_and_closes_with_it() {
+        let mut hud = Hud::default();
+        let mut c = ConstructionView::default();
+        let mut p = ProductionView::default();
+        let mut r = ResearchView::default();
+        let mut a = ArmyView::default();
+        hud.open(Some(Panel::Air), &mut c, &mut p, &mut r, &mut a);
+        assert!(a.open);
+        assert!(!Panel::Air.placeholder());
+        assert_eq!(a.mobile.page, crate::mobile_army_ui::MobilePage::Logistics);
+        assert_eq!(a.navigation_panel(), Panel::Air);
+        a.close();
+        hud.reconcile(&c, &p, &r, &a);
+        assert!(hud.active.is_none());
+    }
     #[test]
     fn hoi_shortcuts_are_unique_and_shift_does_not_open_two_panels() {
         let mut bindings = std::collections::BTreeSet::new();

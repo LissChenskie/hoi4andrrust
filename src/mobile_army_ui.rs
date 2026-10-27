@@ -7,6 +7,7 @@ pub enum MobilePage {
     #[default]
     Army,
     Armies,
+    Logistics,
     Roster,
     Picker(bool),
     Commander(String),
@@ -17,6 +18,8 @@ pub struct MobileView {
     pub page: MobilePage,
     pub scroll: f32,
     pub advanced: bool,
+    pub air_region: Option<u32>,
+    pub air_base: Option<u32>,
     gesture: crate::army_touch::Gesture,
     scroll_drag: bool,
     cached_army: Option<(u64, u64, u64, u64, f64, army_projection::ArmyViewModel)>,
@@ -157,7 +160,11 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
     let tap = tap_frame(&mut m, panel, body);
     ui::panel(panel.x, panel.y, panel.w, panel.h);
     ui::label(
-        "АРМИЯ И КОМАНДОВАНИЕ",
+        if m.page == MobilePage::Logistics {
+            "ТЫЛ И АВИАЦИЯ"
+        } else {
+            "АРМИЯ И КОМАНДОВАНИЕ"
+        },
         Rect::new(panel.x + 12., panel.y + 16., panel.w - 74., 30.),
         17.,
         ui::GOLD,
@@ -188,6 +195,201 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
     {
         let _clip = ui::clip(body);
         match page.clone() {
+            MobilePage::Logistics => {
+                use crate::air_warfare::AirMission;
+                let c = w.logistics.countries.get(tag).cloned().unwrap_or_default();
+                rows.text(
+                    &format!(
+                        "Топливо {:.0} / {:.0}\nРасход за час {:.1} · конвои {} · грузовики {}",
+                        c.fuel,
+                        c.fuel_capacity,
+                        c.fuel_used_last_hour,
+                        c.convoys,
+                        c.truck_count()
+                    ),
+                    78.,
+                    ui::TEXT,
+                );
+                rows.text("Снабжение: столица → железная дорога / порт → хаб → дивизия. При разрыве пути расходуются переносимые запасы.",84.,ui::MUTED);
+                if let Some(id) = army {
+                    if let Ok(vm) = army_projection::army(w, tag, id, "russian") {
+                        rows.text(
+                            &format!(
+                                "Запас армии: {}\n{}",
+                                vm.supply
+                                    .reserve_days
+                                    .map_or("—".into(), |d| format!("{d:.1} суток")),
+                                vm.supply.bottleneck_reason.unwrap_or_default()
+                            ),
+                            62.,
+                            ui::GOLD,
+                        );
+                    }
+                }
+                let hubs: Vec<_> = w
+                    .conditions
+                    .iter()
+                    .filter(|(p, c)| {
+                        c.supply_node && world.controller_of_province(**p) == Some(tag)
+                    })
+                    .map(|(&p, _)| p)
+                    .collect();
+                for hub in hubs {
+                    let motor = w.logistics.motorized_hubs.contains(&hub);
+                    if rows.button(
+                        &format!(
+                            "Хаб {hub}: {}",
+                            if motor {
+                                "грузовики"
+                            } else {
+                                "пешая доставка"
+                            }
+                        ),
+                        motor,
+                    ) {
+                        if motor {
+                            w.logistics.motorized_hubs.remove(&hub);
+                        } else {
+                            w.logistics.motorized_hubs.insert(hub);
+                        }
+                        w.logistics.network_key = None;
+                        view.notice =
+                            "Грузовики резервируются из запаса страны при ходе времени".into();
+                    }
+                }
+                let regions: Vec<_> = w.air.regions.keys().copied().collect();
+                let target = m
+                    .air_region
+                    .filter(|r| regions.contains(r))
+                    .or_else(|| {
+                        view.selected.iter().find_map(|id| {
+                            w.divisions
+                                .get(id)
+                                .and_then(|d| w.air.region_at(d.province))
+                        })
+                    })
+                    .or_else(|| regions.first().copied());
+                m.air_region = target;
+                if rows.button(
+                    &format!(
+                        "Регион миссии: {} · следующий",
+                        target.map_or("нет данных".into(), |r| r.to_string())
+                    ),
+                    false,
+                ) {
+                    if !regions.is_empty() {
+                        let at = target
+                            .and_then(|r| regions.iter().position(|x| *x == r))
+                            .unwrap_or(0);
+                        m.air_region = Some(regions[(at + 1) % regions.len()]);
+                    }
+                }
+                let bases: Vec<_> = w
+                    .air
+                    .bases
+                    .keys()
+                    .copied()
+                    .filter(|&p| world.controller_of_province(p) == Some(tag))
+                    .collect();
+                let base = m
+                    .air_base
+                    .filter(|p| bases.contains(p))
+                    .or_else(|| bases.first().copied());
+                m.air_base = base;
+                if rows.button(
+                    &format!(
+                        "Авиабаза: {} · следующая",
+                        base.map_or("нет данных".into(), |p| p.to_string())
+                    ),
+                    false,
+                ) {
+                    if !bases.is_empty() {
+                        let at = base
+                            .and_then(|p| bases.iter().position(|x| *x == p))
+                            .unwrap_or(0);
+                        m.air_base = Some(bases[(at + 1) % bases.len()]);
+                    }
+                }
+                if let Some(p) = base {
+                    let models: Vec<_> = w
+                        .catalogue
+                        .equipment
+                        .values()
+                        .filter(|e| {
+                            e.buildable
+                                && !e.modular
+                                && crate::air_warfare::is_aircraft(e)
+                                && w.countries.get(tag).is_some_and(|a| {
+                                    w.catalogue.equipment_available(&e.id, &a.modifiers)
+                                })
+                        })
+                        .map(|e| e.id.clone())
+                        .collect();
+                    rows.text("Новые авиагруппы получают самолёты из национального запаса при ходе времени. Самолёты не создаются кнопкой.",78.,ui::MUTED);
+                    for model in models {
+                        if rows.button(&format!("Создать авиагруппу: {model}"), false)
+                        {
+                            let res = w
+                                .air
+                                .create_wing(tag, &model, p, world, &w.catalogue)
+                                .map(|_| ());
+                            result(view, res, "Авиагруппа создана: ожидает самолёты из запаса");
+                        }
+                    }
+                }
+                let wings: Vec<_> = w
+                    .air
+                    .wings
+                    .values()
+                    .filter(|a| a.country == tag)
+                    .cloned()
+                    .collect();
+                if wings.is_empty() {
+                    rows.text("Авиагрупп нет. Нужны известные модели самолётов, авиабаза и техника в запасе страны.",90.,ui::MUTED);
+                }
+                for a in wings {
+                    rows.text(
+                        &format!(
+                            "{} · {} самолётов\nБаза {} · регион {}\nВылетов {} · потери {}",
+                            a.name,
+                            a.planes,
+                            a.base,
+                            a.region.map_or("—".into(), |r| r.to_string()),
+                            a.sorties,
+                            a.losses
+                        ),
+                        82.,
+                        ui::TEXT,
+                    );
+                    if rows.button(
+                        &format!("{} · сменить миссию", a.mission.label()),
+                        a.mission != AirMission::Standby,
+                    ) {
+                        let next = match a.mission {
+                            AirMission::Standby => AirMission::Superiority,
+                            AirMission::Superiority => AirMission::Interception,
+                            AirMission::Interception => AirMission::CloseAirSupport,
+                            AirMission::CloseAirSupport => AirMission::Standby,
+                        };
+                        let res = w.air.assign(tag, a.id, next, target);
+                        result(view, res, "Миссия назначена");
+                    }
+                    if rows.button("Назначить выбранные регион и базу", false)
+                    {
+                        if let Some(base) = base {
+                            w.air.wings.get_mut(&a.id).unwrap().base = base;
+                        }
+                        let res = w.air.assign(tag, a.id, a.mission, target);
+                        result(view, res, "Регион и база назначены");
+                    }
+                }
+                if let Some(r) = target
+                    .and_then(|id| w.air.results.get(&id))
+                    .and_then(|r| r.get(tag))
+                {
+                    rows.text(&format!("Последний вылет: час {}\nСамолётов {} · истребители {} · CAS {}\nПотери {} · топливо {:.1}",r.hour,r.sorties,r.fighters,r.cas,r.losses,r.fuel_used),90.,ui::GOLD);
+                }
+            }
             MobilePage::Armies => {
                 rows.text(
                     "Выберите армию или создайте её из выделенных дивизий.",
@@ -233,6 +435,10 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                 }
             }
             MobilePage::Army | MobilePage::Roster => {
+                if rows.button("Снабжение, топливо и авиация", false) {
+                    navigate(&mut m, MobilePage::Logistics);
+                }
+
                 if let Some(vm) = army.and_then(|id| army_model(w, tag, id, &mut m)) {
                     rows.text(&vm.name, 48., ui::GOLD);
                     if page == MobilePage::Roster {
@@ -325,6 +531,9 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                         rows.ratio("Организация", vm.organization_ratio);
                         rows.ratio("Прочность", vm.strength_ratio);
                         rows.ratio("Снабжение", vm.supply.ratio);
+                        if let Some(reason) = &vm.supply.bottleneck_reason {
+                            rows.text(reason, 54., ui::MUTED);
+                        }
                         rows.text(
                             &format!(
                                 "Снабжение: {:.2} / {:.2}\nПланов: {} · выполняется: {}",

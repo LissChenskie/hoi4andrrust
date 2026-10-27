@@ -32,7 +32,7 @@ pub struct ArmySupplySummary {
     pub ratio: Option<f64>,
     pub requested: f64,
     pub received: f64,
-    /// The existing solver does not expose these; absence is explicit.
+    /// Remaining carried supply, weighted by the army demand.
     pub reserve_days: Option<f64>,
     pub bottleneck_reason: Option<String>,
 }
@@ -115,11 +115,11 @@ pub fn army(
     let average = |sum: f64| (count > 0).then(|| sum / count as f64);
     let requested = divisions
         .iter()
-        .map(|d| d.derived.stats.supply.max(0.0))
+        .map(|d| crate::logistics::supply_demand(d))
         .sum::<f64>();
     let received = divisions
         .iter()
-        .map(|d| d.derived.stats.supply.max(0.0) * d.supply_fraction.clamp(0.0, 1.0))
+        .map(|d| crate::logistics::supply_demand(d) * d.supply_fraction.clamp(0.0, 1.0))
         .sum::<f64>();
     let plans: Vec<_> = w.plans.plans.values().filter(|p| p.army == id).collect();
     Ok(ArmyViewModel {
@@ -141,8 +141,34 @@ pub fn army(
             ratio: (requested > 0.0).then(|| received / requested),
             requested,
             received,
-            reserve_days: None,
-            bottleneck_reason: None,
+            reserve_days: (requested > 0.
+                && w.logistics.enabled
+                && divisions
+                    .iter()
+                    .all(|d| w.logistics.divisions.contains_key(&d.id)))
+            .then(|| {
+                divisions
+                    .iter()
+                    .filter_map(|d| w.logistics.divisions.get(&d.id))
+                    .map(|s| s.supply)
+                    .sum::<f64>()
+                    / requested
+            }),
+            bottleneck_reason: w
+                .logistics
+                .enabled
+                .then(|| {
+                    divisions
+                        .iter()
+                        .filter_map(|d| w.logistics.divisions.get(&d.id))
+                        .filter(|s| s.received + 1e-8 < s.demand)
+                        .map(|s| s.reason.clone())
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                })
+                .filter(|s| !s.is_empty()),
         },
         commander: a
             .general

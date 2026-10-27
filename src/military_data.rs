@@ -737,8 +737,8 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
         "Compatibility: reconstructed rules; original engine RNG/rounding parity is unverified"
             .into(),
     );
-    db.diagnostics.push("Supply, fuel, weather and air are resolved scenario inputs; no upstream logistics/air simulation yet".into());
-    db.diagnostics.push("1.19 mastery/doctrines, battalion_mult, custom variants and attrition require further import/validation".into());
+    db.diagnostics.push("Supply/fuel/air are resolved by campaign support systems when their map data is available; direct inputs remain for legacy profiles. Weather generation is not implemented.".into());
+    db.diagnostics.push("1.19 mastery/doctrines, battalion_mult and custom variants require further import/validation; campaign attrition coefficients are approximate.".into());
     db.diagnostics.push("Operations: army/group front assignments and plan policies issue ordinary movement/combat orders; outgoing attacks are interrupted when their origin is attacked".into());
     db
 }

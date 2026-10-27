@@ -1,3 +1,4 @@
+mod air_warfare;
 mod army_command_ui;
 mod army_controls;
 mod army_projection;
@@ -12,7 +13,11 @@ mod construction;
 mod construction_map;
 mod construction_ui;
 mod division_designer_ui;
+mod logistics;
 mod mobile_army_ui;
+mod support_import;
+#[cfg(test)]
+mod support_tests;
 pub use hoi4_mobile::game;
 mod battle_plan_render;
 mod battle_plan_ui;
@@ -2751,6 +2756,7 @@ fn draw_map_viewer(
                 campaign_ui::Panel::Army
                     | campaign_ui::Panel::Recruitment
                     | campaign_ui::Panel::Officer
+                    | campaign_ui::Panel::Air
             )
         )
     {

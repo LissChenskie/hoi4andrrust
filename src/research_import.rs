@@ -836,6 +836,7 @@ impl ResearchDataset {
                     ("history/units", "txt"),
                     ("history/states", "txt"),
                     ("history/diplomacy", "txt"),
+                    ("map", "txt"),
                 ],
             )?);
             for (relative, path) in review_files {
@@ -865,6 +866,7 @@ impl ResearchDataset {
                 "research-runtime-evidence.json",
                 "military_profile.txt",
                 "military-command-profile.json",
+                "military_support.json",
                 "military-import-report.json",
             ] {
                 if root.join(name).is_file()
@@ -1448,11 +1450,27 @@ mod tests {
             "common/units/a.txt",
             "sub_units={infantry={combat_width=2}}",
         );
+        f.put("map/railways.txt", "2 2 1 2");
+        f.put("map/supply_nodes.txt", "1 2");
+        f.put(
+            "map/strategicregions/a.txt",
+            "strategic_region={id=1 provinces={1 2}}",
+        );
+        f.put("military_support.json", r#"{"schema":1}"#);
         let d = ResearchDataset::load(&f.0, false).unwrap();
         let fingerprint = d.registry.fingerprint.clone();
         let out = d.write_review_sources(&f.0).unwrap();
         assert!(out.join("history/units/AAA_1936.txt").is_file());
         assert!(out.join("common/units/a.txt").is_file());
+        for file in [
+            "map/railways.txt",
+            "map/supply_nodes.txt",
+            "map/strategicregions/a.txt",
+            "military_support.json",
+        ] {
+            assert!(out.join(file).is_file(), "{file}");
+        }
+        assert!(!d.files.iter().any(|f| f.path.starts_with("map/")));
         assert!(!d.files.iter().any(|f| f.path.starts_with("history/units/")));
         assert_eq!(
             ResearchDataset::load(&f.0, true)

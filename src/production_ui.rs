@@ -501,7 +501,7 @@ fn default_model(
             Equipment::InfantryKit => e.archetype.contains("infantry"),
             Equipment::SupportKit => e.archetype.contains("support"),
             Equipment::Truck => e.archetype.contains("motorized"),
-            Equipment::Aircraft => e.archetype.contains("plane"),
+            Equipment::Aircraft => crate::air_warfare::is_aircraft(e),
             Equipment::FieldEquipment => {
                 e.archetype.contains("artillery")
                     || e.archetype.contains("anti_tank")

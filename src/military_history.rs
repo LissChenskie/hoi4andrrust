@@ -208,6 +208,27 @@ fn effects(
     for entry in &resolved {
         let army = warfare.countries.get_mut(tag).unwrap();
         match entry.key.as_str() {
+            "set_convoys" => {
+                if let Some(n) = entry.atom().and_then(|s| s.parse::<u64>().ok()) {
+                    warfare
+                        .logistics
+                        .countries
+                        .entry(tag.into())
+                        .or_default()
+                        .convoys = n;
+                }
+            }
+            "set_fuel" | "fuel" => {
+                if let Some(n) = entry
+                    .atom()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|n| n.is_finite() && *n >= 0.)
+                {
+                    let c = warfare.logistics.countries.entry(tag.into()).or_default();
+                    c.fuel = n;
+                    c.fuel_capacity = c.fuel_capacity.max(n);
+                }
+            }
             "oob" | "set_oob" => {
                 if let Some(id) = entry.atom() {
                     oobs.clear();
@@ -287,7 +308,24 @@ fn effects(
                         .ok_or_else(|| "missing effect block".to_owned())
                         .and_then(|b| {
                             if entry.key == "add_equipment_to_stockpile" {
-                                stockpile_effect(b, tag, warfare, production)
+                                if atom(b, "type") == Some("convoy_1")
+                                    || atom(b, "type") == Some("convoy")
+                                {
+                                    literal(b, "amount", 0.).and_then(|n| {
+                                        if n.fract() != 0. || n.abs() > i64::MAX as f64 {
+                                            return Err("Invalid convoy count".into());
+                                        }
+                                        let c = warfare
+                                            .logistics
+                                            .countries
+                                            .entry(tag.into())
+                                            .or_default();
+                                        c.convoys = c.convoys.saturating_add_signed(n as i64);
+                                        Ok(())
+                                    })
+                                } else {
+                                    stockpile_effect(b, tag, warfare, production)
+                                }
                             } else {
                                 production_effect(b, tag, source, warfare, production, rules)
                             }
@@ -724,6 +762,7 @@ pub fn initialize(
             }
         }
     }
+    crate::support_import::load(root, world, &mut warfare, today);
     warfare.command = crate::command::load(root, &warfare, today);
     crate::command_abilities::load(root, &mut warfare);
     warfare
@@ -749,7 +788,7 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
             )
         })
         .collect();
-    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "countries": countries, "command_data": warfare.command.data, "command_summary": warfare.command.data.summary(), "army_views": warfare.command.armies.values().filter_map(|a| crate::army_projection::army(warfare, &a.country, a.id, "russian").ok()).collect::<Vec<_>>(), "diagnostics": warfare.diagnostics})
+    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "logistics":warfare.logistics, "air":warfare.air, "countries": countries, "command_data": warfare.command.data, "command_summary": warfare.command.data.summary(), "army_views": warfare.command.armies.values().filter_map(|a| crate::army_projection::army(warfare, &a.country, a.id, "russian").ok()).collect::<Vec<_>>(), "diagnostics": warfare.diagnostics})
 }
 
 #[cfg(test)]
