@@ -15,11 +15,17 @@ pub mod save_pairs {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
     pub fn serialize<K: Ord + Serialize, V: Serialize, S: Serializer>(
-        value: &BTreeMap<K, V>, serializer: S,
+        value: &BTreeMap<K, V>,
+        serializer: S,
     ) -> Result<S::Ok, S::Error> {
         value.iter().collect::<Vec<_>>().serialize(serializer)
     }
-    pub fn deserialize<'de, K: Ord + Deserialize<'de>, V: Deserialize<'de>, D: Deserializer<'de>>(
+    pub fn deserialize<
+        'de,
+        K: Ord + Deserialize<'de>,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
         deserializer: D,
     ) -> Result<BTreeMap<K, V>, D::Error> {
         #[derive(Deserialize)]
@@ -943,19 +949,28 @@ mod tests {
         let mut navy = NavalState::default();
         navy.spotting.insert((100, 1, 2), 0.8);
         navy.last_contact_battle.insert((100, 1, 2), 48);
-        navy.loss_progress.insert(("A".into(), "B".into(), "steel".into()), 0.35);
-        navy.conditions.insert((1, 0), crate::naval_combat::ShipCondition {
-            organisation: 0.3, critical_damage: 0.2,
-        });
+        navy.loss_progress
+            .insert(("A".into(), "B".into(), "steel".into()), 0.35);
+        navy.conditions.insert(
+            (1, 0),
+            crate::naval_combat::ShipCondition {
+                organisation: 0.3,
+                critical_damage: 0.2,
+            },
+        );
         let saved = serde_json::to_string(&navy).unwrap();
         let loaded: NavalState = serde_json::from_str(&saved).unwrap();
         assert_eq!(loaded.spotting[&(100, 1, 2)], 0.8);
         assert_eq!(loaded.last_contact_battle[&(100, 1, 2)], 48);
-        assert_eq!(loaded.loss_progress[&("A".into(), "B".into(), "steel".into())], 0.35);
+        assert_eq!(
+            loaded.loss_progress[&("A".into(), "B".into(), "steel".into())],
+            0.35
+        );
         assert_eq!(loaded.conditions[&(1, 0)].organisation, 0.3);
         let legacy: NavalState = serde_json::from_str(
-            r#"{"admirals":{},"loss_progress":{},"spotting":{},"conditions":{}}"#
-        ).unwrap();
+            r#"{"admirals":{},"loss_progress":{},"spotting":{},"conditions":{}}"#,
+        )
+        .unwrap();
         assert!(legacy.admirals.is_empty() && legacy.loss_progress.is_empty());
     }
 
