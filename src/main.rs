@@ -35,6 +35,7 @@ mod military_history;
 mod military_model;
 mod operations;
 mod production;
+mod resource_economy;
 mod production_ui;
 mod recruitment;
 mod recruitment_ui;
