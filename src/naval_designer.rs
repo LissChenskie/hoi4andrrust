@@ -51,9 +51,10 @@ impl NavalModuleCountLimit {
         let empty = module.is_none();
         self.modules.contains(id)
             || (empty && self.modules.contains("empty"))
-            || (!empty && (self.modules.contains("any")
-                || self.categories.contains("any")
-                || module.is_some_and(|m| self.categories.contains(&m.category))))
+            || (!empty
+                && (self.modules.contains("any")
+                    || self.categories.contains("any")
+                    || module.is_some_and(|m| self.categories.contains(&m.category))))
     }
     fn valid(&self, n: u32) -> bool {
         match self.relation {
@@ -112,9 +113,9 @@ impl NavalDesignerCatalogue {
         base.slot_aliases.extend(hull.slot_aliases.clone());
         base.default_modules.extend(hull.default_modules.clone());
         for rule in &hull.module_count_limits {
-            if let Some(previous) = base.module_count_limits.iter_mut().find(|previous|
-                previous.modules == rule.modules && previous.categories == rule.categories)
-            {
+            if let Some(previous) = base.module_count_limits.iter_mut().find(|previous| {
+                previous.modules == rule.modules && previous.categories == rule.categories
+            }) {
                 *previous = rule.clone();
             } else {
                 base.module_count_limits.push(rule.clone());
@@ -238,19 +239,28 @@ impl NavalDesignerCatalogue {
         // A limit matches a slot when ANY listed module or category condition
         // matches. Every slot contributes no more than one to that limit.
         for limit in &h.module_count_limits {
-            if limit.relation == CountRelation::Any { continue; }
-            let count = h.slots.keys().filter(|slot| {
-                let selected = combined.get(*slot).map(String::as_str).unwrap_or("empty");
-                let module = if selected == "empty" || selected == "inherit" {
-                    None
-                } else {
-                    self.modules.get(selected)
-                };
-                limit.matches(selected, module)
-            }).count() as u32;
+            if limit.relation == CountRelation::Any {
+                continue;
+            }
+            let count = h
+                .slots
+                .keys()
+                .filter(|slot| {
+                    let selected = combined.get(*slot).map(String::as_str).unwrap_or("empty");
+                    let module = if selected == "empty" || selected == "inherit" {
+                        None
+                    } else {
+                        self.modules.get(selected)
+                    };
+                    limit.matches(selected, module)
+                })
+                .count() as u32;
             if !limit.valid(count) {
-                return Err(format!("Нарушен module_count_limit {}: {} модулей",
-                    limit.title.as_deref().unwrap_or(""), count));
+                return Err(format!(
+                    "Нарушен module_count_limit {}: {} модулей",
+                    limit.title.as_deref().unwrap_or(""),
+                    count
+                ));
             }
         }
         // Module exclusions are evaluated against the *complete* loadout,
@@ -420,36 +430,49 @@ pub fn import_from_layers(root: &Path) -> NavalDesignerCatalogue {
             }
             for limit_entry in b.iter().filter(|entry| entry.key == "module_count_limit") {
                 let Some(rule) = limit_entry.block() else {
-                    result.diagnostics.push(format!("Invalid module_count_limit for {}",node.key));
+                    result
+                        .diagnostics
+                        .push(format!("Invalid module_count_limit for {}", node.key));
                     continue;
                 };
-                let modules = rule.iter().filter(|e|e.key == "module")
-                    .filter_map(|e|e.atom().map(str::to_owned)).collect();
-                let categories = rule.iter().filter(|e|e.key == "category")
-                    .filter_map(|e|e.atom().map(str::to_owned)).collect();
-                let count = rule.iter().find(|e|e.key == "count");
-                let relation = count.and_then(|e|{
-                    match (e.operator.as_str(), e.atom()) {
-                        ("=",Some("any")) => Some(CountRelation::Any),
-                        ("<",Some(_)) => Some(CountRelation::Less),
-                        (">",Some(_)) => Some(CountRelation::Greater),
-                        ("=",Some(_)) => Some(CountRelation::Equal),
-                        _ => None,
-                    }
+                let modules = rule
+                    .iter()
+                    .filter(|e| e.key == "module")
+                    .filter_map(|e| e.atom().map(str::to_owned))
+                    .collect();
+                let categories = rule
+                    .iter()
+                    .filter(|e| e.key == "category")
+                    .filter_map(|e| e.atom().map(str::to_owned))
+                    .collect();
+                let count = rule.iter().find(|e| e.key == "count");
+                let relation = count.and_then(|e| match (e.operator.as_str(), e.atom()) {
+                    ("=", Some("any")) => Some(CountRelation::Any),
+                    ("<", Some(_)) => Some(CountRelation::Less),
+                    (">", Some(_)) => Some(CountRelation::Greater),
+                    ("=", Some(_)) => Some(CountRelation::Equal),
+                    _ => None,
                 });
-                if let (Some(relation),Some(count)) = (relation,count) {
-                    let number = if relation == CountRelation::Any { Some(0) } else {
-                        count.atom().and_then(|a|a.parse::<u32>().ok())
+                if let (Some(relation), Some(count)) = (relation, count) {
+                    let number = if relation == CountRelation::Any {
+                        Some(0)
+                    } else {
+                        count.atom().and_then(|a| a.parse::<u32>().ok())
                     };
                     if let Some(count) = number {
                         hull.module_count_limits.push(NavalModuleCountLimit {
-                            modules,categories,relation,count,
-                            title:atom(rule,"title").map(str::to_owned),
+                            modules,
+                            categories,
+                            relation,
+                            count,
+                            title: atom(rule, "title").map(str::to_owned),
                         });
                         continue;
                     }
                 }
-                result.diagnostics.push(format!("Unparseable module_count_limit for {}",node.key));
+                result
+                    .diagnostics
+                    .push(format!("Unparseable module_count_limit for {}", node.key));
             }
             if let Some(defaults) = block(b, "default_modules") {
                 hull.default_modules = defaults
@@ -475,70 +498,112 @@ mod tests {
     use crate::military_model::{EquipmentDefinition, MilitaryModifiers};
     #[test]
     fn module_count_limits_use_or_selectors_empty_slots_and_strict_comparisons() {
-        let mut data=NavalDesignerCatalogue::default();
-        for id in ["radar_a","radar_b","sonar"] {
-            data.modules.insert(id.into(), NavalModule {
-                category: if id=="sonar" {"sonar"} else {"radar"}.into(),
-                active:true,..Default::default()
-            });
+        let mut data = NavalDesignerCatalogue::default();
+        for id in ["radar_a", "radar_b", "sonar"] {
+            data.modules.insert(
+                id.into(),
+                NavalModule {
+                    category: if id == "sonar" { "sonar" } else { "radar" }.into(),
+                    active: true,
+                    ..Default::default()
+                },
+            );
         }
-        let radar=NavalSlot {
-            required:false,categories:BTreeSet::from(["radar".into(),"sonar".into()])
+        let radar = NavalSlot {
+            required: false,
+            categories: BTreeSet::from(["radar".into(), "sonar".into()]),
         };
-        let base="ship_hull_light_1";
-        data.hulls.insert(base.into(),NavalHull {
-            base_stats:StatBlock::from([("build_cost_ic".into(),100.)]),
-            slots:BTreeMap::from([
-                ("special_1".into(),radar.clone()),
-                ("special_2".into(),radar.clone()),
-                ("special_3".into(),radar),
-            ]),
-            module_count_limits:vec![
-                NavalModuleCountLimit {
-                    modules:BTreeSet::from(["radar_a".into()]),
-                    categories:BTreeSet::from(["sonar".into()]),
-                    relation:CountRelation::Less,count:2,title:None
-                },
-                NavalModuleCountLimit {
-                    modules:BTreeSet::from(["empty".into()]),categories:BTreeSet::new(),
-                    relation:CountRelation::Greater,count:0,title:None
-                },
-            ],
-            ..Default::default()
-        });
-        let mut db=MilitaryCatalogue::default();
-        db.equipment.insert(base.into(),EquipmentDefinition {
-            id:base.into(),archetype:"ship_hull_light".into(),year:1936,
-            active:true,buildable:true,stats:StatBlock::new(),cost:100.,
-            modular:false,source:"fixture".into()
-        });
-        let mods=MilitaryModifiers::default();
-        let one=BTreeMap::from([("special_1".into(),"radar_a".into())]);
-        assert!(data.construct("A","one",base,&one,&db,&mods,None).is_ok());
-        let two=BTreeMap::from([
-            ("special_1".into(),"radar_a".into()),("special_2".into(),"sonar".into())
+        let base = "ship_hull_light_1";
+        data.hulls.insert(
+            base.into(),
+            NavalHull {
+                base_stats: StatBlock::from([("build_cost_ic".into(), 100.)]),
+                slots: BTreeMap::from([
+                    ("special_1".into(), radar.clone()),
+                    ("special_2".into(), radar.clone()),
+                    ("special_3".into(), radar),
+                ]),
+                module_count_limits: vec![
+                    NavalModuleCountLimit {
+                        modules: BTreeSet::from(["radar_a".into()]),
+                        categories: BTreeSet::from(["sonar".into()]),
+                        relation: CountRelation::Less,
+                        count: 2,
+                        title: None,
+                    },
+                    NavalModuleCountLimit {
+                        modules: BTreeSet::from(["empty".into()]),
+                        categories: BTreeSet::new(),
+                        relation: CountRelation::Greater,
+                        count: 0,
+                        title: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        let mut db = MilitaryCatalogue::default();
+        db.equipment.insert(
+            base.into(),
+            EquipmentDefinition {
+                id: base.into(),
+                archetype: "ship_hull_light".into(),
+                year: 1936,
+                active: true,
+                buildable: true,
+                stats: StatBlock::new(),
+                cost: 100.,
+                modular: false,
+                source: "fixture".into(),
+            },
+        );
+        let mods = MilitaryModifiers::default();
+        let one = BTreeMap::from([("special_1".into(), "radar_a".into())]);
+        assert!(
+            data.construct("A", "one", base, &one, &db, &mods, None)
+                .is_ok()
+        );
+        let two = BTreeMap::from([
+            ("special_1".into(), "radar_a".into()),
+            ("special_2".into(), "sonar".into()),
         ]);
-        assert!(data.construct("A","two",base,&two,&db,&mods,None).is_err());
-        let all=BTreeMap::from([
-            ("special_1".into(),"radar_b".into()),
-            ("special_2".into(),"radar_b".into()),
-            ("special_3".into(),"radar_b".into()),
+        assert!(
+            data.construct("A", "two", base, &two, &db, &mods, None)
+                .is_err()
+        );
+        let all = BTreeMap::from([
+            ("special_1".into(), "radar_b".into()),
+            ("special_2".into(), "radar_b".into()),
+            ("special_3".into(), "radar_b".into()),
         ]);
-        assert!(data.construct("A","all",base,&all,&db,&mods,None).is_err());
+        assert!(
+            data.construct("A", "all", base, &all, &db, &mods, None)
+                .is_err()
+        );
         // A child with the exact same selectors replaces the inherited limit.
-        let child="ship_hull_light_2";
-        let parent=data.hulls.get(base).unwrap();
-        let mut overridden=parent.module_count_limits[0].clone();
-        overridden.relation=CountRelation::Any;
-        data.hulls.insert(child.into(),NavalHull {
-            parent:Some(base.into()),
-            module_count_limits:vec![overridden],..Default::default()
-        });
-        let mut def=db.equipment[base].clone();
-        def.id=child.into();
-        db.equipment.insert(child.into(),def);
-        assert!(data.construct("A","child",child,&two,&db,&mods,None).is_ok());
-        assert!(data.construct("A","child-empty",child,&all,&db,&mods,None).is_err());
+        let child = "ship_hull_light_2";
+        let parent = data.hulls.get(base).unwrap();
+        let mut overridden = parent.module_count_limits[0].clone();
+        overridden.relation = CountRelation::Any;
+        data.hulls.insert(
+            child.into(),
+            NavalHull {
+                parent: Some(base.into()),
+                module_count_limits: vec![overridden],
+                ..Default::default()
+            },
+        );
+        let mut def = db.equipment[base].clone();
+        def.id = child.into();
+        db.equipment.insert(child.into(), def);
+        assert!(
+            data.construct("A", "child", child, &two, &db, &mods, None)
+                .is_ok()
+        );
+        assert!(
+            data.construct("A", "child-empty", child, &all, &db, &mods, None)
+                .is_err()
+        );
     }
 
     #[test]
