@@ -348,52 +348,86 @@ impl NavalState {
     }
 
     pub fn save_design(
-        &mut self, tag: &str, name: &str, hull: &str,
-        modules: &BTreeMap<String,String>, w: &Warfare,
+        &mut self,
+        tag: &str,
+        name: &str,
+        hull: &str,
+        modules: &BTreeMap<String, String>,
+        w: &Warfare,
         research: Option<&crate::research::CountryResearch>,
-    ) -> Result<String,String> {
-        let modifiers=&w.countries.get(tag).ok_or("Неизвестная страна")?.modifiers;
-        let mut design=w.catalogue.naval_designer.construct(
-            tag,name,hull,modules,&w.catalogue,modifiers,research
+    ) -> Result<String, String> {
+        let modifiers = &w.countries.get(tag).ok_or("Неизвестная страна")?.modifiers;
+        let mut design = w.catalogue.naval_designer.construct(
+            tag,
+            name,
+            hull,
+            modules,
+            &w.catalogue,
+            modifiers,
+            research,
         )?;
-        self.next_design_id=self.next_design_id.saturating_add(1);
-        let id=format!("{tag}_naval_design_{}",self.next_design_id);
-        design.id=id.clone();
-        self.designs.insert(id.clone(),design);
+        self.next_design_id = self.next_design_id.saturating_add(1);
+        let id = format!("{tag}_naval_design_{}", self.next_design_id);
+        design.id = id.clone();
+        self.designs.insert(id.clone(), design);
         Ok(id)
     }
     pub fn queue_design(
-        &mut self, tag:&str,design_id:&str,base:u32,dockyards:u32,
-        world:&World,w:&Warfare,
-    )->Result<u64,String> {
-        let design=self.designs.get(design_id).ok_or("Проект не найден")?;
-        if design.country != tag {return Err("Проект принадлежит другой стране".into());}
-        let modifiers=&w.countries.get(tag).ok_or("Страна отсутствует")?.modifiers;
-        let can_build=w.catalogue.equipment.get(&design.hull).is_some_and(|e|
-            e.buildable && (e.active || modifiers.unlocked_equipment.contains(&design.hull)));
-        if !can_build {return Err("Корпус ещё не исследован".into());}
-        if dockyards==0 || world.controller_of_province(base)!=Some(tag)
-            || w.conditions.get(&base).is_none_or(|c|c.naval_base==0)
-        {return Err("Для постройки нужна доступная морская база".into());}
-        self.next_construction_id=self.next_construction_id.saturating_add(1);
-        let id=self.next_construction_id;
-        self.shipbuilding.entry(tag.into()).or_default().push(NavalConstruction {
-            id,country:tag.into(),model:design_id.into(),base,
-            requested_dockyards:dockyards.min(self.rules.dockyards_per_line.max(1)),
-            partial_ic:0.,completed:0,last_day_ic:0.,
+        &mut self,
+        tag: &str,
+        design_id: &str,
+        base: u32,
+        dockyards: u32,
+        world: &World,
+        w: &Warfare,
+    ) -> Result<u64, String> {
+        let design = self.designs.get(design_id).ok_or("Проект не найден")?;
+        if design.country != tag {
+            return Err("Проект принадлежит другой стране".into());
+        }
+        let modifiers = &w.countries.get(tag).ok_or("Страна отсутствует")?.modifiers;
+        let can_build = w.catalogue.equipment.get(&design.hull).is_some_and(|e| {
+            e.buildable && (e.active || modifiers.unlocked_equipment.contains(&design.hull))
         });
+        if !can_build {
+            return Err("Корпус ещё не исследован".into());
+        }
+        if dockyards == 0
+            || world.controller_of_province(base) != Some(tag)
+            || w.conditions.get(&base).is_none_or(|c| c.naval_base == 0)
+        {
+            return Err("Для постройки нужна доступная морская база".into());
+        }
+        self.next_construction_id = self.next_construction_id.saturating_add(1);
+        let id = self.next_construction_id;
+        self.shipbuilding
+            .entry(tag.into())
+            .or_default()
+            .push(NavalConstruction {
+                id,
+                country: tag.into(),
+                model: design_id.into(),
+                base,
+                requested_dockyards: dockyards.min(self.rules.dockyards_per_line.max(1)),
+                partial_ic: 0.,
+                completed: 0,
+                last_day_ic: 0.,
+            });
         Ok(id)
     }
     pub fn ship_stats<'a>(
-        &'a self, ship: &crate::naval_warfare::NavalShip,
+        &'a self,
+        ship: &crate::naval_warfare::NavalShip,
         w: &'a Warfare,
     ) -> Option<&'a crate::military_model::StatBlock> {
-        if let Some(variant)=ship.variant.as_ref() {
-            if let Some(design)=self.designs.get(variant) {
-                if design.hull==ship.model {return Some(&design.stats);}
+        if let Some(variant) = ship.variant.as_ref() {
+            if let Some(design) = self.designs.get(variant) {
+                if design.hull == ship.model {
+                    return Some(&design.stats);
+                }
             }
         }
-        w.catalogue.equipment.get(&ship.model).map(|e|&e.stats)
+        w.catalogue.equipment.get(&ship.model).map(|e| &e.stats)
     }
     pub fn cancel_ship(&mut self, tag: &str, id: u64) -> bool {
         let Some(lines) = self.shipbuilding.get_mut(tag) else {
@@ -426,12 +460,14 @@ impl NavalState {
         let mut ships = Vec::new();
         for line in lines {
             line.last_day_ic = 0.0;
-            let blueprint=self.designs.get(&line.model);
-            let model=blueprint.map_or(line.model.as_str(),|d|d.hull.as_str());
-            let buildable=warfare.catalogue.equipment.get(model).is_some_and(|e|
-                e.buildable && (e.active || modifiers.unlocked_equipment.contains(model))
-                && (blueprint.is_some() || !e.modular));
-            if blueprint.is_some_and(|d|d.country!=tag)
+            let blueprint = self.designs.get(&line.model);
+            let model = blueprint.map_or(line.model.as_str(), |d| d.hull.as_str());
+            let buildable = warfare.catalogue.equipment.get(model).is_some_and(|e| {
+                e.buildable
+                    && (e.active || modifiers.unlocked_equipment.contains(model))
+                    && (blueprint.is_some() || !e.modular)
+            });
+            if blueprint.is_some_and(|d| d.country != tag)
                 || !buildable
                 || world.controller_of_province(line.base) != Some(tag)
                 || warfare
@@ -444,16 +480,20 @@ impl NavalState {
             let Some(def) = warfare.catalogue.equipment.get(model) else {
                 continue;
             };
-            let cost=blueprint.map_or(def.cost,|d|d.cost);
-            if !cost.is_finite() || cost <= 0.0 { continue; }
+            let cost = blueprint.map_or(def.cost, |d| d.cost);
+            if !cost.is_finite() || cost <= 0.0 {
+                continue;
+            }
             let assigned = free.min(
                 line.requested_dockyards
                     .min(self.rules.dockyards_per_line.max(1)),
             );
             free -= assigned;
-            let needs=if let Some(design)=blueprint {
+            let needs = if let Some(design) = blueprint {
                 Some(&design.resources)
-            } else {warfare.catalogue.equipment_resources.get(&line.model)};
+            } else {
+                warfare.catalogue.equipment_resources.get(&line.model)
+            };
             let mut ic = 0.0;
             for _ in 0..assigned {
                 let mut maximum_missing = 0_u32;
@@ -473,7 +513,7 @@ impl NavalState {
             line.partial_ic -= f64::from(count) * cost;
             line.completed = line.completed.saturating_add(u64::from(count));
             for _ in 0..count {
-                ships.push((model.to_owned(), blueprint.map(|d|d.id.clone()),line.base));
+                ships.push((model.to_owned(), blueprint.map(|d| d.id.clone()), line.base));
             }
         }
         for (model, variant, base) in ships {
@@ -487,8 +527,11 @@ impl NavalState {
             let ship = NavalShip {
                 name,
                 model,
-                definition: warfare.catalogue.equipment.get(&model)
-                    .map_or_else(String::new,|d|d.archetype.clone()),
+                definition: warfare
+                    .catalogue
+                    .equipment
+                    .get(&model)
+                    .map_or_else(String::new, |d| d.archetype.clone()),
                 variant,
                 strength: 1.0,
             };
@@ -574,7 +617,7 @@ impl NavalState {
             })
             .flat_map(|f| f.ships.iter())
             .filter_map(|s| {
-                let e = self.ship_stats(s,w)?;
+                let e = self.ship_stats(s, w)?;
                 let stat = match mission {
                     NavalMission::ConvoyRaiding => {
                         e.get("torpedo_attack").copied().unwrap_or(0.0)
