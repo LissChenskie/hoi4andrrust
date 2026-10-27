@@ -9,7 +9,13 @@ use crate::{
     ui_icons::{self, Icon},
     ui_layout::Layout,
 };
-use crate::{production::ProductionState, research::ResearchWorld, warfare::Warfare, world::World};
+use crate::{
+    production::ProductionState,
+    research::ResearchWorld,
+    resource_economy::{ResourceEconomy, TradeDeal, TradeLaw},
+    warfare::Warfare,
+    world::World,
+};
 use macroquad::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +160,9 @@ pub struct Hud {
     pub outliner_scroll: usize,
     pub army_dock_scroll: usize,
     pub notice: String,
+    pub trade_partner_index: usize,
+    pub trade_resource_index: usize,
+    pub trade_factories: u32,
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -174,6 +183,9 @@ impl Default for Hud {
             outliner_scroll: 0,
             army_dock_scroll: 0,
             notice: String::new(),
+            trade_partner_index: 0,
+            trade_resource_index: 0,
+            trade_factories: 1,
         }
     }
 }
@@ -1106,6 +1118,7 @@ pub fn draw_panel(
     tag: Option<&str>,
     w: &Warfare,
     prod: &ProductionState,
+    resources: &mut ResourceEconomy,
     selected_province: Option<u32>,
 ) -> Vec<Action> {
     let Some(panel) = h.active else {
@@ -1160,7 +1173,7 @@ pub fn draw_panel(
             r.bottom() - 8.0,
             &mut actions,
         ),
-        Panel::Trade => trade(h, world, tag, x, y, width, r.bottom() - 8.0),
+        Panel::Trade => trade(h, world, tag, resources, x, y, width, r.bottom() - 8.0),
         Panel::Logistics => logistics(h, tag, w, prod, x, y, width, r.bottom() - 8.0),
         Panel::Focus => focus(h, x, y, width, r.bottom() - 8.0),
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
@@ -1478,63 +1491,126 @@ fn diplomacy(
     }
     let _ = actions;
 }
-fn trade(h: &mut Hud, world: &World, tag: &str, x: f32, y: f32, width: f32, bottom: f32) {
-    status(
-        "ЗАГЛУШКА · Международная торговля не рассчитывается",
-        x,
-        y,
-        width,
-    );
-    let ew = world
-        .country_economy(tag)
-        .map_or(0, |e| e.civilian_factories);
+fn trade(
+    h: &mut Hud, world: &World, tag: &str, market: &mut ResourceEconomy,
+    x: f32, y: f32, width: f32, bottom: f32,
+) {
+    const MATERIALS: [(&str, &str); 7] = [
+        ("oil", "Нефть"), ("steel", "Сталь"), ("aluminium", "Алюминий"),
+        ("rubber", "Резина"), ("tungsten", "Вольфрам"),
+        ("chromium", "Хром"), ("coal", "Уголь"),
+    ];
+    let law = market.laws.get(tag).copied().unwrap_or_default();
+    let law_text = match law {
+        TradeLaw::Unset => "Не импортирован (экспорт 0%)",
+        TradeLaw::FreeTrade => "Свободная торговля (80%)",
+        TradeLaw::ExportFocus => "Приоритет экспорта (50%)",
+        TradeLaw::LimitedExports => "Ограниченный экспорт (25%)",
+        TradeLaw::ClosedEconomy => "Закрытая экономика (0%)",
+    };
     ui::label(
-        &format!("Гражданские фабрики: {ew}   Торговые договоры: —"),
-        Rect::new(x, y + 27.0, width, 25.0),
-        13.0,
-        ui::TEXT,
+        "Ресурсы за сутки: добыча / внутренний остаток / импорт",
+        Rect::new(x, y, width, 23.0), 12.0, ui::TEXT,
     );
-    ui::section(
-        "РЕСУРС              ДОСТУПНО       НУЖНО       ИМПОРТ",
-        x,
-        y + 62.0,
-        width,
+    let report = market.last.get(tag);
+    let mut yy = y + 29.0;
+    for (key, label) in MATERIALS {
+        if yy + 25.0 > bottom { return; }
+        ui::row_bg(Rect::new(x, yy, width, 25.0), false, false);
+        let mined = report.and_then(|r| r.extracted.get(key)).copied().unwrap_or(0);
+        let retained = report.and_then(|r| r.available.get(key)).copied().unwrap_or(0);
+        let imported = report.and_then(|r| r.imported.get(key)).copied().unwrap_or(0);
+        ui::label(
+            &format!("{label}  {mined} / {retained} / +{imported}"),
+            Rect::new(x + 8.0, yy + 3.0, width - 16.0, 20.0), 12.0, ui::TEXT,
+        );
+        yy += 27.0;
+    }
+    let factories_spent = report.map_or(0, |r| r.factories_spent);
+    let factories_received = report.map_or(0, |r| r.factories_received);
+    if yy + 50.0 > bottom { return; }
+    ui::label(
+        &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received}"),
+        Rect::new(x, yy + 4.0, width, 21.0), 12.0, ui::GOLD,
     );
-    let mut yy = y + 90.0;
-    for resource in ["Нефть", "Алюминий", "Резина", "Вольфрам", "Сталь", "Хром"]
-    {
-        if yy + 35.0 > bottom {
-            break;
-        }
-        ui::row_bg(Rect::new(x, yy, width, 33.0), false, false);
-        ui_icons::draw(
-            Icon::Resources,
-            Rect::new(x + 6.0, yy + 7.0, 18.0, 18.0),
-            ui::GOLD,
-        );
-        ui::label(
-            resource,
-            Rect::new(x + 32.0, yy + 7.0, width * 0.44, 18.0),
-            13.0,
-            ui::TEXT,
-        );
-        ui::label(
-            "—                 —              —",
-            Rect::new(x + width * 0.47, yy + 7.0, width * 0.5, 18.0),
-            12.0,
-            ui::MUTED,
-        );
-        yy += 37.0;
+    yy += 27.0;
+    if ui::small_button(
+        &format!("Закон: {law_text}   [сменить]"),
+        Rect::new(x, yy, width, 29.0), false,
+    ) {
+        let next = match law {
+            TradeLaw::Unset | TradeLaw::ClosedEconomy => TradeLaw::FreeTrade,
+            TradeLaw::FreeTrade => TradeLaw::ExportFocus,
+            TradeLaw::ExportFocus => TradeLaw::LimitedExports,
+            TradeLaw::LimitedExports => TradeLaw::ClosedEconomy,
+        };
+        market.laws.insert(tag.into(), next);
+        h.notice = "Новый торговый закон применяется со следующих игровых суток".into();
     }
-    if yy + 75.0 < bottom {
-        ui::section("ТОРГОВЫЕ ПАРТНЁРЫ", x, yy + 12.0, width);
-        stub_button(
-            h,
-            "Выбрать страну для импорта",
-            Rect::new(x, yy + 42.0, width, 30.0),
-        );
+    yy += 37.0;
+    if yy + 86.0 > bottom { return; }
+    ui::section("ИМПОРТ — ЦЕНА 1 ФАБРИКА ЗА ДО 8 ЕДИНИЦ", x, yy, width);
+    yy += 28.0;
+    let sellers: Vec<_> = world.countries.keys().filter(|country| country.as_str() != tag).collect();
+    if sellers.is_empty() { return; }
+    h.trade_partner_index %= sellers.len();
+    h.trade_resource_index %= MATERIALS.len();
+    let seller = sellers[h.trade_partner_index];
+    let (resource, label) = MATERIALS[h.trade_resource_index];
+    let button = (width * 0.16).max(32.0);
+    if ui::small_button("◀", Rect::new(x, yy, button, 27.0), false) {
+        h.trade_partner_index = (h.trade_partner_index + sellers.len() - 1) % sellers.len();
     }
+    ui::label(
+        seller, Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
+        13.0, ui::TEXT,
+    );
+    if ui::small_button("▶", Rect::new(x + width - button, yy, button, 27.0), false) {
+        h.trade_partner_index = (h.trade_partner_index + 1) % sellers.len();
+    }
+    yy += 31.0;
+    if ui::small_button("◀", Rect::new(x, yy, button, 27.0), false) {
+        h.trade_resource_index = (h.trade_resource_index + MATERIALS.len() - 1) % MATERIALS.len();
+    }
+    ui::label(
+        label, Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
+        13.0, ui::TEXT,
+    );
+    if ui::small_button("▶", Rect::new(x + width - button, yy, button, 27.0), false) {
+        h.trade_resource_index = (h.trade_resource_index + 1) % MATERIALS.len();
+    }
+    yy += 33.0;
+    if yy + 65.0 > bottom { return; }
+    if ui::small_button("−", Rect::new(x, yy, button, 28.0), false) {
+        h.trade_factories = h.trade_factories.saturating_sub(1).max(1);
+    }
+    ui::label(
+        &format!("Фабрики на импорт: {}", h.trade_factories),
+        Rect::new(x + button + 4.0, yy + 3.0, width - 2.0 * button - 8.0, 20.0),
+        12.0, ui::TEXT,
+    );
+    if ui::small_button("+", Rect::new(x + width - button, yy, button, 28.0), false) {
+        h.trade_factories = (h.trade_factories + 1).min(99);
+    }
+    yy += 33.0;
+    let deal = TradeDeal {
+        buyer: tag.into(), seller: seller.clone(), resource: resource.into(),
+        factories: h.trade_factories,
+    };
+    if ui::small_button("Купить / изменить", Rect::new(x, yy, width * 0.62 - 3.0, 30.0), false) {
+        h.notice = market.set_deal(world, deal).map_or_else(|e| e,
+            |_| "Торговый договор вступит в силу со следующих игровых суток".into());
+    }
+    if ui::small_button("Отменить", Rect::new(x + width * 0.62, yy, width * 0.38, 30.0), false) {
+        h.notice = if market.cancel_deal(tag, seller, resource) {
+            "Договор отменён".into()
+        } else {
+            "Такого договора нет".into()
+        };
+    }
+    // Convoys, embargoes, subject price bonuses and political-power costs not yet supported.
 }
+
 fn scroll(h: &mut Hud, rect: Rect, max: usize) {
     ui::scrollbar(
         rect,
