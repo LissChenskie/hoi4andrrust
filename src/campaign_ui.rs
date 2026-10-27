@@ -358,7 +358,7 @@ pub enum Action {
     NavalAssignAdmiral(u64, Option<String>),
     NavalSaveDesign(String, String, std::collections::BTreeMap<String, String>),
     NavalQueueDesign(String, u32),
-    NavalQueueRefit(u64,usize,String),
+    NavalQueueRefit(u64, usize, String),
     NavalAssignCarrierWing(u64, usize, String, u32),
 }
 
@@ -1962,38 +1962,67 @@ fn naval_designer_view(
         }
     }
     y += 35.0;
-    if y + 54.0 > bottom { return; }
-    let candidates:Vec<_>=w.naval.task_forces.values()
-        .filter(|f|f.country==tag && f.mission==NavalMission::Hold
-            && world.controller_of_province(f.base)==Some(tag)
-            && w.conditions.get(&f.base).is_some_and(|b|b.naval_base>0))
-        .flat_map(|f|f.ships.iter().enumerate()
-            .filter(move |(_,s)|s.model==design.hull
-                &&s.variant.as_deref()!=Some(design.id.as_str())
-                &&s.strength>0.)
-            .map(move |(idx,s)|(f.id,idx,s)))
-        .filter(|(id,idx,_)|!w.naval.refits.values()
-            .any(|job|job.task_force==*id&&job.ship_index==*idx))
+    if y + 54.0 > bottom {
+        return;
+    }
+    let candidates: Vec<_> = w
+        .naval
+        .task_forces
+        .values()
+        .filter(|f| {
+            f.country == tag
+                && f.mission == NavalMission::Hold
+                && world.controller_of_province(f.base) == Some(tag)
+                && w.conditions.get(&f.base).is_some_and(|b| b.naval_base > 0)
+        })
+        .flat_map(|f| {
+            f.ships
+                .iter()
+                .enumerate()
+                .filter(move |(_, s)| {
+                    s.model == design.hull
+                        && s.variant.as_deref() != Some(design.id.as_str())
+                        && s.strength > 0.
+                })
+                .map(move |(idx, s)| (f.id, idx, s))
+        })
+        .filter(|(id, idx, _)| {
+            !w.naval
+                .refits
+                .values()
+                .any(|job| job.task_force == *id && job.ship_index == *idx)
+        })
         .collect();
     if candidates.is_empty() {
-        ui::label("В порту нет подходящих кораблей для рефита",
-            Rect::new(x,y,width,22.0),11.0,ui::MUTED);
+        ui::label(
+            "В порту нет подходящих кораблей для рефита",
+            Rect::new(x, y, width, 22.0),
+            11.0,
+            ui::MUTED,
+        );
     } else {
-        h.naval_refit_index%=candidates.len();
-        let (id,index,ship)=candidates[h.naval_refit_index];
-        let b=32.0_f32.min(width/5.0);
-        if ui::small_button("◀",Rect::new(x,y,b,24.0),false) {
-            h.naval_refit_index=(h.naval_refit_index+candidates.len()-1)%candidates.len();
+        h.naval_refit_index %= candidates.len();
+        let (id, index, ship) = candidates[h.naval_refit_index];
+        let b = 32.0_f32.min(width / 5.0);
+        if ui::small_button("◀", Rect::new(x, y, b, 24.0), false) {
+            h.naval_refit_index = (h.naval_refit_index + candidates.len() - 1) % candidates.len();
         }
-        ui::label(&format!("Рефит: {}",ship.name),
-            Rect::new(x+b+4.0,y+2.0,width-2.0*b-8.0,20.0),11.0,ui::TEXT);
-        if ui::small_button("▶",Rect::new(x+width-b,y,b,24.0),false){
-            h.naval_refit_index=(h.naval_refit_index+1)%candidates.len();
+        ui::label(
+            &format!("Рефит: {}", ship.name),
+            Rect::new(x + b + 4.0, y + 2.0, width - 2.0 * b - 8.0, 20.0),
+            11.0,
+            ui::TEXT,
+        );
+        if ui::small_button("▶", Rect::new(x + width - b, y, b, 24.0), false) {
+            h.naval_refit_index = (h.naval_refit_index + 1) % candidates.len();
         }
-        y+=27.0;
-        if ui::small_button("Переоборудовать выбранный корабль",
-            Rect::new(x,y,width,27.0),false) {
-            actions.push(Action::NavalQueueRefit(id,index,design.id.clone()));
+        y += 27.0;
+        if ui::small_button(
+            "Переоборудовать выбранный корабль",
+            Rect::new(x, y, width, 27.0),
+            false,
+        ) {
+            actions.push(Action::NavalQueueRefit(id, index, design.id.clone()));
         }
     }
 }
