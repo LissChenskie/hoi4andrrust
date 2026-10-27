@@ -244,14 +244,11 @@ pub fn label(text: &str, r: Rect, size: f32, color: Color) {
     }
     draw_ui_text(&shown, r.x, r.y + size, size, color);
 }
-/// Bounded multiline text for loading errors and other prose. Long path/ID
-/// tokens are split on character boundaries and overflow gets an ellipsis.
-pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
-    let step = size + 6.0;
-    let visible = (r.h / step).floor().max(0.0) as usize;
-    if r.w <= 1.0 || visible == 0 {
-        return;
-    }
+/// Actual wrapped height, allowing long details to scroll without truncation.
+pub fn paragraph_height(text: &str, width: f32, size: f32) -> f32 {
+    wrapped_lines(text, width, size).len() as f32 * (size + 6.0)
+}
+fn wrapped_lines(text: &str, width: f32, size: f32) -> Vec<String> {
     let mut lines = Vec::new();
     for source in text.lines() {
         let mut line = String::new();
@@ -261,7 +258,7 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             } else {
                 format!("{line} {word}")
             };
-            if measure_ui_text(&next, size as u16).width <= r.w {
+            if measure_ui_text(&next, size as u16).width <= width {
                 line = next;
                 continue;
             }
@@ -270,7 +267,7 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             }
             for ch in word.chars() {
                 let next = format!("{line}{ch}");
-                if !line.is_empty() && measure_ui_text(&next, size as u16).width > r.w {
+                if !line.is_empty() && measure_ui_text(&next, size as u16).width > width {
                     lines.push(std::mem::take(&mut line));
                 }
                 line.push(ch);
@@ -280,6 +277,16 @@ pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
             lines.push(line);
         }
     }
+    lines
+}
+/// Bounded multiline text; long tokens split on characters and overflow gets an ellipsis.
+pub fn paragraph(text: &str, r: Rect, size: f32, color: Color) {
+    let step = size + 6.0;
+    let visible = (r.h / step).floor().max(0.0) as usize;
+    if r.w <= 1.0 || visible == 0 {
+        return;
+    }
+    let lines = wrapped_lines(text, r.w, size);
     for (i, line) in lines.iter().take(visible).enumerate() {
         let mut shown = line.clone();
         if i + 1 == visible && lines.len() > visible {

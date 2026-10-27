@@ -16,16 +16,117 @@ pub enum Tool {
     EditPlan,
     DeleteOrder,
 }
+/// Captured UI draft. Applying it uses the same validated campaign actions as
+/// mouse orders. Cancelling drops this value without touching live geometry.
+#[derive(Debug, Clone)]
+pub enum PendingOrder {
+    Front {
+        army: u64,
+        existing: Option<u64>,
+        edges: Vec<FrontEdge>,
+        selected: std::collections::BTreeSet<u64>,
+        group: bool,
+    },
+    End {
+        front: u64,
+        edge: FrontEdge,
+        start: bool,
+    },
+    Plan {
+        army: u64,
+        front: Option<u64>,
+        kind: crate::operations::OrderType,
+        line: Vec<u32>,
+        existing: Option<u64>,
+    },
+    Sector {
+        front: u64,
+        sector: usize,
+        edges: Vec<FrontEdge>,
+    },
+}
+impl PendingOrder {
+    fn apply(
+        &self,
+        w: &mut Warfare,
+        world: &World,
+        tag: &str,
+    ) -> Result<(Option<u64>, Option<u64>), String> {
+        match self {
+            Self::Front {
+                army,
+                existing,
+                edges,
+                selected,
+                group,
+            } => w
+                .draw_front(world, tag, *army, *existing, edges, selected, *group)
+                .map(|id| (Some(id), None)),
+            Self::End { front, edge, start } => {
+                let mut fronts = std::mem::take(&mut w.fronts);
+                let r = fronts.edit_end(w, world, tag, *front, *edge, *start);
+                w.fronts = fronts;
+                r.map(|_| (Some(*front), None))
+            }
+            Self::Plan {
+                army,
+                front,
+                kind,
+                line,
+                existing,
+            } => w
+                .draw_plan(world, tag, *army, *front, *kind, line.clone(), *existing)
+                .map(|id| (*front, Some(id))),
+            Self::Sector {
+                front,
+                sector,
+                edges,
+            } => w
+                .edit_front_sector(world, tag, *front, *sector, edges)
+                .map(|_| (Some(*front), None)),
+        }
+    }
+}
+pub fn confirm_pending(
+    view: &mut ArmyView,
+    w: &mut Warfare,
+    world: &World,
+    tag: &str,
+) -> Result<(), String> {
+    let pending = view
+        .pending_order
+        .as_ref()
+        .ok_or("Нет подготовленного приказа")?;
+    let (front, plan) = pending.apply(w, world, tag)?;
+    view.cancel_tool();
+    view.selected_front = front;
+    view.selected_plan = plan;
+    view.notice = "Приказ сохранён. Для наступления включите план и ход времени.".into();
+    Ok(())
+}
+fn submit(view: &mut ArmyView, w: &mut Warfare, world: &World, tag: &str, pending: PendingOrder) {
+    view.pending_order = Some(pending);
+    if view.confirm_drawing {
+        view.notice =
+            "ПРЕДПРОСМОТР: подтвердите приказ или отмените. Старый приказ пока сохранён.".into();
+    } else if let Err(e) = confirm_pending(view, w, world, tag) {
+        view.notice = e;
+        view.cancel_tool();
+    }
+}
 pub fn toolbar_bounds() -> Rect {
     if screen_width() < 760.0 {
-        Rect::new(5.0, screen_height() - 178.0, screen_width() - 10.0, 106.0)
+        Rect::new(5.0, screen_height() - 230.0, screen_width() - 10.0, 158.0)
     } else {
-        Rect::new(5.0, screen_height() - 110.0, screen_width() - 10.0, 34.0)
+        Rect::new(5.0, screen_height() - 130.0, screen_width() - 10.0, 54.0)
     }
 }
 pub fn blocked(view: &ArmyView, p: Vec2) -> bool {
     view.orders_visible()
-        && (toolbar_bounds().contains(p) || (view.plan_advanced && advanced_bounds().contains(p)))
+        && ({
+            let r = toolbar_bounds();
+            Rect::new(r.x, r.y - 42.0, r.w, r.h + 42.0).contains(p)
+        } || (view.plan_advanced && advanced_bounds().contains(p)))
 }
 fn advanced_bounds() -> Rect {
     let r = toolbar_bounds();
@@ -43,6 +144,8 @@ pub fn begin_tool(view: &mut ArmyView, w: &mut Warfare, tag: &str, tool: Tool) {
     view.cancel_tool();
     view.plan_advanced = false;
     view.plan_tool = Some(tool);
+    view.touch_move = false;
+    view.confirm_drawing = !touches().is_empty();
     view.draw_new_front = tool == Tool::Front
         && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift));
     view.open = false;
@@ -53,6 +156,10 @@ pub fn begin_tool(view: &mut ArmyView, w: &mut Warfare, tag: &str, tool: Tool) {
         _ => "Нарисуйте конечную линию. Повторный рисунок меняет цель. ПКМ / Esc — отмена",
     }
     .into();
+}
+fn tool_button(text: &str, rect: Rect, active: bool, tap: Option<Vec2>) -> bool {
+    let _ = ui::small_button(text, rect, active);
+    tap.is_some_and(|p| rect.contains(p)) && ui::inside(rect)
 }
 pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, paused: bool) {
     if !view.orders_visible() {
@@ -65,7 +172,88 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         return;
     };
     let r = toolbar_bounds();
+    let (mx, my) = mouse_position();
+    let bounds = if view.plan_advanced {
+        let e = advanced_bounds();
+        Rect::new(r.x, e.y, r.w, r.bottom() - e.y)
+    } else {
+        Rect::new(r.x, r.y - 42., r.w, r.h + 42.)
+    };
+    let contacts = touches()
+        .iter()
+        .filter(|t| !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled))
+        .count();
+    let tap = view
+        .toolbar_gesture
+        .update(
+            vec2(mx, my),
+            is_mouse_button_pressed(MouseButton::Left) && ui::inside(bounds),
+            is_mouse_button_down(MouseButton::Left),
+            is_mouse_button_released(MouseButton::Left),
+            contacts,
+            bounds,
+        )
+        .tap;
     ui::panel(r.x, r.y, r.w, r.h);
+    if view.pending_order.is_some() {
+        let width = (r.w - 16.0) / 3.0;
+        if tool_button(
+            "Отмена",
+            Rect::new(r.x + 4.0, r.y + 3.0, width, 48.0),
+            false,
+            tap,
+        ) {
+            view.cancel_tool();
+            return;
+        }
+        if tool_button(
+            "Изменить рисунок",
+            Rect::new(r.x + 8.0 + width, r.y + 3.0, width, 48.0),
+            false,
+            tap,
+        ) {
+            view.pending_order = None;
+        }
+        if tool_button(
+            "Подтвердить",
+            Rect::new(r.x + 12.0 + 2.0 * width, r.y + 3.0, width, 48.0),
+            true,
+            tap,
+        ) {
+            if let Err(e) = confirm_pending(view, w, world, tag) {
+                view.notice = e;
+            }
+        }
+        ui::paragraph(
+            &view.notice,
+            Rect::new(r.x + 4.0, r.y - 40.0, r.w - 8.0, 38.0),
+            13.0,
+            ui::GOLD,
+        );
+        return;
+    }
+    if view.plan_tool.is_some() {
+        if tool_button(
+            "Отмена",
+            Rect::new(r.x + 4., r.y + 3., (r.w / 3.).min(180.), 48.),
+            false,
+            tap,
+        ) {
+            view.cancel_tool();
+        }
+        ui::paragraph(
+            "Нарисуйте линию на карте. После рисунка появится подтверждение.",
+            Rect::new(
+                r.x + (r.w / 3.).min(180.) + 14.,
+                r.y + 6.,
+                r.w - (r.w / 3.).min(180.) - 22.,
+                48.,
+            ),
+            14.,
+            ui::GOLD,
+        );
+        return;
+    }
     let fronts: Vec<_> = w
         .fronts
         .fronts
@@ -134,9 +322,9 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
                 i,
                 Rect::new(
                     r.x + 4.0 + (slot % cols) as f32 * cell,
-                    r.y + 3.0 + (slot / cols) as f32 * 34.0,
+                    r.y + 3.0 + (slot / cols) as f32 * 52.0,
                     cell - 3.0,
-                    28.0,
+                    48.0,
                 ),
             )
         })
@@ -183,7 +371,7 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
                     .selected_plan
                     .and_then(|id| w.plans.plans.get(&id))
                     .is_some_and(|p| p.activation == crate::operations::Activation::Executing));
-        if !ui::small_button(title, b, active) {
+        if !tool_button(title, b, active, tap) {
             continue;
         }
         if let Some(tool) = tool {
@@ -277,15 +465,16 @@ pub fn draw_toolbar(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyVi
         };
         view.notice = result.map_or_else(|e| e, |_| "Приказ обновлён".into());
     }
-    if ui::small_button(
+    if tool_button(
         "Ещё ▴",
         Rect::new(
             r.x + 4.0 + (8 % cols) as f32 * cell,
-            r.y + 3.0 + (8 / cols) as f32 * 34.0,
+            r.y + 3.0 + (8 / cols) as f32 * 52.0,
             cell - 3.0,
-            28.0,
+            48.0,
         ),
         view.plan_advanced,
+        tap,
     ) {
         view.plan_advanced = !view.plan_advanced;
     }
@@ -389,6 +578,12 @@ pub fn pointer(
         view.cancel_tool();
         return;
     }
+    if view.pending_order.is_some() {
+        return;
+    }
+    if is_mouse_button_pressed(MouseButton::Left) && !touches().is_empty() {
+        view.confirm_drawing = true;
+    }
     if view.order_handle.is_some() {
         handle_pointer(view, w, world, tag, province, point, max_distance, inside);
         return;
@@ -446,43 +641,31 @@ pub fn pointer(
     }
     if is_mouse_button_released(MouseButton::Left) {
         if let Some((_start, end)) = view.front_start.take().zip(view.front_hover) {
-            if let Some(army) = view.selected_army {
-                let result = match tool {
-                    Tool::Front => w
-                        .draw_front(
-                            world,
-                            tag,
-                            army,
-                            if view.draw_new_front {
-                                None
-                            } else {
-                                view.selected_front
-                            },
-                            &view.front_preview,
-                            &view.selected,
-                            view.group_orders,
-                        )
-                        .map(|id| {
-                            view.selected_front = Some(id);
-                        }),
-                    Tool::EditStart | Tool::EditEnd => view
-                        .selected_front
-                        .ok_or_else(|| "Выберите фронт".into())
-                        .and_then(|id| {
-                            let mut fronts = std::mem::take(&mut w.fronts);
-                            let r =
-                                fronts.edit_end(w, world, tag, id, end, tool == Tool::EditStart);
-                            w.fronts = fronts;
-                            r
-                        }),
-                    _ => Err("Выберите инструмент фронта".into()),
-                };
-                view.notice = result.map_or_else(|e| e, |_| "Приказ сохранён".into());
-                view.plan_tool = None;
+            let pending = match tool {
+                Tool::Front => view.selected_army.map(|army| PendingOrder::Front {
+                    army,
+                    existing: if view.draw_new_front {
+                        None
+                    } else {
+                        view.selected_front
+                    },
+                    edges: view.front_preview.clone(),
+                    selected: view.selected.clone(),
+                    group: view.group_orders,
+                }),
+                Tool::EditStart | Tool::EditEnd => {
+                    view.selected_front.map(|front| PendingOrder::End {
+                        front,
+                        edge: end,
+                        start: tool == Tool::EditStart,
+                    })
+                }
+                _ => None,
+            };
+            if let Some(pending) = pending {
+                submit(view, w, world, tag, pending);
             }
         }
-        view.front_preview.clear();
-        view.front_preview_end = None;
     }
     if is_key_pressed(KeyCode::Escape) {
         view.plan_tool = None;
@@ -541,34 +724,25 @@ fn inland_pointer(
         } else {
             view.line_preview.clone()
         };
-        let result = view
-            .selected_army
-            .ok_or_else(|| "Выберите армию".into())
-            .and_then(|army| {
-                w.draw_plan(
-                    world,
-                    tag,
+        if let Some(army) = view.selected_army {
+            submit(
+                view,
+                w,
+                world,
+                tag,
+                PendingOrder::Plan {
                     army,
-                    view.selected_front,
+                    front: view.selected_front,
                     kind,
                     line,
-                    if tool == Tool::EditPlan {
+                    existing: if tool == Tool::EditPlan {
                         view.selected_plan
                     } else {
                         None
                     },
-                )
-                .map(|id| {
-                    view.selected_plan = Some(id);
-                })
-            });
-        view.notice = result.map_or_else(
-            |e| e,
-            |_| "План сохранён; нажмите ▶ Начать и снимите паузу".into(),
-        );
-        view.plan_tool = None;
-        view.line_preview.clear();
-        view.line_preview_end = None;
+                },
+            );
+        }
     }
 }
 pub fn draw_map(
@@ -792,29 +966,134 @@ fn handle_pointer(
         }
     }
     if is_mouse_button_released(MouseButton::Left) {
-        let result = match h.order {
-            OrderRef::Front(id) => {
-                if view.front_preview.is_empty() {
-                    Ok(())
-                } else {
-                    w.edit_front_sector(world, tag, id, h.sector, &view.front_preview)
+        let pending = match h.order {
+            OrderRef::Front(front) => PendingOrder::Sector {
+                front,
+                sector: h.sector,
+                edges: view.front_preview.clone(),
+            },
+            OrderRef::Plan(id) => {
+                let Some(p) = w.plans.plans.get(&id) else {
+                    view.cancel_tool();
+                    return;
+                };
+                PendingOrder::Plan {
+                    army: p.army,
+                    front: p.source_front,
+                    kind: p.order_type,
+                    line: view.line_preview.clone(),
+                    existing: Some(id),
                 }
             }
-            OrderRef::Plan(id) => {
-                let p = &w.plans.plans[&id];
-                w.draw_plan(
-                    world,
-                    tag,
-                    p.army,
-                    p.source_front,
-                    p.order_type,
-                    view.line_preview.clone(),
-                    Some(id),
-                )
-                .map(|_| ())
-            }
         };
-        view.notice = result.map_or_else(|e| e, |_| "Геометрия приказа изменена".into());
-        view.cancel_tool();
+        submit(view, w, world, tag, pending);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn preview_cancel_confirm_and_failed_edit_do_not_leave_stale_geometry() {
+        let world = crate::warfare::tests::world();
+        let mut w = Warfare::new(crate::military_model::tests::catalogue());
+        w.divisions
+            .insert(1, crate::military_model::tests::division(1, "A", 1));
+        let army = w.create_army("A", &[1], "Preview").unwrap();
+        let draft = PendingOrder::Front {
+            army,
+            existing: None,
+            edges: vec![FrontEdge {
+                friendly: 1,
+                enemy: 2,
+            }],
+            selected: std::collections::BTreeSet::from([1]),
+            group: false,
+        };
+        let mut v = ArmyView::default();
+        v.selected_army = Some(army);
+        v.selected.insert(1);
+        v.confirm_drawing = true;
+        submit(&mut v, &mut w, &world, "A", draft.clone());
+        assert!(w.fronts.fronts.is_empty());
+        v.cancel_tool();
+        assert!(w.fronts.fronts.is_empty());
+        assert!(v.pending_order.is_none());
+        v.confirm_drawing = true;
+        submit(&mut v, &mut w, &world, "A", draft);
+        confirm_pending(&mut v, &mut w, &world, "A").unwrap();
+        let front = v.selected_front.unwrap();
+        assert_eq!(w.fronts.fronts.len(), 1);
+        assert!(confirm_pending(&mut v, &mut w, &world, "A").is_err());
+        let previous = serde_json::to_value(&w.fronts).unwrap();
+        v.pending_order = Some(PendingOrder::Front {
+            army,
+            existing: Some(front),
+            edges: vec![FrontEdge {
+                friendly: 3,
+                enemy: 1,
+            }],
+            selected: v.selected.clone(),
+            group: false,
+        });
+        assert!(confirm_pending(&mut v, &mut w, &world, "A").is_err());
+        assert_eq!(serde_json::to_value(&w.fronts).unwrap(), previous);
+        assert!(v.pending_order.is_some());
+        v.cancel_tool();
+        assert_eq!(v.selected_front, Some(front));
+    }
+    #[test]
+    fn offensive_preview_requires_confirmation_and_preserves_existing_plan_on_cancel() {
+        let world = crate::warfare::tests::world();
+        let mut w = Warfare::new(crate::military_model::tests::catalogue());
+        w.divisions
+            .insert(1, crate::military_model::tests::division(1, "A", 1));
+        let army = w.create_army("A", &[1], "").unwrap();
+        let mut v = ArmyView::default();
+        v.selected_army = Some(army);
+        v.selected.insert(1);
+        let front = w
+            .draw_front(
+                &world,
+                "A",
+                army,
+                None,
+                &[FrontEdge {
+                    friendly: 1,
+                    enemy: 2,
+                }],
+                &v.selected,
+                false,
+            )
+            .unwrap();
+        let draft = PendingOrder::Plan {
+            army,
+            front: Some(front),
+            kind: crate::operations::OrderType::Offensive,
+            line: vec![3],
+            existing: None,
+        };
+        v.confirm_drawing = true;
+        submit(&mut v, &mut w, &world, "A", draft.clone());
+        assert!(w.plans.plans.is_empty());
+        confirm_pending(&mut v, &mut w, &world, "A").unwrap();
+        let plan = v.selected_plan.unwrap();
+        v.confirm_drawing = true;
+        submit(
+            &mut v,
+            &mut w,
+            &world,
+            "A",
+            PendingOrder::Plan {
+                army,
+                front: Some(front),
+                kind: crate::operations::OrderType::Offensive,
+                line: vec![2],
+                existing: Some(plan),
+            },
+        );
+        v.cancel_tool();
+        assert_eq!(w.plans.plans[&plan].destination_line, vec![3]);
+        assert_eq!(w.plans.plans.len(), 1);
     }
 }

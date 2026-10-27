@@ -1,9 +1,10 @@
 # Commander data → existing Rust simulation → mobile projection
 
 Schema proposal **0.1.0**, converter **0.1.0**, 27 October 2026.
-This is an implemented import/data slice. The new touch screen is deliberately
-pending schema approval requested in the task. Existing army controls remain
-usable; no new buttons or replacement engine are introduced in this change.
+Schema approved by the user on 27 October 2026. The existing Army/Officer entry
+points now open an adaptive army, roster, commander and trait inspector. The
+existing Rust simulation, desktop controls and advanced command settings remain
+in use; no replacement engine or independent campaign is introduced.
 
 ## A. Source inventory and representative sampling
 
@@ -20,7 +21,7 @@ Earlier 1.15.4 material is not relabeled as 1.19.3.
 | `src/military_data.rs` | Unit/equipment catalogue, OOB templates, overlays | Structural parser, explicit layers/replace_path | Not replaced by a duplicate converter |
 | `src/military_history.rs` | Bookmark/DLC selection, divisions, countries | Existing condition resolver | New command projection included in import report |
 | `src/warfare.rs` | Orders, movement, battle/economy integration | Existing authoritative divisions | No copied runtime divisions in UI state |
-| `src/army_ui.rs`, `src/army_command_ui.rs` | Selection, roster, assignment, hierarchy | Existing Macroquad widgets | Screen redesign awaiting schema decision |
+| `src/army_ui.rs`, `src/army_command_ui.rs` | Selection, roster, assignment, hierarchy | Existing Macroquad widgets | Adaptive inspector now bound to the existing Officer/Army entry points |
 | `src/campaign_save.rs` | Atomic whole-campaign save/restore | Existing schema 1 | Immutable command source data reattached after restore |
 | `common/characters/*.txt` | Character + commander profiles | Structural parsing; duplicate singleton detection | Unknown roles/fields preserved |
 | `common/unit_leader/*.txt` | Trait definitions/modifiers/conditions | Ordered AST retained | Preserving a rule does not implement it |
@@ -133,7 +134,7 @@ executes scripts or writes to source data. Use the game's existing loader for
 configured overlays and DLC/country/bookmark evaluation. This tool alone does
 not produce a complete military runtime asset package.
 
-## H. Proposed UI contract — not generated before schema approval
+## H. UI contract — army/commander/roster slice implemented after approval
 
 | Screen | View/model and purpose | Phone / tablet and touch | Empty/error state |
 |---|---|---|---|
@@ -145,10 +146,25 @@ not produce a complete military runtime asset package.
 | Logistics | `ArmySupplySummary` | Summary + details when solver provides them | Unknown bottleneck/reserve explicitly absent |
 | HQ | Existing validated optional HQ | Conditional management sheet | Hidden/disabled if verified rules absent |
 
-Touch targets should be at least the requested ~48dp; multi-select must be an
-explicit mode, and drag/pinch must not issue movement orders. No new touch
-layout, hit regions, portrait assets or confirmation interaction are part of
-this data change. Existing mouse/touch army controls are preserved.
+The new inspector buttons and primary order toolbar use targets at least
+48 logical units high. Actual density/device ergonomics still require physical
+Android testing; these measurements are not a claim of verified 48dp on all
+phones. Multi-select and movement are visible modes. Touching an empty province
+in selection mode no longer issues movement. Lists react on release, suppress
+activation after scroll/pinch, and keep Back/Map navigation fixed. Traits open
+tappable details with fully scrollable descriptions. Portraits use an own
+procedural officer placeholder.
+
+Touch-drawn fronts, destination lines and endpoint changes create a captured
+draft. Explicit Confirm applies the existing validated campaign action; Cancel
+leaves live geometry unchanged. Invalid confirmation retains the draft and
+error. An explicit Cancel is also available while drawing. Existing mouse
+right-click orders and direct desktop drawing remain available. Using a drawing
+action from the new inspector opts into confirmation even with a mouse.
+
+The division designer, recruitment, battle inspector and detailed HQ/ability
+settings retain their existing screens; they have not all been redesigned into
+new touch tabs. There is no original portrait asset copying or original GUI port.
 
 ## I. Performance findings
 
@@ -165,9 +181,11 @@ this data change. Existing mouse/touch army controls are preserved.
   demand. It is not automatically built for all armies every render frame.
 - Source definitions are skipped in saves; restoring them does not reissue units,
   reset XP, create equipment or change army assignments.
-- Future UI should cache projections using membership/order/commander dirty events;
-  `command.revision` alone does not track hourly Org/XP/supply changes. A revision-
-  only UI cache would show stale values and has not been introduced.
+- The selected army projection is cached by army ID, simulation hour and command/
+  plan revisions, with a 250ms refresh bound for other edits. Visible commander/
+  roster rows alone build text/details. Render-only frames do not rebuild the
+  complete army tree or all army projections. `command.revision` alone would not
+  track hourly Org/XP/supply, so it is not the only invalidation key.
 - Existing pathfinding/front/supply hot paths are untouched; there is no new
   per-division thread, continuous parser or army-tree full rebuild per frame.
 
@@ -211,6 +229,7 @@ country/OOB → runtime division/army → localized projection integration.
 | Full universal IR for templates/logistics/orders | Existing runtime types | Reuse, do not create second simulation | Decide migration boundaries before widening schema |
 | iOS build / real touch device | Toolchain/device unavailable | No platform support claim | macOS/iOS toolchain and Android device QA |
 
-Next step after schema approval: bind the existing officer/army entry points to
-an adaptive commander/army screen with visible multi-select and explicit order
-preview/confirmation, without introducing another competing toolbar.
+Remaining steps: physical Android touch/density QA, the existing designer and
+recruitment screens adapting to touch tabs, verified source-data comparisons,
+and iOS toolchain validation. The first adaptive army/commander/roster screen
+and order preview/confirmation are now connected to existing controls.

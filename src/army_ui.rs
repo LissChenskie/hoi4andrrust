@@ -31,6 +31,12 @@ pub struct ArmyView {
     pub support_attack: bool,
     pub touch_add: bool,
     pub touch_box: bool,
+    pub touch_move: bool,
+    pub touch_ui: bool,
+    pub mobile: crate::mobile_army_ui::MobileView,
+    pub pending_order: Option<crate::battle_plan_ui::PendingOrder>,
+    pub confirm_drawing: bool,
+    pub toolbar_gesture: crate::army_touch::Gesture,
     pub selected_army: Option<crate::command::ArmyId>,
     pub selected_front: Option<crate::frontline::FrontId>,
     pub selected_plan: Option<crate::operations::PlanId>,
@@ -75,6 +81,8 @@ pub struct ArmyView {
 impl ArmyView {
     pub fn cancel_tool(&mut self) {
         self.plan_tool = None;
+        self.pending_order = None;
+        self.confirm_drawing = false;
         self.order_handle = None;
         self.plan_advanced = false;
         self.front_start = None;
@@ -137,6 +145,9 @@ impl ArmyView {
         self.page = Page::Command;
         self.army_scroll = 0.0;
         self.commander_picker = picker.then_some(false);
+        self.mobile.advanced = false;
+        self.mobile.page = crate::mobile_army_ui::MobilePage::Army;
+        self.mobile.scroll = 0.0;
     }
     pub fn show_recruitment(&mut self) {
         self.open = true;
@@ -172,7 +183,9 @@ impl ArmyView {
     pub fn orders_visible(&self) -> bool {
         self.orders_enabled
             && self.selected_army.is_some()
-            && (!self.open || matches!(self.page, Page::Command | Page::Divisions))
+            && (!self.open
+                || self.page == Page::Divisions
+                || (self.page == Page::Command && self.mobile.advanced))
     }
     pub fn text_input_active(&self) -> bool {
         self.open
@@ -190,7 +203,7 @@ impl ArmyView {
 pub fn bounds(view: &ArmyView) -> Rect {
     let mut r = crate::ui_layout::Layout::current().primary();
     if view.orders_visible() {
-        r.h -= if screen_width() < 760.0 { 154.0 } else { 86.0 };
+        r.h = (crate::battle_plan_ui::toolbar_bounds().y - 46.0 - r.y).max(100.0);
     }
     r
 }
@@ -226,12 +239,15 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
     if view.plan_tool.is_some() && !view.open {
         return None;
     }
-    if !view.open && !view.selected.is_empty() && screen_width() < 760.0 {
+    if !view.open
+        && !view.selected.is_empty()
+        && (view.touch_ui || screen_width() < 760.0 || screen_height() < 600.0)
+    {
         return Some(Rect::new(
             0.0,
             crate::ui_layout::Layout::current().top,
-            230.0f32.min(screen_width() - 10.0),
-            145.0,
+            310.0f32.min(screen_width() - 10.0),
+            164.0,
         ));
     }
     if view.open {
@@ -241,16 +257,12 @@ pub fn interactive_bounds(view: &ArmyView) -> Option<Rect> {
             0.0,
             crate::ui_layout::Layout::current().top,
             (screen_width() - 10.0).min(310.0).max(1.0),
-            (screen_height()
-                - crate::ui_layout::Layout::current().top
-                - crate::ui_layout::Layout::current().bottom
-                - 4.0
-                - if view.orders_visible() {
-                    if screen_width() < 760.0 { 154.0 } else { 86.0 }
-                } else {
-                    0.0
-                })
-            .max(120.0),
+            ((if view.orders_visible() {
+                crate::battle_plan_ui::toolbar_bounds().y - 46.0
+            } else {
+                screen_height() - crate::ui_layout::Layout::current().bottom - 4.0
+            }) - crate::ui_layout::Layout::current().top)
+                .max(120.0),
         ))
     } else {
         None
@@ -320,6 +332,10 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
     let Some(a) = interactive_bounds(view) else {
         return;
     };
+    if view.touch_ui || screen_width() < 760.0 || screen_height() < 600.0 {
+        crate::mobile_army_ui::selection(w, view, a);
+        return;
+    }
     ui::panel(a.x, a.y, a.w, a.h);
     ui::header(a.x + 3.0, a.y + 3.0, a.w - 6.0, "ВЫБОР ВОЙСК");
     if ui::small_button(
@@ -572,6 +588,12 @@ pub fn draw(
         return;
     }
     let a = bounds(view);
+    if view.page == Page::Command && !view.mobile.advanced {
+        if let Some(tag) = tag {
+            crate::mobile_army_ui::draw(world, tag, w, view, a);
+        }
+        return;
+    }
     ui::panel(a.x, a.y, a.w, a.h);
     ui::header(
         a.x + 4.0,
@@ -627,6 +649,9 @@ pub fn draw(
             view.page == p,
         ) {
             view.page = p;
+            if p == Page::Command {
+                view.mobile.advanced = false;
+            }
             view.scroll = 0;
         }
     }

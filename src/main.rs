@@ -1,6 +1,7 @@
 mod army_command_ui;
 mod army_controls;
 mod army_projection;
+mod army_touch;
 mod army_ui;
 mod campaign_ui;
 mod combat_modifiers;
@@ -11,6 +12,7 @@ mod construction;
 mod construction_map;
 mod construction_ui;
 mod division_designer_ui;
+mod mobile_army_ui;
 pub use hoi4_mobile::game;
 mod battle_plan_render;
 mod battle_plan_ui;
@@ -3450,7 +3452,10 @@ async fn main() {
                         })
                         .collect();
                     let multitouch = contact_points.len() >= 2;
-                    if multitouch {
+                    if !touches().is_empty() {
+                        army_view.touch_ui = true;
+                    }
+                    if multitouch && army_view.pending_order.is_none() {
                         army_view.front_start = None;
                         army_view.front_preview.clear();
                         army_view.front_preview_end = None;
@@ -3603,7 +3608,7 @@ async fn main() {
                         army_view.map_drag = Some(army_controls::Drag::new(
                             mouse,
                             touch_input,
-                            shift || (touch_input && army_view.touch_add),
+                            shift || army_view.touch_add,
                             military_mode && (!touch_input || army_view.touch_box),
                         ));
                     }
@@ -3701,6 +3706,18 @@ async fn main() {
                                         &mut army_view,
                                     );
                                     army_view.show_battle(marker.id, military);
+                                } else if army_view.touch_move && !army_view.selected.is_empty() {
+                                    if let Some((province, _, _, _)) = selected {
+                                        army_ui::issue_order(
+                                            &mut army_view,
+                                            military,
+                                            world,
+                                            tag,
+                                            province,
+                                            false,
+                                        );
+                                        army_view.touch_move = false;
+                                    }
                                 } else if let Some(counter) =
                                     army_controls::hit(&counters, tag, mouse)
                                 {
@@ -3728,19 +3745,17 @@ async fn main() {
                                         &mut research_view,
                                         &mut army_view,
                                     );
-                                } else if (!drag.touch || army_view.selected.is_empty())
-                                    && battle_plan_ui::choose_order(
-                                        &mut army_view,
-                                        military,
-                                        world,
-                                        tag,
-                                        source,
-                                        rect,
-                                        mouse,
-                                        control,
-                                        drag.add,
-                                    )
-                                {
+                                } else if battle_plan_ui::choose_order(
+                                    &mut army_view,
+                                    military,
+                                    world,
+                                    tag,
+                                    source,
+                                    rect,
+                                    mouse,
+                                    control,
+                                    drag.add,
+                                ) {
                                     hud.open(
                                         None,
                                         &mut construction_view,
@@ -3748,21 +3763,7 @@ async fn main() {
                                         &mut research_view,
                                         &mut army_view,
                                     );
-                                } else if drag.touch
-                                    && !army_view.touch_box
-                                    && !army_view.selected.is_empty()
-                                {
-                                    if let Some((province, _, _, _)) = selected {
-                                        army_ui::issue_order(
-                                            &mut army_view,
-                                            military,
-                                            world,
-                                            tag,
-                                            province,
-                                            drag.add,
-                                        );
-                                    }
-                                } else if !drag.add {
+                                } else if !drag.add && !drag.touch {
                                     army_view.selected.clear();
                                 }
                             }
