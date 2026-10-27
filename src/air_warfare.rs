@@ -236,6 +236,67 @@ impl AirState {
         a.region = region;
         Ok(())
     }
+    /// Atomic player operation: validate ownership, available airbase and mission
+    /// range before mutating an existing wing. Invalid clicks leave it unchanged.
+    pub fn rebase_and_assign(
+        &mut self,
+        tag: &str,
+        id: u64,
+        base: u32,
+        mission: AirMission,
+        region: Option<u32>,
+        world: &World,
+        catalogue: &crate::military_model::MilitaryCatalogue,
+    ) -> Result<(), String> {
+        let wing = self
+            .wings
+            .get(&id)
+            .filter(|a| a.country == tag)
+            .ok_or("Чужая или неизвестная авиагруппа")?;
+        if world.controller_of_province(base) != Some(tag)
+            || self.bases.get(&base).copied().unwrap_or(0) == 0
+        {
+            return Err("Для перебазирования нужна контролируемая авиабаза".into());
+        }
+        let aircraft = catalogue
+            .equipment
+            .get(&wing.model)
+            .filter(|e| is_aircraft(e) && !e.modular)
+            .ok_or("Неизвестная модель самолёта")?;
+        if region.is_some_and(|r| !self.regions.contains_key(&r)) {
+            return Err("Неизвестный воздушный регион".into());
+        }
+        if mission != AirMission::Standby {
+            let target = region
+                .and_then(|r| self.regions.get(&r))
+                .ok_or("Выберите воздушный регион для миссии")?;
+            let range = aircraft
+                .stats
+                .get("air_range")
+                .copied()
+                .unwrap_or(0.0);
+            let in_range = target.contains(&base)
+                || catalogue.rules.pixels_to_km.is_some_and(|scale| {
+                    scale.is_finite()
+                        && scale > 0.0
+                        && range.is_finite()
+                        && range >= 0.0
+                        && target
+                            .iter()
+                            .filter_map(|&p| world.geography.distance_in_pixels(base, p))
+                            .any(|distance| distance * scale <= range)
+                });
+            if !in_range {
+                return Err("Авиабаза находится вне дальности выбранной миссии".into());
+            }
+        }
+        let wing = self.wings.get_mut(&id).unwrap();
+        wing.base = base;
+        wing.mission = mission;
+        wing.region = region;
+        Ok(())
+    }
+
     pub fn support(&self, tag: &str, enemy: &str, province: u32, combat_hour: u64) -> AirSupport {
         let Some(r) = self.region_at(province).and_then(|r| self.results.get(&r)) else {
             return AirSupport::default();
@@ -505,5 +566,59 @@ impl AirState {
                     .unwrap_or(0.)
                     .max(0.);
         }
+    }
+}
+
+#[cfg(test)]
+mod air_operations_tests {
+    use super::*;
+    use crate::military_model::EquipmentDefinition;
+
+    #[test]
+    fn rebase_and_assign_rejects_invalid_targets_without_changing_wing() {
+        let mut world = crate::warfare::tests::world();
+        let mut db = crate::military_model::tests::catalogue();
+        db.rules.pixels_to_km = Some(1.0);
+        db.equipment.insert(
+            "test_fighter".into(),
+            EquipmentDefinition {
+                id: "test_fighter".into(),
+                archetype: "fighter".into(),
+                year: 1936,
+                active: true,
+                buildable: true,
+                stats: BTreeMap::from([("air_range".into(), 1.0)]),
+                cost: 12.0,
+                modular: false,
+                source: "test".into(),
+            },
+        );
+        let mut air = AirState::default();
+        air.bases.insert(1, 2);
+        air.bases.insert(2, 1);
+        air.bases.insert(3, 1);
+        air.regions.insert(7, BTreeSet::from([3]));
+        let id = air
+            .create_wing("A", "test_fighter", 1, &world, &db)
+            .unwrap();
+        assert!(air
+            .rebase_and_assign("A", id, 2, AirMission::Superiority, Some(7), &world, &db)
+            .is_err());
+        assert!(air
+            .rebase_and_assign("A", id, 1, AirMission::Superiority, Some(99), &world, &db)
+            .is_err());
+        assert!(air
+            .rebase_and_assign("A", id, 1, AirMission::Superiority, Some(7), &world, &db)
+            .is_err());
+        assert_eq!(air.wings[&id].base, 1);
+        assert_eq!(air.wings[&id].mission, AirMission::Standby);
+        assert_eq!(air.wings[&id].region, None);
+
+        world.set_province_controller(3, Some("A"));
+        air.rebase_and_assign("A", id, 3, AirMission::CloseAirSupport, Some(7), &world, &db)
+            .unwrap();
+        assert_eq!(air.wings[&id].base, 3);
+        assert_eq!(air.wings[&id].mission, AirMission::CloseAirSupport);
+        assert_eq!(air.wings[&id].region, Some(7));
     }
 }
