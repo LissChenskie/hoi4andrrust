@@ -148,6 +148,7 @@ pub struct TechnologyEffects {
     pub country: StatBlock,
     pub unlock_units: BTreeSet<String>,
     pub unlock_equipment: BTreeSet<String>,
+    pub unlock_modules: BTreeSet<String>,
     pub unlock_tactics: BTreeSet<String>,
     pub conditional_unlocks: Vec<ConditionalUnlock>,
 }
@@ -237,6 +238,8 @@ pub struct MilitaryModifiers {
     pub equipment: BTreeMap<String, StatBlock>,
     pub unlocked_units: BTreeSet<String>,
     pub unlocked_equipment: BTreeSet<String>,
+    #[serde(default)]
+    pub unlocked_modules: BTreeSet<String>,
     pub unlocked_tactics: BTreeSet<String>,
     pub researched: BTreeSet<String>,
     pub flags: BTreeSet<String>,
@@ -269,6 +272,7 @@ impl MilitaryModifiers {
                 result
                     .unlocked_equipment
                     .extend(effect.unlock_equipment.iter().cloned());
+                result.unlocked_modules.extend(effect.unlock_modules.iter().cloned());
                 result
                     .unlocked_tactics
                     .extend(effect.unlock_tactics.iter().cloned());
