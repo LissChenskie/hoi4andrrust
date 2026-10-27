@@ -2243,28 +2243,36 @@ fn handle_hud_action(
                     .map_or_else(|e| e, |_| "Адмирал назначен или снят".into());
             }
         }
-        Action::NavalSaveDesign(hull,name,modules) => {
-            if let Some(tag)=tag {
-                let mut navy=std::mem::take(&mut military.naval);
-                hud.notice=navy.save_design(tag,&name,&hull,&modules,military,None)
-                    .map_or_else(|e|e,|id|format!("Проект корабля сохранён: {id}"));
-                military.naval=navy;
+        Action::NavalSaveDesign(hull, name, modules) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy
+                    .save_design(tag, &name, &hull, &modules, military, None)
+                    .map_or_else(|e| e, |id| format!("Проект корабля сохранён: {id}"));
+                military.naval = navy;
             }
         }
-        Action::NavalQueueDesign(design,base) => {
-            if let Some(tag)=tag {
-                let mut navy=std::mem::take(&mut military.naval);
-                hud.notice=navy.queue_design(tag,&design,base,5,world,military)
-                    .map_or_else(|e|e,|id|format!("Проект передан на верфи (линия #{id})"));
-                military.naval=navy;
+        Action::NavalQueueDesign(design, base) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy
+                    .queue_design(tag, &design, base, 5, world, military)
+                    .map_or_else(|e| e, |id| format!("Проект передан на верфи (линия #{id})"));
+                military.naval = navy;
             }
         }
-        Action::NavalAssignCarrierWing(tf,ship_idx,model,amount) => {
-            if let Some(tag)=tag {
-                let mut navy=std::mem::take(&mut military.naval);
-                hud.notice=navy.assign_carrier_aircraft(tag,tf,ship_idx,&model,amount,military)
-                    .map_or_else(|e|e,|_|"Палубная авиагруппа назначена. Пополнение из запасов — в порту.".into());
-                military.naval=navy;
+        Action::NavalAssignCarrierWing(tf, ship_idx, model, amount) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy
+                    .assign_carrier_aircraft(tag, tf, ship_idx, &model, amount, military)
+                    .map_or_else(
+                        |e| e,
+                        |_| {
+                            "Палубная авиагруппа назначена. Пополнение из запасов — в порту.".into()
+                        },
+                    );
+                military.naval = navy;
             }
         }
         Action::Save => hud.save_requested = true,
