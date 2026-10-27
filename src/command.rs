@@ -187,6 +187,9 @@ pub struct CommandState {
     pub rules: CommandRules,
     pub revision: u64,
     pub garrison_armies: BTreeSet<ArmyId>,
+    /// Immutable import projection, rebuilt from current sources after load.
+    #[serde(skip)]
+    pub data: hoi4_mobile::command_data::CommandData,
     next_id: u64,
 }
 impl CommandState {
@@ -679,110 +682,290 @@ pub fn load(
         ..Default::default()
     };
     let layers = data_layers(root);
-    let mut candidates = BTreeMap::new();
-    for path in layered_files(&layers, "common/characters", true, "txt") {
-        let Ok(s) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let Ok(doc) = crate::pdx::parse_pdx_compatible(&s) else {
-            continue;
-        };
-        for c in block(&doc.entries, "characters").unwrap_or(&[]) {
-            let Some(body) = c.block() else { continue };
-            let (rank, b) = if let Some(b) = block(body, "field_marshal") {
-                (Rank::FieldMarshal, b)
-            } else if let Some(b) = block(body, "corps_commander") {
-                (Rank::General, b)
-            } else {
-                continue;
-            };
-            candidates.insert(
-                c.key.clone(),
-                Commander {
-                    id: c.key.clone(),
-                    country: String::new(),
-                    name: atom(body, "name").unwrap_or(&c.key).into(),
-                    rank,
-                    skill: number(b, "skill", 0.0) as u32,
-                    attack: number(b, "attack_skill", 0.0) as u32,
-                    defense: number(b, "defense_skill", 0.0) as u32,
-                    planning: number(b, "planning_skill", 0.0) as u32,
-                    logistics: number(b, "logistics_skill", 0.0) as u32,
-                    experience: number(b, "experience", 0.0),
-                    traits: block(b, "traits")
-                        .map(crate::military_data::names)
-                        .unwrap_or_default(),
-                    source: path.display().to_string(),
-                },
-            );
+    use hoi4_mobile::command_data::{CommandData, CommanderRole, Severity};
+    let mut data = CommandData {
+        source_version: warfare.catalogue.source_version.clone(),
+        ..Default::default()
+    };
+    let source_name = |path: &Path| {
+        layers
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, layer)| {
+                path.strip_prefix(layer)
+                    .ok()
+                    .map(|p| format!("layer-{i}/{}", p.to_string_lossy().replace('\\', "/")))
+            })
+            .unwrap_or_else(|| path.display().to_string())
+    };
+    for (directory, traits) in [("common/characters", false), ("common/unit_leader", true)] {
+        for path in layered_files(&layers, directory, true, "txt") {
+            let file = source_name(&path);
+            match std::fs::read_to_string(&path) {
+                Ok(text) if traits => data.import_traits(&file, &text),
+                Ok(text) => data.import_characters(&file, &text),
+                Err(error) => data.diagnostic(
+                    Severity::Error,
+                    "read",
+                    data.source(&file, "", 0),
+                    error.to_string(),
+                ),
+            }
         }
+    }
+    let keys: BTreeSet<_> = data
+        .characters
+        .values()
+        .map(|c| c.name_key.clone())
+        .chain(
+            data.traits
+                .values()
+                .flat_map(|t| [t.name_key.clone(), t.description_key.clone()]),
+        )
+        .collect();
+    for path in layered_files(&layers, "localisation", true, "yml") {
+        let file = source_name(&path);
+        match std::fs::read_to_string(&path) {
+            Ok(text) => data.import_selected_localization(&file, &text, &keys),
+            Err(error) => data.diagnostic(
+                Severity::Warning,
+                "read",
+                data.source(&file, "", 0),
+                error.to_string(),
+            ),
+        }
+    }
+    data.validate();
+    let mut candidates = BTreeMap::new();
+    for character in data.characters.values() {
+        if data
+            .diagnostics
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.source.object_id == character.id)
+        {
+            continue;
+        }
+        // Preserve the existing runtime rank policy; both role profiles remain
+        // available in the IR. No duplicate commander/XP/assignment is created.
+        let Some(profile) = data
+            .profile(&character.id, CommanderRole::FieldMarshal)
+            .or_else(|| data.profile(&character.id, CommanderRole::General))
+        else {
+            continue;
+        };
+        let stats = &profile.stats;
+        let (
+            Some(skill),
+            Some(attack),
+            Some(defense),
+            Some(planning),
+            Some(logistics),
+            Some(experience),
+        ) = (
+            stats.skill,
+            stats.attack,
+            stats.defense,
+            stats.planning,
+            stats.logistics,
+            profile.initial_experience,
+        )
+        else {
+            continue;
+        };
+        candidates.insert(
+            character.id.clone(),
+            Commander {
+                id: character.id.clone(),
+                country: String::new(),
+                name: data.localization.get("russian", &character.name_key).into(),
+                rank: match profile.role {
+                    CommanderRole::General => Rank::General,
+                    CommanderRole::FieldMarshal => Rank::FieldMarshal,
+                },
+                skill,
+                attack,
+                defense,
+                planning,
+                logistics,
+                experience,
+                traits: profile.trait_ids.clone(),
+                source: profile.source.file.clone(),
+            },
+        );
     }
     for (tag, army) in &warfare.countries {
         let Some(path) = &army.history_source else {
             continue;
         };
-        let Ok(s) = std::fs::read_to_string(path) else {
-            continue;
+        let file = source_name(Path::new(path));
+        let doc = match std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| crate::pdx::parse_pdx_compatible(&s))
+        {
+            Ok(doc) => doc,
+            Err(error) => {
+                data.diagnostic(
+                    Severity::Error,
+                    "country_history",
+                    data.source(&file, tag, 0),
+                    error,
+                );
+                continue;
+            }
         };
-        let Ok(doc) = crate::pdx::parse_pdx_compatible(&s) else {
-            continue;
-        };
-        let (entries, _) =
+        let (entries, issues) =
             crate::history_conditions::resolve(&doc.entries, tag, &army.modifiers, date);
+        for issue in issues {
+            data.diagnostic(
+                Severity::Warning,
+                "history_condition",
+                data.source(&file, tag, 0),
+                issue,
+            );
+        }
         for e in entries.iter().filter(|e| e.key == "recruit_character") {
             if let Some(mut c) = e.atom().and_then(|id| candidates.get(id)).cloned() {
                 c.country = tag.clone();
-                state.commanders.insert(c.id.clone(), c);
+                if state
+                    .commanders
+                    .get(&c.id)
+                    .is_some_and(|existing| existing.country != c.country)
+                {
+                    data.diagnostic(
+                        Severity::Error,
+                        "commander_country_conflict",
+                        data.source(&file, &c.id, e.span.line),
+                        "One character recruited by multiple countries; first assignment retained",
+                    );
+                } else {
+                    state.commanders.insert(c.id.clone(), c);
+                }
+            } else if let Some(id) = e.atom().filter(|id| !data.characters.contains_key(*id)) {
+                data.diagnostic(
+                    Severity::Error,
+                    "unknown_recruit_character",
+                    data.source(&file, id, e.span.line),
+                    format!("Cannot resolve recruited character {id}"),
+                );
             }
         }
     }
-    for path in layered_files(&layers, "common/unit_leader", true, "txt") {
-        let Ok(s) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        let Ok(doc) = crate::pdx::parse_pdx_compatible(&s) else {
-            continue;
-        };
-        for t in block(&doc.entries, "leader_traits").unwrap_or(&doc.entries) {
-            let Some(b) = t.block() else { continue };
-            state.rules.traits.insert(
-                t.key.clone(),
-                TraitModifiers {
-                    abilities: block(b, "enable_ability")
-                        .map(crate::military_data::names)
-                        .unwrap_or_else(|| {
-                            atom(b, "enable_ability")
-                                .map(|s| BTreeSet::from([s.into()]))
-                                .unwrap_or_default()
-                        }),
-                    shared: block(b, "modifier")
-                        .map(|b| crate::military_data::stats(b, &Default::default()))
-                        .unwrap_or_default(),
-                    general: block(b, "non_shared_modifier")
-                        .map(|b| crate::military_data::stats(b, &Default::default()))
-                        .unwrap_or_default(),
-                    field_marshal: block(b, "field_marshal_modifier")
-                        .map(|b| crate::military_data::stats(b, &Default::default()))
-                        .unwrap_or_default(),
-                    extra_divisions: number(b, "command_limit", 0.0) as i32,
-                    extra_armies: number(b, "army_group_size", 0.0) as i32,
-                },
-            );
-        }
+    for (id, definition) in &data.traits {
+        let b = &definition.fields;
+        state.rules.traits.insert(
+            id.clone(),
+            TraitModifiers {
+                abilities: block(b, "enable_ability")
+                    .map(crate::military_data::names)
+                    .unwrap_or_else(|| {
+                        atom(b, "enable_ability")
+                            .map(|s| BTreeSet::from([s.into()]))
+                            .unwrap_or_default()
+                    }),
+                shared: block(b, "modifier")
+                    .map(|b| crate::military_data::stats(b, &Default::default()))
+                    .unwrap_or_default(),
+                general: block(b, "non_shared_modifier")
+                    .map(|b| crate::military_data::stats(b, &Default::default()))
+                    .unwrap_or_default(),
+                field_marshal: block(b, "field_marshal_modifier")
+                    .map(|b| crate::military_data::stats(b, &Default::default()))
+                    .unwrap_or_default(),
+                extra_divisions: number(b, "command_limit", 0.0) as i32,
+                extra_armies: number(b, "army_group_size", 0.0) as i32,
+            },
+        );
     }
-    let keys = state.commanders.values().map(|c| c.name.clone()).collect();
-    let names = crate::military_data::localisation(&layers, &keys);
-    for c in state.commanders.values_mut() {
-        if let Some(name) = names.get(&c.name) {
-            c.name = name.clone();
-        }
-    }
+    state.data = data;
     state
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authored_source_to_existing_division_army_and_mobile_projection() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/command-data");
+        let root = std::env::temp_dir().join(format!(
+            "hoi4-command-slice-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let put = |name: &str, text: &str| {
+            let p = root.join(name);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+        };
+        for name in [
+            "common/characters/basic.txt",
+            "common/characters/multirole.txt",
+            "common/characters/marshal.txt",
+            "common/unit_leader/traits.txt",
+            "localisation/test_l_english.yml",
+            "localisation/test_l_russian.yml",
+            "history/units/TEST_1936.txt",
+            "history/units/TEST_1939.txt",
+        ] {
+            put(name, &std::fs::read_to_string(fixture.join(name)).unwrap());
+        }
+        put(
+            "history/countries/A.txt",
+            &std::fs::read_to_string(fixture.join("history/countries/TEST.txt")).unwrap(),
+        );
+        put(
+            "common/units/test.txt",
+            "sub_units={infantry={group=infantry active=yes max_strength=25 max_organisation=60 manpower=1000 combat_width=2 maximum_speed=4 supply_consumption=1} engineer={group=support active=yes max_strength=1 max_organisation=20 manpower=100 maximum_speed=4}}",
+        );
+        let world = crate::warfare::tests::world();
+        let mut w = crate::military_history::initialize(
+            &root,
+            &world,
+            &Default::default(),
+            &mut Default::default(),
+            crate::game::GameDate::START,
+        );
+        assert_eq!(w.countries["A"].history_imported, 1);
+        assert_eq!(w.command.commanders.len(), 3);
+        assert_eq!(w.command.data.profiles.len(), 4);
+        assert_eq!(w.command.data.summary().errors, 0);
+        let division = *w.divisions.keys().next().unwrap();
+        assert_eq!(w.divisions[&division].derived.stats.width, 4.0);
+        assert_eq!(w.countries["A"].templates["TestInfantry"].line.len(), 2);
+        assert_eq!(w.countries["A"].templates["TestInfantry"].support.len(), 1);
+        let army = w.create_army("A", &[division], "Test Army").unwrap();
+        w.command
+            .set_general("A", army, Some("TEST_general"))
+            .unwrap();
+        let vm = crate::army_projection::army(&w, "A", army, "russian").unwrap();
+        assert_eq!(vm.division_ids, vec![division]);
+        let c = vm.commander.unwrap();
+        assert_eq!(c.name_key, "TEST_GENERAL_NAME");
+        assert_eq!(c.name, "Тестовый генерал");
+        assert_eq!(c.traits[0].name, "Организатор");
+        assert!(c.traits[0].definition_known);
+        assert_eq!(c.experience, 7.5);
+        assert_eq!(c.next_level_xp, None);
+        assert!((w.command.bonuses(division).attack - 0.125).abs() < 1e-9);
+        assert!(w.abilities.hq_rules.is_none());
+        let report = crate::military_history::import_report(&w, crate::game::GameDate::START);
+        assert_eq!(report["command_summary"]["profiles"], 4);
+        assert_eq!(report["army_views"][0]["division_count"], 1);
+        // An unknown recruitment reference must surface as an error, not vanish.
+        put("history/countries/A.txt", "recruit_character=MISSING");
+        w.command = load(&root, &w, crate::game::GameDate::START);
+        assert!(
+            w.command
+                .data
+                .diagnostics
+                .iter()
+                .any(|d| d.code == "unknown_recruit_character")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn hierarchy_moves_members_without_copying_divisions_or_deleting_them() {
         let mut w = crate::warfare::Warfare::new(crate::military_model::tests::catalogue());

@@ -1,0 +1,1308 @@
+{
+  "schema_version": "0.1.0",
+  "converter_version": "0.1.0",
+  "source_version": "authored-test",
+  "characters": {
+    "TEST_general": {
+      "id": "TEST_general",
+      "name_key": "TEST_GENERAL_NAME",
+      "profile_ids": [
+        "TEST_general::corps_commander"
+      ],
+      "portraits": [
+        {
+          "key": "army",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "small",
+                "operator": "=",
+                "value": {
+                  "Atom": "GFX_own_placeholder"
+                },
+                "span": {
+                  "offset": 144,
+                  "line": 5,
+                  "column": 26
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 135,
+            "line": 5,
+            "column": 17
+          }
+        }
+      ],
+      "source": {
+        "file": "common/characters/basic.txt",
+        "object_id": "TEST_general",
+        "line": 3,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": [
+        {
+          "key": "future_character_field",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "repeated",
+                "operator": "=",
+                "value": {
+                  "Atom": "one"
+                },
+                "span": {
+                  "offset": 407,
+                  "line": 12,
+                  "column": 30
+                }
+              },
+              {
+                "key": "repeated",
+                "operator": "=",
+                "value": {
+                  "Atom": "two"
+                },
+                "span": {
+                  "offset": 422,
+                  "line": 12,
+                  "column": 45
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 380,
+            "line": 12,
+            "column": 3
+          }
+        }
+      ]
+    },
+    "TEST_marshal": {
+      "id": "TEST_marshal",
+      "name_key": "TEST_MARSHAL_NAME",
+      "profile_ids": [
+        "TEST_marshal::field_marshal"
+      ],
+      "portraits": [],
+      "source": {
+        "file": "common/characters/marshal.txt",
+        "object_id": "TEST_marshal",
+        "line": 2,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": []
+    },
+    "TEST_multi": {
+      "id": "TEST_multi",
+      "name_key": "TEST_MULTI_NAME",
+      "profile_ids": [
+        "TEST_multi::corps_commander",
+        "TEST_multi::field_marshal"
+      ],
+      "portraits": [],
+      "source": {
+        "file": "common/characters/multirole.txt",
+        "object_id": "TEST_multi",
+        "line": 2,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": [
+        {
+          "key": "country_leader",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "ideology",
+                "operator": "=",
+                "value": {
+                  "Atom": "test_ideology"
+                },
+                "span": {
+                  "offset": 319,
+                  "line": 6,
+                  "column": 22
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 300,
+            "line": 6,
+            "column": 3
+          }
+        }
+      ]
+    }
+  },
+  "profiles": {
+    "TEST_general::corps_commander": {
+      "id": "TEST_general::corps_commander",
+      "character_id": "TEST_general",
+      "role": "general",
+      "stats": {
+        "skill": 2,
+        "attack": 3,
+        "defense": 2,
+        "planning": 1,
+        "logistics": 4
+      },
+      "trait_ids": [
+        "test_organizer"
+      ],
+      "initial_experience": 7.5,
+      "source": {
+        "file": "common/characters/basic.txt",
+        "object_id": "TEST_general",
+        "line": 6,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": [
+        {
+          "key": "future_role_field",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "value",
+                "operator": ">=",
+                "value": {
+                  "Atom": "2"
+                },
+                "span": {
+                  "offset": 361,
+                  "line": 10,
+                  "column": 26
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 339,
+            "line": 10,
+            "column": 4
+          }
+        }
+      ]
+    },
+    "TEST_marshal::field_marshal": {
+      "id": "TEST_marshal::field_marshal",
+      "character_id": "TEST_marshal",
+      "role": "field_marshal",
+      "stats": {
+        "skill": 3,
+        "attack": 2,
+        "defense": 4,
+        "planning": 2,
+        "logistics": 3
+      },
+      "trait_ids": [
+        "test_organizer",
+        "unknown_trait"
+      ],
+      "initial_experience": 0.0,
+      "source": {
+        "file": "common/characters/marshal.txt",
+        "object_id": "TEST_marshal",
+        "line": 4,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": []
+    },
+    "TEST_multi::corps_commander": {
+      "id": "TEST_multi::corps_commander",
+      "character_id": "TEST_multi",
+      "role": "general",
+      "stats": {
+        "skill": 1,
+        "attack": 2,
+        "defense": 3,
+        "planning": 4,
+        "logistics": 5
+      },
+      "trait_ids": [
+        "test_organizer"
+      ],
+      "initial_experience": 0.0,
+      "source": {
+        "file": "common/characters/multirole.txt",
+        "object_id": "TEST_multi",
+        "line": 4,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": []
+    },
+    "TEST_multi::field_marshal": {
+      "id": "TEST_multi::field_marshal",
+      "character_id": "TEST_multi",
+      "role": "field_marshal",
+      "stats": {
+        "skill": 5,
+        "attack": 4,
+        "defense": 3,
+        "planning": 2,
+        "logistics": 1
+      },
+      "trait_ids": [
+        "test_organizer"
+      ],
+      "initial_experience": 0.0,
+      "source": {
+        "file": "common/characters/multirole.txt",
+        "object_id": "TEST_multi",
+        "line": 5,
+        "source_version": "authored-test"
+      },
+      "unknown_fields": []
+    }
+  },
+  "traits": {
+    "test_organizer": {
+      "id": "test_organizer",
+      "name_key": "test_organizer",
+      "description_key": "test_organizer_desc",
+      "fields": [
+        {
+          "key": "modifier",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "planning_speed",
+                "operator": "=",
+                "value": {
+                  "Atom": "0.1"
+                },
+                "span": {
+                  "offset": 53,
+                  "line": 3,
+                  "column": 16
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 40,
+            "line": 3,
+            "column": 3
+          }
+        },
+        {
+          "key": "non_shared_modifier",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "army_attack_factor",
+                "operator": "=",
+                "value": {
+                  "Atom": "0.05"
+                },
+                "span": {
+                  "offset": 102,
+                  "line": 4,
+                  "column": 27
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 78,
+            "line": 4,
+            "column": 3
+          }
+        },
+        {
+          "key": "field_marshal_modifier",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "supply_consumption_factor",
+                "operator": "=",
+                "value": {
+                  "Atom": "-0.02"
+                },
+                "span": {
+                  "offset": 159,
+                  "line": 5,
+                  "column": 30
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 132,
+            "line": 5,
+            "column": 3
+          }
+        },
+        {
+          "key": "gain_xp",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "has_combat",
+                "operator": "=",
+                "value": {
+                  "Atom": "yes"
+                },
+                "span": {
+                  "offset": 209,
+                  "line": 6,
+                  "column": 15
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 197,
+            "line": 6,
+            "column": 3
+          }
+        },
+        {
+          "key": "allowed",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "always",
+                "operator": "=",
+                "value": {
+                  "Atom": "yes"
+                },
+                "span": {
+                  "offset": 242,
+                  "line": 7,
+                  "column": 15
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 230,
+            "line": 7,
+            "column": 3
+          }
+        },
+        {
+          "key": "future_trait_field",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "flag",
+                "operator": "=",
+                "value": {
+                  "Atom": "yes"
+                },
+                "span": {
+                  "offset": 282,
+                  "line": 8,
+                  "column": 26
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 259,
+            "line": 8,
+            "column": 3
+          }
+        }
+      ],
+      "source": {
+        "file": "common/unit_leader/traits.txt",
+        "object_id": "test_organizer",
+        "line": 2,
+        "source_version": "authored-test"
+      }
+    }
+  },
+  "localization": {
+    "languages": {
+      "english": {
+        "TEST_GENERAL_NAME": "Test General",
+        "TEST_MARSHAL_NAME": "Test Marshal",
+        "TEST_MULTI_NAME": "Test Multi",
+        "test_organizer": "Organizer",
+        "test_organizer_desc": "Own authored \"trait\" description"
+      },
+      "russian": {
+        "TEST_GENERAL_NAME": "Тестовый генерал",
+        "test_organizer": "Организатор"
+      }
+    }
+  },
+  "sources": {
+    "common/characters/basic.txt": {
+      "text": "# Original authored test data, not a historical commander.\ncharacters = {\n TEST_general = {\n  name = TEST_GENERAL_NAME\n  portraits = { army = { small = GFX_own_placeholder } }\n  corps_commander = {\n   skill = 2 attack_skill = 3 defense_skill = 2 planning_skill = 1 logistics_skill = 4\n   traits = { test_organizer }\n   experience = 7.5\n   future_role_field = { value >= 2 }\n  }\n  future_character_field = { repeated = one repeated = two }\n }\n}\n",
+      "entries": [
+        {
+          "key": "characters",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "TEST_general",
+                "operator": "=",
+                "value": {
+                  "Block": [
+                    {
+                      "key": "name",
+                      "operator": "=",
+                      "value": {
+                        "Atom": "TEST_GENERAL_NAME"
+                      },
+                      "span": {
+                        "offset": 94,
+                        "line": 4,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "portraits",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "army",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "small",
+                                  "operator": "=",
+                                  "value": {
+                                    "Atom": "GFX_own_placeholder"
+                                  },
+                                  "span": {
+                                    "offset": 144,
+                                    "line": 5,
+                                    "column": 26
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 135,
+                              "line": 5,
+                              "column": 17
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 121,
+                        "line": 5,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "corps_commander",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 201,
+                              "line": 7,
+                              "column": 4
+                            }
+                          },
+                          {
+                            "key": "attack_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "3"
+                            },
+                            "span": {
+                              "offset": 211,
+                              "line": 7,
+                              "column": 14
+                            }
+                          },
+                          {
+                            "key": "defense_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 228,
+                              "line": 7,
+                              "column": 31
+                            }
+                          },
+                          {
+                            "key": "planning_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "1"
+                            },
+                            "span": {
+                              "offset": 246,
+                              "line": 7,
+                              "column": 49
+                            }
+                          },
+                          {
+                            "key": "logistics_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "4"
+                            },
+                            "span": {
+                              "offset": 265,
+                              "line": 7,
+                              "column": 68
+                            }
+                          },
+                          {
+                            "key": "traits",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "test_organizer",
+                                  "operator": "",
+                                  "value": null,
+                                  "span": {
+                                    "offset": 299,
+                                    "line": 8,
+                                    "column": 15
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 288,
+                              "line": 8,
+                              "column": 4
+                            }
+                          },
+                          {
+                            "key": "experience",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "7.5"
+                            },
+                            "span": {
+                              "offset": 319,
+                              "line": 9,
+                              "column": 4
+                            }
+                          },
+                          {
+                            "key": "future_role_field",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "value",
+                                  "operator": ">=",
+                                  "value": {
+                                    "Atom": "2"
+                                  },
+                                  "span": {
+                                    "offset": 361,
+                                    "line": 10,
+                                    "column": 26
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 339,
+                              "line": 10,
+                              "column": 4
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 178,
+                        "line": 6,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "future_character_field",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "repeated",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "one"
+                            },
+                            "span": {
+                              "offset": 407,
+                              "line": 12,
+                              "column": 30
+                            }
+                          },
+                          {
+                            "key": "repeated",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "two"
+                            },
+                            "span": {
+                              "offset": 422,
+                              "line": 12,
+                              "column": 45
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 380,
+                        "line": 12,
+                        "column": 3
+                      }
+                    }
+                  ]
+                },
+                "span": {
+                  "offset": 75,
+                  "line": 3,
+                  "column": 2
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 59,
+            "line": 2,
+            "column": 1
+          }
+        }
+      ]
+    },
+    "common/characters/marshal.txt": {
+      "text": "characters = {\n TEST_marshal = {\n  name = TEST_MARSHAL_NAME\n  field_marshal = { skill=3 attack_skill=2 defense_skill=4 planning_skill=2 logistics_skill=3 traits={test_organizer unknown_trait} }\n }\n}\n",
+      "entries": [
+        {
+          "key": "characters",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "TEST_marshal",
+                "operator": "=",
+                "value": {
+                  "Block": [
+                    {
+                      "key": "name",
+                      "operator": "=",
+                      "value": {
+                        "Atom": "TEST_MARSHAL_NAME"
+                      },
+                      "span": {
+                        "offset": 35,
+                        "line": 3,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "field_marshal",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "3"
+                            },
+                            "span": {
+                              "offset": 80,
+                              "line": 4,
+                              "column": 21
+                            }
+                          },
+                          {
+                            "key": "attack_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 88,
+                              "line": 4,
+                              "column": 29
+                            }
+                          },
+                          {
+                            "key": "defense_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "4"
+                            },
+                            "span": {
+                              "offset": 103,
+                              "line": 4,
+                              "column": 44
+                            }
+                          },
+                          {
+                            "key": "planning_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 119,
+                              "line": 4,
+                              "column": 60
+                            }
+                          },
+                          {
+                            "key": "logistics_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "3"
+                            },
+                            "span": {
+                              "offset": 136,
+                              "line": 4,
+                              "column": 77
+                            }
+                          },
+                          {
+                            "key": "traits",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "test_organizer",
+                                  "operator": "",
+                                  "value": null,
+                                  "span": {
+                                    "offset": 162,
+                                    "line": 4,
+                                    "column": 103
+                                  }
+                                },
+                                {
+                                  "key": "unknown_trait",
+                                  "operator": "",
+                                  "value": null,
+                                  "span": {
+                                    "offset": 177,
+                                    "line": 4,
+                                    "column": 118
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 154,
+                              "line": 4,
+                              "column": 95
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 62,
+                        "line": 4,
+                        "column": 3
+                      }
+                    }
+                  ]
+                },
+                "span": {
+                  "offset": 16,
+                  "line": 2,
+                  "column": 2
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 0,
+            "line": 1,
+            "column": 1
+          }
+        }
+      ]
+    },
+    "common/characters/multirole.txt": {
+      "text": "characters = {\n TEST_multi = {\n  name = TEST_MULTI_NAME\n  corps_commander = { skill=1 attack_skill=2 defense_skill=3 planning_skill=4 logistics_skill=5 traits={test_organizer} }\n  field_marshal = { skill=5 attack_skill=4 defense_skill=3 planning_skill=2 logistics_skill=1 traits={test_organizer} }\n  country_leader = { ideology = test_ideology }\n }\n}\n",
+      "entries": [
+        {
+          "key": "characters",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "TEST_multi",
+                "operator": "=",
+                "value": {
+                  "Block": [
+                    {
+                      "key": "name",
+                      "operator": "=",
+                      "value": {
+                        "Atom": "TEST_MULTI_NAME"
+                      },
+                      "span": {
+                        "offset": 33,
+                        "line": 3,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "corps_commander",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "1"
+                            },
+                            "span": {
+                              "offset": 78,
+                              "line": 4,
+                              "column": 23
+                            }
+                          },
+                          {
+                            "key": "attack_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 86,
+                              "line": 4,
+                              "column": 31
+                            }
+                          },
+                          {
+                            "key": "defense_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "3"
+                            },
+                            "span": {
+                              "offset": 101,
+                              "line": 4,
+                              "column": 46
+                            }
+                          },
+                          {
+                            "key": "planning_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "4"
+                            },
+                            "span": {
+                              "offset": 117,
+                              "line": 4,
+                              "column": 62
+                            }
+                          },
+                          {
+                            "key": "logistics_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "5"
+                            },
+                            "span": {
+                              "offset": 134,
+                              "line": 4,
+                              "column": 79
+                            }
+                          },
+                          {
+                            "key": "traits",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "test_organizer",
+                                  "operator": "",
+                                  "value": null,
+                                  "span": {
+                                    "offset": 160,
+                                    "line": 4,
+                                    "column": 105
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 152,
+                              "line": 4,
+                              "column": 97
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 58,
+                        "line": 4,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "field_marshal",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "5"
+                            },
+                            "span": {
+                              "offset": 198,
+                              "line": 5,
+                              "column": 21
+                            }
+                          },
+                          {
+                            "key": "attack_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "4"
+                            },
+                            "span": {
+                              "offset": 206,
+                              "line": 5,
+                              "column": 29
+                            }
+                          },
+                          {
+                            "key": "defense_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "3"
+                            },
+                            "span": {
+                              "offset": 221,
+                              "line": 5,
+                              "column": 44
+                            }
+                          },
+                          {
+                            "key": "planning_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "2"
+                            },
+                            "span": {
+                              "offset": 237,
+                              "line": 5,
+                              "column": 60
+                            }
+                          },
+                          {
+                            "key": "logistics_skill",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "1"
+                            },
+                            "span": {
+                              "offset": 254,
+                              "line": 5,
+                              "column": 77
+                            }
+                          },
+                          {
+                            "key": "traits",
+                            "operator": "=",
+                            "value": {
+                              "Block": [
+                                {
+                                  "key": "test_organizer",
+                                  "operator": "",
+                                  "value": null,
+                                  "span": {
+                                    "offset": 280,
+                                    "line": 5,
+                                    "column": 103
+                                  }
+                                }
+                              ]
+                            },
+                            "span": {
+                              "offset": 272,
+                              "line": 5,
+                              "column": 95
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 180,
+                        "line": 5,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "country_leader",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "ideology",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "test_ideology"
+                            },
+                            "span": {
+                              "offset": 319,
+                              "line": 6,
+                              "column": 22
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 300,
+                        "line": 6,
+                        "column": 3
+                      }
+                    }
+                  ]
+                },
+                "span": {
+                  "offset": 16,
+                  "line": 2,
+                  "column": 2
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 0,
+            "line": 1,
+            "column": 1
+          }
+        }
+      ]
+    },
+    "common/unit_leader/traits.txt": {
+      "text": "leader_traits = {\n test_organizer = {\n  modifier = { planning_speed = 0.1 }\n  non_shared_modifier = { army_attack_factor = 0.05 }\n  field_marshal_modifier = { supply_consumption_factor = -0.02 }\n  gain_xp = { has_combat = yes }\n  allowed = { always = yes }\n  future_trait_field = { flag = yes }\n }\n}\n",
+      "entries": [
+        {
+          "key": "leader_traits",
+          "operator": "=",
+          "value": {
+            "Block": [
+              {
+                "key": "test_organizer",
+                "operator": "=",
+                "value": {
+                  "Block": [
+                    {
+                      "key": "modifier",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "planning_speed",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "0.1"
+                            },
+                            "span": {
+                              "offset": 53,
+                              "line": 3,
+                              "column": 16
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 40,
+                        "line": 3,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "non_shared_modifier",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "army_attack_factor",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "0.05"
+                            },
+                            "span": {
+                              "offset": 102,
+                              "line": 4,
+                              "column": 27
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 78,
+                        "line": 4,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "field_marshal_modifier",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "supply_consumption_factor",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "-0.02"
+                            },
+                            "span": {
+                              "offset": 159,
+                              "line": 5,
+                              "column": 30
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 132,
+                        "line": 5,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "gain_xp",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "has_combat",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "yes"
+                            },
+                            "span": {
+                              "offset": 209,
+                              "line": 6,
+                              "column": 15
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 197,
+                        "line": 6,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "allowed",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "always",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "yes"
+                            },
+                            "span": {
+                              "offset": 242,
+                              "line": 7,
+                              "column": 15
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 230,
+                        "line": 7,
+                        "column": 3
+                      }
+                    },
+                    {
+                      "key": "future_trait_field",
+                      "operator": "=",
+                      "value": {
+                        "Block": [
+                          {
+                            "key": "flag",
+                            "operator": "=",
+                            "value": {
+                              "Atom": "yes"
+                            },
+                            "span": {
+                              "offset": 282,
+                              "line": 8,
+                              "column": 26
+                            }
+                          }
+                        ]
+                      },
+                      "span": {
+                        "offset": 259,
+                        "line": 8,
+                        "column": 3
+                      }
+                    }
+                  ]
+                },
+                "span": {
+                  "offset": 19,
+                  "line": 2,
+                  "column": 2
+                }
+              }
+            ]
+          },
+          "span": {
+            "offset": 0,
+            "line": 1,
+            "column": 1
+          }
+        }
+      ]
+    },
+    "localisation/test_l_english.yml": {
+      "text": "﻿l_english:\n TEST_GENERAL_NAME:0 \"Test General\"\n TEST_MULTI_NAME:0 \"Test Multi\"\n TEST_MARSHAL_NAME:0 \"Test Marshal\"\n test_organizer:0 \"Organizer\"\n test_organizer_desc:0 \"Own authored \\\"trait\\\" description\" # comment\n",
+      "entries": []
+    },
+    "localisation/test_l_russian.yml": {
+      "text": "﻿l_russian:\n TEST_GENERAL_NAME:0 \"Тестовый генерал\"\n test_organizer:0 \"Организатор\"\n",
+      "entries": []
+    }
+  },
+  "diagnostics": [
+    {
+      "severity": "warning",
+      "code": "unknown_trait",
+      "message": "Unknown trait unknown_trait; ID retained, no invented modifiers",
+      "source": {
+        "file": "common/characters/marshal.txt",
+        "object_id": "TEST_marshal",
+        "line": 4,
+        "source_version": "authored-test"
+      }
+    }
+  ]
+}

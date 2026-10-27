@@ -1,5 +1,6 @@
 mod army_command_ui;
 mod army_controls;
+mod army_projection;
 mod army_ui;
 mod campaign_ui;
 mod combat_modifiers;

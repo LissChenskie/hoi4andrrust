@@ -1,4 +1,5 @@
 //! Headless research/import APIs shared by the game and the local data exporter.
+pub mod command_data;
 pub mod defines;
 pub mod game;
 pub mod pdx;

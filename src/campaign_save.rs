@@ -141,6 +141,7 @@ impl GameSession {
         // All validation is complete; move the immutable shared data only now.
         s.world.geography = std::mem::take(&mut self.world.geography);
         s.military.catalogue = self.military.catalogue.clone();
+        s.military.command.data = self.military.command.data.clone();
         s.military.fronts.rebuild_after_restore(&s.world);
         let mut plans = std::mem::take(&mut s.military.plans);
         plans.rebuild_after_restore(&s.military, &s.world);
@@ -203,6 +204,61 @@ mod tests {
             s.clock.elapsed_hours,
             Some("A"),
         );
+    }
+    #[test]
+    fn restore_reattaches_source_definitions_without_resetting_commander_xp() {
+        let mut s = configured();
+        s.military.command.data.import_characters("test.txt", "characters={g={name=GENERAL_NAME corps_commander={skill=1 attack_skill=1 defense_skill=1 planning_skill=1 logistics_skill=1}}}");
+        s.military.command.commanders.insert(
+            "g".into(),
+            Commander {
+                id: "g".into(),
+                country: "A".into(),
+                name: "General".into(),
+                rank: Rank::General,
+                skill: 1,
+                attack: 1,
+                defense: 1,
+                planning: 1,
+                logistics: 1,
+                experience: 17.0,
+                traits: Default::default(),
+                source: "test.txt".into(),
+            },
+        );
+        let cat = ResearchCatalogue::default();
+        let path = file("command-source");
+        s.save_game(&path, &cat).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_reader(std::fs::File::open(&path).unwrap()).unwrap();
+        assert!(
+            saved["session"]["military"]["command"]
+                .get("data")
+                .is_none()
+        );
+        s.military
+            .command
+            .commanders
+            .get_mut("g")
+            .unwrap()
+            .experience = 999.0;
+        s.military.command.data.import_localization(
+            "latest.yml",
+            "l_english:\n GENERAL_NAME:0 \"Current translation\"\n",
+        );
+        s.restore_game(&path, &cat).unwrap();
+        assert_eq!(s.military.command.commanders["g"].experience, 17.0);
+        assert_eq!(
+            s.military.command.data.characters["g"].name_key,
+            "GENERAL_NAME"
+        );
+        assert_eq!(
+            crate::army_projection::commander(&s.military, "g", "english")
+                .unwrap()
+                .name,
+            "Current translation"
+        );
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn occupied_industry_and_starting_production_survive_load_and_legacy_defaults() {

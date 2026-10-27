@@ -749,7 +749,7 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
             )
         })
         .collect();
-    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "countries": countries, "diagnostics": warfare.diagnostics})
+    serde_json::json!({"scenario": date.display(), "target_version":"1.19.3", "source_version": warfare.catalogue.source_version, "source_checksum": warfare.catalogue.source_checksum, "rule_sources": warfare.catalogue.rules.provenance, "original_engine_comparisons":0, "countries": countries, "command_data": warfare.command.data, "command_summary": warfare.command.data.summary(), "army_views": warfare.command.armies.values().filter_map(|a| crate::army_projection::army(warfare, &a.country, a.id, "russian").ok()).collect::<Vec<_>>(), "diagnostics": warfare.diagnostics})
 }
 
 #[cfg(test)]

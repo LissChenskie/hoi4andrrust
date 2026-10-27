@@ -1,0 +1,8 @@
+characters = {
+ TEST_multi = {
+  name = TEST_MULTI_NAME
+  corps_commander = { skill=1 attack_skill=2 defense_skill=3 planning_skill=4 logistics_skill=5 traits={test_organizer} }
+  field_marshal = { skill=5 attack_skill=4 defense_skill=3 planning_skill=2 logistics_skill=1 traits={test_organizer} }
+  country_leader = { ideology = test_ideology }
+ }
+}
