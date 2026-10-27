@@ -453,9 +453,8 @@ impl NavalState {
         pool: &mut BTreeMap<String, u32>,
         shortage_penalty: f64,
     ) {
-        let free_after_refits=self.advance_refits(
-            tag,dockyards,world,warfare,pool,shortage_penalty,
-        );
+        let free_after_refits =
+            self.advance_refits(tag, dockyards, world, warfare, pool, shortage_penalty);
         let Some(lines) = self.shipbuilding.get_mut(tag) else {
             return;
         };
@@ -572,7 +571,7 @@ impl NavalState {
         warfare: &Warfare,
     ) -> Result<(), String> {
         let force = self.task_forces.get(&id).ok_or("Флот не найден")?;
-        if mission != NavalMission::Hold && self.refits.values().any(|j|j.task_force==id) {
+        if mission != NavalMission::Hold && self.refits.values().any(|j| j.task_force == id) {
             return Err("Сначала завершите переоборудование кораблей".into());
         }
         if force.country != tag {
