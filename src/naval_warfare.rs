@@ -203,36 +203,61 @@ impl NavalState {
     /// Queue only a researched and buildable ship model. Historical ships
     /// remain separate from a country's ability to construct new ones.
     pub fn queue_ship(
-        &mut self, tag: &str, model: &str, base: u32, dockyards: u32,
-        world: &World, warfare: &Warfare,
+        &mut self,
+        tag: &str,
+        model: &str,
+        base: u32,
+        dockyards: u32,
+        world: &World,
+        warfare: &Warfare,
     ) -> Result<u64, String> {
-        let modifiers = warfare.countries.get(tag).map(|c| &c.modifiers)
+        let modifiers = warfare
+            .countries
+            .get(tag)
+            .map(|c| &c.modifiers)
             .ok_or("Неизвестная страна")?;
         if !Self::can_build_ship(&warfare.catalogue, model, modifiers) {
             return Err("Нужна исследованная и допустимая конструкция корабля".into());
         }
         if world.controller_of_province(base) != Some(tag)
-            || warfare.conditions.get(&base).is_none_or(|c| c.naval_base == 0)
+            || warfare
+                .conditions
+                .get(&base)
+                .is_none_or(|c| c.naval_base == 0)
         {
             return Err("Для выпуска нужен действующий собственный морской порт".into());
         }
-        if dockyards == 0 || warfare.catalogue.equipment.get(model)
-            .is_none_or(|e| !e.cost.is_finite() || e.cost <= 0.0)
+        if dockyards == 0
+            || warfare
+                .catalogue
+                .equipment
+                .get(model)
+                .is_none_or(|e| !e.cost.is_finite() || e.cost <= 0.0)
         {
             return Err("Недопустимое количество верфей или стоимость корабля".into());
         }
         self.next_construction_id = self.next_construction_id.saturating_add(1);
         let id = self.next_construction_id;
-        self.shipbuilding.entry(tag.into()).or_default().push(NavalConstruction {
-            id, country: tag.into(), model: model.into(), base,
-            requested_dockyards: dockyards.min(self.rules.dockyards_per_line.max(1)),
-            partial_ic: 0.0, completed: 0, last_day_ic: 0.0,
-        });
+        self.shipbuilding
+            .entry(tag.into())
+            .or_default()
+            .push(NavalConstruction {
+                id,
+                country: tag.into(),
+                model: model.into(),
+                base,
+                requested_dockyards: dockyards.min(self.rules.dockyards_per_line.max(1)),
+                partial_ic: 0.0,
+                completed: 0,
+                last_day_ic: 0.0,
+            });
         Ok(id)
     }
 
     pub fn cancel_ship(&mut self, tag: &str, id: u64) -> bool {
-        let Some(lines) = self.shipbuilding.get_mut(tag) else { return false; };
+        let Some(lines) = self.shipbuilding.get_mut(tag) else {
+            return false;
+        };
         let before = lines.len();
         lines.retain(|l| l.id != id);
         before != lines.len()
@@ -242,25 +267,43 @@ impl NavalState {
     /// pool as military factories. A ship is commissioned only after accumulating
     /// the imported model's IC cost and only while the technology remains usable.
     pub fn tick_shipbuilding(
-        &mut self, tag: &str, dockyards: u32, world: &World,
-        warfare: &Warfare, pool: &mut BTreeMap<String, u32>,
+        &mut self,
+        tag: &str,
+        dockyards: u32,
+        world: &World,
+        warfare: &Warfare,
+        pool: &mut BTreeMap<String, u32>,
         shortage_penalty: f64,
     ) {
-        let Some(lines) = self.shipbuilding.get_mut(tag) else { return };
-        let Some(modifiers) = warfare.countries.get(tag).map(|c| &c.modifiers) else { return; };
+        let Some(lines) = self.shipbuilding.get_mut(tag) else {
+            return;
+        };
+        let Some(modifiers) = warfare.countries.get(tag).map(|c| &c.modifiers) else {
+            return;
+        };
         let mut free = dockyards;
         let mut ships = Vec::new();
         for line in lines {
             line.last_day_ic = 0.0;
             if !Self::can_build_ship(&warfare.catalogue, &line.model, modifiers)
                 || world.controller_of_province(line.base) != Some(tag)
-                || warfare.conditions.get(&line.base).is_none_or(|c| c.naval_base == 0)
+                || warfare
+                    .conditions
+                    .get(&line.base)
+                    .is_none_or(|c| c.naval_base == 0)
             {
                 continue;
             }
-            let Some(def) = warfare.catalogue.equipment.get(&line.model) else { continue; };
-            if !def.cost.is_finite() || def.cost <= 0.0 { continue; }
-            let assigned = free.min(line.requested_dockyards.min(self.rules.dockyards_per_line.max(1)));
+            let Some(def) = warfare.catalogue.equipment.get(&line.model) else {
+                continue;
+            };
+            if !def.cost.is_finite() || def.cost <= 0.0 {
+                continue;
+            }
+            let assigned = free.min(
+                line.requested_dockyards
+                    .min(self.rules.dockyards_per_line.max(1)),
+            );
             free -= assigned;
             let needs = warfare.catalogue.equipment_resources.get(&line.model);
             let mut ic = 0.0;
@@ -286,21 +329,37 @@ impl NavalState {
             }
         }
         for (model, definition, base) in ships {
-            let existing = self.task_forces.values_mut().find(|t|
-                t.country == tag && t.base == base
-                && t.name == "Новые корабли" && t.mission == NavalMission::Hold);
+            let existing = self.task_forces.values_mut().find(|t| {
+                t.country == tag
+                    && t.base == base
+                    && t.name == "Новые корабли"
+                    && t.mission == NavalMission::Hold
+            });
             let name = format!("{} №{}", model, self.next_id.saturating_add(1));
-            let ship = NavalShip { name, model, definition, variant: None, strength: 1.0 };
+            let ship = NavalShip {
+                name,
+                model,
+                definition,
+                variant: None,
+                strength: 1.0,
+            };
             if let Some(force) = existing {
                 force.ships.push(ship);
             } else {
                 self.next_id = self.next_id.saturating_add(1);
                 let id = self.next_id;
-                self.task_forces.insert(id, NavalTaskForce {
-                    id, country: tag.into(), name: "Новые корабли".into(),
-                    base, mission: NavalMission::Hold, regions: BTreeSet::new(),
-                    ships: vec![ship],
-                });
+                self.task_forces.insert(
+                    id,
+                    NavalTaskForce {
+                        id,
+                        country: tag.into(),
+                        name: "Новые корабли".into(),
+                        base,
+                        mission: NavalMission::Hold,
+                        regions: BTreeSet::new(),
+                        ships: vec![ship],
+                    },
+                );
             }
         }
     }
@@ -630,35 +689,71 @@ mod tests {
         use crate::state::StateEconomy;
         use std::collections::HashMap;
         let mut world = World::from_map_data(
-            &HashMap::from([(1, 1)]), &HashMap::from([(1, "A".into())]),
+            &HashMap::from([(1, 1)]),
+            &HashMap::from([(1, "A".into())]),
             &HashMap::new(),
-            &HashMap::from([(1, StateEconomy {
-                dockyards: 2, ..Default::default()
-            })]), &HashMap::new(),
+            &HashMap::from([(
+                1,
+                StateEconomy {
+                    dockyards: 2,
+                    ..Default::default()
+                },
+            )]),
+            &HashMap::new(),
         );
         let mut db = MilitaryCatalogue::default();
-        db.equipment.insert("ship_hull_light_1".into(), EquipmentDefinition {
-            id: "ship_hull_light_1".into(), archetype: "ship_hull_light".into(),
-            year: 1936, active: false, buildable: true,
-            stats: BTreeMap::new(), cost: 5.0, modular: false, source: "fixture".into(),
-        });
-        db.equipment_resources.insert("ship_hull_light_1".into(),
-            BTreeMap::from([("steel".into(), 1)]));
+        db.equipment.insert(
+            "ship_hull_light_1".into(),
+            EquipmentDefinition {
+                id: "ship_hull_light_1".into(),
+                archetype: "ship_hull_light".into(),
+                year: 1936,
+                active: false,
+                buildable: true,
+                stats: BTreeMap::new(),
+                cost: 5.0,
+                modular: false,
+                source: "fixture".into(),
+            },
+        );
+        db.equipment_resources.insert(
+            "ship_hull_light_1".into(),
+            BTreeMap::from([("steel".into(), 1)]),
+        );
         let mut warfare = Warfare::new(db);
         warfare.countries.insert("A".into(), CountryArmy::default());
-        warfare.conditions.insert(1, crate::warfare::ProvinceConditions {
-            naval_base: 1, ..Default::default()
-        });
+        warfare.conditions.insert(
+            1,
+            crate::warfare::ProvinceConditions {
+                naval_base: 1,
+                ..Default::default()
+            },
+        );
         let mut navy = NavalState::default();
-        assert!(navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare).is_err());
-        warfare.countries.get_mut("A").unwrap().modifiers
-            .unlocked_equipment.insert("ship_hull_light_1".into());
-        navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare).unwrap();
+        assert!(
+            navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare)
+                .is_err()
+        );
+        warfare
+            .countries
+            .get_mut("A")
+            .unwrap()
+            .modifiers
+            .unlocked_equipment
+            .insert("ship_hull_light_1".into());
+        navy.queue_ship("A", "ship_hull_light_1", 1, 2, &world, &warfare)
+            .unwrap();
         let mut materials = BTreeMap::from([("steel".into(), 2)]);
         navy.tick_shipbuilding("A", 2, &world, &warfare, &mut materials, 0.05);
         assert_eq!(materials["steel"], 0);
         assert_eq!(navy.shipbuilding["A"][0].completed, 1);
-        assert_eq!(navy.task_forces.values().map(|tf| tf.ships.len()).sum::<usize>(), 1);
+        assert_eq!(
+            navy.task_forces
+                .values()
+                .map(|tf| tf.ships.len())
+                .sum::<usize>(),
+            1
+        );
         let before = navy.shipbuilding["A"][0].completed;
         // Fewer imported steel deposits produces a per-dockyard penalty;
         // finishing a ship still requires enough actual IC.
@@ -690,22 +785,38 @@ mod tests {
         } }"#;
         std::fs::write(units.join("A_1936.txt"), content).unwrap();
         let world = World::from_map_data(
-            &HashMap::from([(1, 1)]), &HashMap::from([(1, "A".into())]),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::from([(1, 1)]),
+            &HashMap::from([(1, "A".into())]),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         );
         let mut db = MilitaryCatalogue::default();
-        db.equipment.insert("ship_hull_light_1".into(), EquipmentDefinition {
-            id: "ship_hull_light_1".into(), archetype: "ship_hull_light".into(),
-            year: 1936, active: true, buildable: true,
-            stats: BTreeMap::new(), cost: 4.0, modular: false, source: "fixture".into(),
-        });
+        db.equipment.insert(
+            "ship_hull_light_1".into(),
+            EquipmentDefinition {
+                id: "ship_hull_light_1".into(),
+                archetype: "ship_hull_light".into(),
+                year: 1936,
+                active: true,
+                buildable: true,
+                stats: BTreeMap::new(),
+                cost: 4.0,
+                modular: false,
+                source: "fixture".into(),
+            },
+        );
         let mut warfare = Warfare::new(db);
         let mut army = CountryArmy::default();
         army.history_oobs.push("A_1936".into());
         warfare.countries.insert("A".into(), army);
-        warfare.conditions.insert(1, crate::warfare::ProvinceConditions {
-            naval_base: 2, ..Default::default()
-        });
+        warfare.conditions.insert(
+            1,
+            crate::warfare::ProvinceConditions {
+                naval_base: 2,
+                ..Default::default()
+            },
+        );
         let navy = import_naval_oob(&root, &world, &warfare);
         assert_eq!(navy.task_forces.len(), 1);
         let force = navy.task_forces.values().next().unwrap();
