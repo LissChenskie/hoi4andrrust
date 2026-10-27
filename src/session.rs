@@ -9,6 +9,7 @@ use crate::construction::{
 };
 use crate::game::GameState;
 use crate::production::{ProductionRules, ProductionState};
+use crate::resource_economy::ResourceEconomy;
 use crate::research::{ResearchCatalogue, ResearchRules, ResearchWorld};
 use crate::world::World;
 
@@ -30,6 +31,8 @@ pub struct GameSession {
     pub base_shared_slots: BTreeMap<u32, u16>,
     pub construction: BTreeMap<String, CountryConstruction>,
     pub production: ProductionState,
+    #[serde(default)]
+    pub resources: ResourceEconomy,
     pub research: ResearchWorld,
     pub military: crate::warfare::Warfare,
 }
@@ -60,6 +63,7 @@ impl GameSession {
             player_country: None,
             construction_queues: ConstructionQueues::new(),
             production: ProductionState::default(),
+            resources: ResourceEconomy::default(),
             research: ResearchWorld::default(),
             military: crate::warfare::Warfare::default(),
         }
