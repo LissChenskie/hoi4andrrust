@@ -246,9 +246,17 @@ mod tests {
             .join("\n");
         let rgba = (1u8..=5).flat_map(|i| [i, 0, 0, 255]).collect::<Vec<_>>();
         let map = MapGraph::from_rgba(5, 1, &rgba, &definition, false).unwrap();
+        let mut membership = HashMap::from([(1, 1), (2, 1), (5, 5)]);
+        let mut owners = HashMap::from([(1, "A".into()), (5, "B".into())]);
+        if land_route {
+            membership.insert(3, 3);
+            membership.insert(4, 4);
+            owners.insert(3, "N".into());
+            owners.insert(4, "N".into());
+        }
         let mut world = World::from_map_data(
-            &HashMap::from([(1, 1), (2, 1), (5, 5)]),
-            &HashMap::from([(1, "A".into()), (5, "B".into())]),
+            &membership,
+            &owners,
             &HashMap::new(),
             &HashMap::new(),
             &HashMap::new(),
