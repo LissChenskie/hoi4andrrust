@@ -253,6 +253,22 @@ mod tests {
         assert_eq!(market.last["A"].export_reserved["steel"], 8);
     }
     #[test]
+    fn war_suspends_imports_and_exporter_income() {
+        let mut world = world();
+        let mut market = ResourceEconomy::default();
+        market.laws.insert("A".into(), TradeLaw::FreeTrade);
+        market.set_deal(&world, TradeDeal {
+            buyer: "B".into(), seller: "A".into(), resource: "steel".into(), factories: 1
+        }).unwrap();
+        market.settle_with_wars(&mut world, &BTreeMap::new(),
+            &std::collections::BTreeSet::from([("A".into(), "B".into())]));
+        assert_eq!(market.last["B"].factories_spent, 0);
+        assert!(world.trade_factory_income.is_empty());
+        market.settle(&mut world, &BTreeMap::new());
+        assert_eq!(market.last["B"].factories_spent, 1);
+    }
+
+    #[test]
     fn trade_cannot_duplicate_factories_or_resources_and_capture_changes_output() {
         let mut world = world();
         let mut market = ResourceEconomy::default();
