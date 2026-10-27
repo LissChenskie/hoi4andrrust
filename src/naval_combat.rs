@@ -563,6 +563,9 @@ impl NavalState {
                 sunk.push(ship.name.clone());
             }
         }
+        // Destroyed carriers lose their remaining embarked aircraft. This
+        // updates the same persisted wing inventory used by subsequent sorties.
+        self.reconcile_sunk_carriers();
         // A damaged task force is recalled instead of being magically
         // repaired while its mission is still active at sea.
         for id in [a, b] {

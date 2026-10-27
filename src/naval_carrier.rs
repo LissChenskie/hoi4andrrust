@@ -3,7 +3,7 @@
 //! unavailable; there is no free on-deck aircraft creation.
 use crate::{
     air_warfare::is_aircraft, military_model::EquipmentDefinition, naval_warfare::NavalState,
-    production::ProductionState, warfare::Warfare,
+    production::ProductionState, warfare::Warfare, world::World,
 };
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +51,46 @@ pub struct CarrierAirSortie {
     pub relative_damage: f64,
     pub aircraft_losses: u32,
     pub aircraft_launched: u32,
+}
+/// Read the actual script keys used by HOI4 rather than silently ignoring
+/// NAIR defines. Defaults remain explicit approximations if game data is absent.
+fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
+    let defs = &w.catalogue.literal_defines;
+    let get = |keys: &[&str], fallback: f64, allow_zero: bool| {
+        keys.iter()
+            .find_map(|k| {
+                defs.get(*k)
+                    .copied()
+                    .filter(|v| v.is_finite() && (*v > 0.0 || (allow_zero && *v == 0.0)))
+            })
+            .unwrap_or(fallback)
+    };
+    let delay = get(
+        &[
+            "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+            "NDefines.NNavy.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+            "NDefines.NNavy.CARRIER_HOURS_DELAY",
+        ],
+        4.0,
+        false,
+    )
+    .ceil()
+    .max(1.0) as u64;
+    let sortie_fraction = get(
+        &["NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY"],
+        0.2,
+        true,
+    )
+    .clamp(0.0, 1.0);
+    let damage_scale = get(
+        &[
+            "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR",
+            "NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR",
+        ],
+        0.015,
+        true,
+    );
+    (delay, sortie_fraction, damage_scale)
 }
 impl NavalState {
     pub fn carrier_capacity(&self, tf: u64, index: usize, w: &Warfare) -> u32 {
@@ -135,12 +175,19 @@ impl NavalState {
     }
     /// Replenishment only happens when the carrier is in a friendly naval
     /// base with an idle order. Prevents spawning aircraft at sea.
-    pub fn replenish_carriers(&mut self, w: &Warfare, production: &mut ProductionState) {
+    pub fn replenish_carriers(
+        &mut self,
+        world: &World,
+        w: &Warfare,
+        production: &mut ProductionState,
+    ) {
+        self.reconcile_sunk_carriers();
         for (&(id, index), groups) in &mut self.carrier_wings {
             let Some(force) = self.task_forces.get(&id) else {
                 continue;
             };
             if force.mission != crate::naval_warfare::NavalMission::Hold
+                || world.controller_of_province(force.base) != Some(force.country.as_str())
                 || w.conditions
                     .get(&force.base)
                     .is_none_or(|c| c.naval_base == 0)
@@ -158,6 +205,24 @@ impl NavalState {
                 let delivered = requested.min(*available);
                 *available -= delivered;
                 group.planes = group.planes.saturating_add(delivered as u32);
+            }
+        }
+    }
+    /// Air groups on a destroyed carrier cannot keep defending other ships or
+    /// return to production inventory. Preserve cumulative losses for save data.
+    pub fn reconcile_sunk_carriers(&mut self) {
+        for (&(force_id, index), groups) in &mut self.carrier_wings {
+            let sunk = self
+                .task_forces
+                .get(&force_id)
+                .and_then(|f| f.ships.get(index))
+                .is_none_or(|ship| ship.strength <= 0.0);
+            if sunk {
+                for group in groups {
+                    group.losses = group.losses.saturating_add(u64::from(group.planes));
+                    group.planes = 0;
+                    group.target = 0;
+                }
             }
         }
     }
@@ -187,33 +252,26 @@ impl NavalState {
             return Vec::new();
         };
         let source_tag = source.country.clone();
-        let enemy_tag = enemy.country.clone();
         let mut attacks = Vec::new();
-        let define = &w.catalogue.literal_defines;
-        let delay = define
-            .get("NDefines.NNavy.CARRIER_HOURS_DELAY")
-            .copied()
-            .filter(|n| n.is_finite() && *n > 0.)
-            .unwrap_or(8.)
-            .round() as u64;
-        let air_damage = define
-            .get("NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR")
-            .copied()
-            .filter(|v| v.is_finite() && *v > 0.)
-            .unwrap_or(0.015);
-        let efficiency = (1.
-            + w.countries.get(&source_tag).map_or(0., |c| {
-                c.modifiers
-                    .country
-                    .get("sortie_efficiency")
-                    .copied()
-                    .unwrap_or(0.)
-            }))
-        .max(0.);
+        let (delay, base_sortie_fraction, air_damage) = carrier_air_parameters(w);
+        let sortie_modifier = w.countries.get(&source_tag).map_or(0., |c| {
+            c.modifiers
+                .country
+                .get("sortie_efficiency")
+                .copied()
+                .unwrap_or(0.)
+        });
+        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0)).clamp(0.0, 1.0);
         let enemy_fighters = self
             .carrier_wings
             .iter()
-            .filter(|((id, _), _)| *id == dst)
+            .filter(|((id, index), _)| {
+                *id == dst
+                    && enemy
+                        .ships
+                        .get(*index)
+                        .is_some_and(|ship| ship.strength > 0.0)
+            })
             .flat_map(|(_, gs)| gs.iter())
             .filter_map(|g| {
                 w.catalogue.equipment.get(&g.model).and_then(|m| {
@@ -297,8 +355,6 @@ impl NavalState {
                 });
             }
         }
-        // Avoid accidental interleaving of two simulation systems at once.
-        let _ = enemy_tag;
         attacks
     }
 }
@@ -309,7 +365,16 @@ mod tests {
     use crate::military_model::{CountryArmy, EquipmentDefinition, MilitaryCatalogue};
     use crate::naval_warfare::{NavalMission, NavalShip, NavalTaskForce};
     use crate::warfare::ProvinceConditions;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    fn test_world() -> World {
+        World::from_map_data(
+            &HashMap::from([(1, 1)]),
+            &HashMap::from([(1, "A".to_owned())]),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        )
+    }
     fn fixture() -> (Warfare, NavalState) {
         let mut catalogue = MilitaryCatalogue::default();
         for (id, arch, stats) in [
@@ -352,6 +417,10 @@ mod tests {
                 },
             );
         }
+        // Explicit full-sortie fixture: separate tests check lower rates.
+        catalogue
+            .literal_defines
+            .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 1.0);
         let mut w = Warfare::new(catalogue);
         w.countries.insert("A".into(), CountryArmy::default());
         w.countries.insert("B".into(), CountryArmy::default());
@@ -424,17 +493,95 @@ mod tests {
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
     }
     #[test]
+    fn imported_air_defines_override_the_old_nonexistent_names() {
+        let (mut w, mut navy) = fixture();
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines.insert(
+                "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT".into(),
+                6.0,
+            );
+            cat.literal_defines
+                .insert("NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05);
+            cat.literal_defines
+                .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4);
+        }
+        let (delay, portion, damage) = carrier_air_parameters(&w);
+        assert_eq!(delay, 6);
+        assert_eq!(portion, 0.4);
+        assert_eq!(damage, 0.05);
+        // Zeroed values in a mod must disable sorties or damage rather than
+        // accidentally restoring fallback values.
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines
+                .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.0);
+            cat.literal_defines
+                .insert("NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.0);
+        }
+        assert_eq!(carrier_air_parameters(&w).1, 0.0);
+        assert_eq!(carrier_air_parameters(&w).2, 0.0);
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines
+                .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4);
+            cat.literal_defines
+                .insert("NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05);
+        }
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w)
+            .unwrap();
+        navy.carrier_wings.get_mut(&(1, 0)).unwrap()[0].planes = 10;
+        let strikes = navy.carrier_air_strike(1, 2, &w, 6);
+        assert_eq!(strikes[0].aircraft_launched, 4);
+        assert_eq!(navy.carrier_air_strike(1, 2, &w, 11).len(), 0);
+        assert_eq!(navy.carrier_air_strike(1, 2, &w, 12).len(), 1);
+    }
+
+    #[test]
+    fn occupied_port_cannot_refill_and_sunk_carrier_cannot_keep_aircraft() {
+        let (w, mut navy) = fixture();
+        let mut world = test_world();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 6, &w)
+            .unwrap();
+        let mut prod = ProductionState::default();
+        prod.country_mut("A")
+            .model_stockpile
+            .insert("cv_nav_bomber_1".into(), 6);
+        assert!(world.set_province_controller(1, Some("B")));
+        navy.replenish_carriers(&world, &w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
+        assert_eq!(
+            prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
+            6
+        );
+        assert!(world.set_province_controller(1, Some("A")));
+        navy.replenish_carriers(&world, &w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 6);
+        navy.task_forces.get_mut(&1).unwrap().ships[0].strength = 0.0;
+        navy.reconcile_sunk_carriers();
+        let group = &navy.carrier_wings[&(1, 0)][0];
+        assert_eq!(group.planes, 0);
+        assert_eq!(group.target, 0);
+        assert_eq!(group.losses, 6);
+        assert!(navy.carrier_air_strike(1, 2, &w, 12).is_empty());
+        let saved = serde_json::to_string(&navy).unwrap();
+        let loaded: NavalState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.carrier_wings[&(1, 0)][0].losses, 6);
+    }
+
+    #[test]
     fn inventory_funded_airgroups_launch_only_when_present_and_respect_cooldowns() {
         let (w, mut navy) = fixture();
+        let world = test_world();
         navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
             .unwrap();
         let mut prod = ProductionState::default();
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
         prod.country_mut("A")
             .model_stockpile
             .insert("cv_nav_bomber_1".into(), 3);
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
         assert_eq!(
             prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
@@ -450,7 +597,7 @@ mod tests {
         prod.country_mut("A")
             .model_stockpile
             .insert("cv_nav_bomber_1".into(), 10);
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
         assert_eq!(
             prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
