@@ -3,7 +3,7 @@
 //! unavailable; there is no free on-deck aircraft creation.
 use crate::{
     air_warfare::is_aircraft, military_model::EquipmentDefinition, naval_warfare::NavalState,
-    production::ProductionState, warfare::Warfare,
+    production::ProductionState, warfare::Warfare, world::World,
 };
 use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +51,28 @@ pub struct CarrierAirSortie {
     pub relative_damage: f64,
     pub aircraft_losses: u32,
     pub aircraft_launched: u32,
+}
+/// Read the actual script keys used by HOI4 rather than silently ignoring
+/// NAIR defines. Defaults remain explicit approximations if game data is absent.
+fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
+    let defs = &w.catalogue.literal_defines;
+    let get = |keys: &[&str], fallback: f64| {
+        keys.iter().find_map(|k| defs.get(*k).copied()
+            .filter(|v| v.is_finite() && *v > 0.0)).unwrap_or(fallback)
+    };
+    let delay = get(&[
+        "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+        "NDefines.NNavy.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+        "NDefines.NNavy.CARRIER_HOURS_DELAY",
+    ], 4.0).ceil().max(1.0) as u64;
+    let sortie_fraction = get(&[
+        "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY",
+    ], 0.2).clamp(0.0, 1.0);
+    let damage_scale = get(&[
+        "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR",
+        "NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR",
+    ], 0.015);
+    (delay, sortie_fraction, damage_scale)
 }
 impl NavalState {
     pub fn carrier_capacity(&self, tf: u64, index: usize, w: &Warfare) -> u32 {
@@ -135,12 +157,14 @@ impl NavalState {
     }
     /// Replenishment only happens when the carrier is in a friendly naval
     /// base with an idle order. Prevents spawning aircraft at sea.
-    pub fn replenish_carriers(&mut self, w: &Warfare, production: &mut ProductionState) {
+    pub fn replenish_carriers(&mut self, world: &World, w: &Warfare, production: &mut ProductionState) {
+        self.reconcile_sunk_carriers();
         for (&(id, index), groups) in &mut self.carrier_wings {
             let Some(force) = self.task_forces.get(&id) else {
                 continue;
             };
             if force.mission != crate::naval_warfare::NavalMission::Hold
+                || world.controller_of_province(force.base) != Some(force.country.as_str())
                 || w.conditions
                     .get(&force.base)
                     .is_none_or(|c| c.naval_base == 0)
@@ -158,6 +182,22 @@ impl NavalState {
                 let delivered = requested.min(*available);
                 *available -= delivered;
                 group.planes = group.planes.saturating_add(delivered as u32);
+            }
+        }
+    }
+    /// Air groups on a destroyed carrier cannot keep defending other ships or
+    /// return to production inventory. Preserve cumulative losses for save data.
+    pub fn reconcile_sunk_carriers(&mut self) {
+        for (&(force_id, index), groups) in &mut self.carrier_wings {
+            let sunk = self.task_forces.get(&force_id)
+                .and_then(|f| f.ships.get(index))
+                .is_none_or(|ship| ship.strength <= 0.0);
+            if sunk {
+                for group in groups {
+                    group.losses = group.losses.saturating_add(u64::from(group.planes));
+                    group.planes = 0;
+                    group.target = 0;
+                }
             }
         }
     }
@@ -187,33 +227,18 @@ impl NavalState {
             return Vec::new();
         };
         let source_tag = source.country.clone();
-        let enemy_tag = enemy.country.clone();
         let mut attacks = Vec::new();
-        let define = &w.catalogue.literal_defines;
-        let delay = define
-            .get("NDefines.NNavy.CARRIER_HOURS_DELAY")
-            .copied()
-            .filter(|n| n.is_finite() && *n > 0.)
-            .unwrap_or(8.)
-            .round() as u64;
-        let air_damage = define
-            .get("NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR")
-            .copied()
-            .filter(|v| v.is_finite() && *v > 0.)
-            .unwrap_or(0.015);
-        let efficiency = (1.
-            + w.countries.get(&source_tag).map_or(0., |c| {
-                c.modifiers
-                    .country
-                    .get("sortie_efficiency")
-                    .copied()
-                    .unwrap_or(0.)
-            }))
-        .max(0.);
+        let (delay, base_sortie_fraction, air_damage) = carrier_air_parameters(w);
+        let sortie_modifier = w.countries.get(&source_tag).map_or(0., |c| {
+            c.modifiers.country.get("sortie_efficiency").copied().unwrap_or(0.)
+        });
+        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0))
+            .clamp(0.0, 1.0);
         let enemy_fighters = self
             .carrier_wings
             .iter()
-            .filter(|((id, _), _)| *id == dst)
+            .filter(|((id, index), _)| *id == dst
+                && enemy.ships.get(*index).is_some_and(|ship| ship.strength > 0.0))
             .flat_map(|(_, gs)| gs.iter())
             .filter_map(|g| {
                 w.catalogue.equipment.get(&g.model).and_then(|m| {
@@ -297,8 +322,6 @@ impl NavalState {
                 });
             }
         }
-        // Avoid accidental interleaving of two simulation systems at once.
-        let _ = enemy_tag;
         attacks
     }
 }
