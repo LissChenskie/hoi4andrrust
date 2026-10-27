@@ -9,6 +9,35 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// A JSON-safe, ordered representation of non-string map keys. An empty
+/// JSON object produced by older saves remains readable during migration.
+pub mod save_pairs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+    pub fn serialize<K: Ord + Serialize, V: Serialize, S: Serializer>(
+        value: &BTreeMap<K, V>, serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+    pub fn deserialize<'de, K: Ord + Deserialize<'de>, V: Deserialize<'de>, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<K, V>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Representation<K, V> {
+            Pairs(Vec<(K, V)>),
+            OldEmpty(BTreeMap<String, V>),
+        }
+        match Representation::<K, V>::deserialize(deserializer)? {
+            Representation::Pairs(pairs) => Ok(pairs.into_iter().collect()),
+            Representation::OldEmpty(m) if m.is_empty() => Ok(BTreeMap::new()),
+            Representation::OldEmpty(_) => Err(serde::de::Error::custom(
+                "Legacy JSON object cannot contain compound-key map entries",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NavalMission {
     #[default]
@@ -111,6 +140,7 @@ pub struct NavalAdmiral {
 pub struct NavalState {
     pub task_forces: BTreeMap<u64, NavalTaskForce>,
     /// Country and name uniquely scope imported commanders.
+    #[serde(default, with = "save_pairs")]
     pub admirals: BTreeMap<(String, String), NavalAdmiral>,
     /// Each task force can carry one commander; a commander cannot lead two.
     pub assigned_admirals: BTreeMap<u64, String>,
@@ -119,12 +149,16 @@ pub struct NavalState {
     pub next_construction_id: u64,
     pub rules: NavalRules,
     /// Fractional expected losses carried forward to preserve determinism.
+    #[serde(default, with = "save_pairs")]
     pub loss_progress: BTreeMap<(String, String, String), f64>,
     pub last_events: Vec<ConvoyEvent>,
     pub diagnostics: Vec<String>,
     /// Persistent spotted-task-force contacts, bounded by assigned regions.
+    #[serde(default, with = "save_pairs")]
     pub spotting: BTreeMap<(u32, u64, u64), f64>,
+    #[serde(default, with = "save_pairs")]
     pub last_contact_battle: BTreeMap<(u32, u64, u64), u64>,
+    #[serde(default, with = "save_pairs")]
     pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
     pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
 }
