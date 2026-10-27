@@ -2205,6 +2205,31 @@ fn handle_hud_action(
                     .map_or_else(|e| e, |_| "Война объявлена".into());
             }
         }
+        Action::NavalOrder(id, mission, region) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy.assign_mission(tag, id, mission, region, world, military)
+                    .map_or_else(|e| e, |_| format!("Приказ флоту: {}", mission.label()));
+                military.naval = navy;
+            }
+        }
+        Action::NavalQueueShip(model, base) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy.queue_ship(tag, &model, base, 5, world, military)
+                    .map_or_else(|e| e, |_| format!("Корабль {model} поставлен на верфи"));
+                military.naval = navy;
+            }
+        }
+        Action::NavalCancelShip(id) => {
+            if let Some(tag) = tag {
+                hud.notice = if military.naval.cancel_ship(tag, id) {
+                    "Строительство корабля отменено".into()
+                } else {
+                    "Производственная линия не найдена".into()
+                };
+            }
+        }
         Action::Save => hud.save_requested = true,
         Action::Load => hud.load_requested = true,
         Action::MainMenu => {}
