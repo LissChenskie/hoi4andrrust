@@ -2262,12 +2262,16 @@ fn handle_hud_action(
                 military.naval = navy;
             }
         }
-        Action::NavalQueueRefit(tf,index,design) => {
+        Action::NavalQueueRefit(tf, index, design) => {
             if let Some(tag) = tag {
-                let mut navy=std::mem::take(&mut military.naval);
-                hud.notice=navy.queue_refit(tag,tf,index,&design,5,world,military)
-                    .map_or_else(|e|e,|id|format!("Рефит корабля поставлен на верфи (#{id})"));
-                military.naval=navy;
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy
+                    .queue_refit(tag, tf, index, &design, 5, world, military)
+                    .map_or_else(
+                        |e| e,
+                        |id| format!("Рефит корабля поставлен на верфи (#{id})"),
+                    );
+                military.naval = navy;
             }
         }
         Action::NavalAssignCarrierWing(tf, ship_idx, model, amount) => {
