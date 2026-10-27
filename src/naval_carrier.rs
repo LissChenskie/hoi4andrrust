@@ -16,6 +16,47 @@ pub struct CarrierAirGroup {
     pub last_launch: Option<u64>,
     pub loss_debt: f64,
 }
+/// Five carrier stances introduced by Paradox in 2025.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CarrierStance {
+    FullyDefensive,
+    Cautious,
+    #[default]
+    Balanced,
+    Active,
+    Aggressive,
+}
+impl CarrierStance {
+    pub const ALL: [Self; 5] = [
+        Self::FullyDefensive, Self::Cautious, Self::Balanced,
+        Self::Active, Self::Aggressive,
+    ];
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::FullyDefensive => "Полная оборона",
+            Self::Cautious => "Осторожно",
+            Self::Balanced => "Баланс",
+            Self::Active => "Активно",
+            Self::Aggressive => "Агрессивно",
+        }
+    }
+    /// Exact published stance percentage split; sortie efficiency, weather
+    /// and combat sortie scheduling are separately modelled and provisional.
+    pub fn offensive_fraction(self) -> f64 {
+        match self {
+            Self::FullyDefensive => 0.0,
+            Self::Cautious => 0.25,
+            Self::Balanced => 0.50,
+            Self::Active => 0.75,
+            Self::Aggressive => 1.0,
+        }
+    }
+    pub fn defensive_fraction(self) -> f64 { 1.0 - self.offensive_fraction() }
+    pub fn next(self) -> Self {
+        let index=Self::ALL.iter().position(|v| *v == self).unwrap_or(2);
+        Self::ALL[(index + 1) % Self::ALL.len()]
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AircraftRole {
     Fighter,
@@ -93,6 +134,24 @@ fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
     (delay, sortie_fraction, damage_scale)
 }
 impl NavalState {
+    pub fn carrier_stance(&self, tf: u64) -> CarrierStance {
+        self.carrier_stances.get(&tf).copied().unwrap_or_default()
+    }
+    pub fn set_carrier_stance(
+        &mut self, country: &str, tf: u64, stance: CarrierStance, w: &Warfare,
+    ) -> Result<(), String> {
+        let force=self.task_forces.get(&tf).ok_or("Флот не найден")?;
+        if force.country != country {
+            return Err("Нельзя менять настройку чужого флота".into());
+        }
+        if !force.ships.iter().enumerate().any(|(index,_)|
+            self.carrier_capacity(tf,index,w)>0)
+        {
+            return Err("В соединении нет действующего авианосца".into());
+        }
+        self.carrier_stances.insert(tf,stance);
+        Ok(())
+    }
     pub fn carrier_capacity(&self, tf: u64, index: usize, w: &Warfare) -> u32 {
         let Some(ship) = self.task_forces.get(&tf).and_then(|f| f.ships.get(index)) else {
             return 0;
@@ -261,7 +320,9 @@ impl NavalState {
                 .copied()
                 .unwrap_or(0.)
         });
-        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0)).clamp(0.0, 1.0);
+        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0)
+            * self.carrier_stance(src).offensive_fraction()).clamp(0.0, 1.0);
+        let defending_fraction = self.carrier_stance(dst).defensive_fraction();
         let enemy_fighters = self
             .carrier_wings
             .iter()
@@ -275,7 +336,8 @@ impl NavalState {
             .flat_map(|(_, gs)| gs.iter())
             .filter_map(|g| {
                 w.catalogue.equipment.get(&g.model).and_then(|m| {
-                    (role(m) == Some(AircraftRole::Fighter)).then_some(g.planes as f64)
+                    (role(m) == Some(AircraftRole::Fighter))
+                        .then_some(g.planes as f64 * defending_fraction)
                 })
             })
             .sum::<f64>();
@@ -321,7 +383,6 @@ impl NavalState {
                     continue;
                 };
                 let Some(r) = role(model) else { continue };
-                group.last_launch = Some(hour);
                 if r != AircraftRole::NavalBomber {
                     continue;
                 }
@@ -330,6 +391,7 @@ impl NavalState {
                 if launch == 0 {
                     continue;
                 }
+                group.last_launch = Some(hour);
                 group.sorties += u64::from(launch);
                 let target_idx = enemy_ships[(hour as usize + ship_idx) % enemy_ships.len()];
                 let attack = model
