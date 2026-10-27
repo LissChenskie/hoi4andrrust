@@ -2084,7 +2084,8 @@ fn naval_carrier_view(
             stance.offensive_fraction() * 100.0,
             stance.defensive_fraction() * 100.0,
         ),
-        Rect::new(x, y, width, 29.0), false,
+        Rect::new(x, y, width, 29.0),
+        false,
     ) {
         actions.push(Action::NavalSetCarrierStance(id, next));
     }
