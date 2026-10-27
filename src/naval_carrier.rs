@@ -520,6 +520,50 @@ mod tests {
         (w, navy)
     }
     #[test]
+    fn official_five_carrier_stances_have_exact_published_split() {
+        let expected=[0.0,0.25,0.50,0.75,1.0];
+        for (stance,portion) in CarrierStance::ALL.iter().zip(expected) {
+            assert_eq!(stance.offensive_fraction(),portion);
+            assert_eq!(stance.defensive_fraction(),1.0-portion);
+        }
+        assert_eq!(CarrierStance::Aggressive.next(),CarrierStance::FullyDefensive);
+        assert_eq!(CarrierStance::default(),CarrierStance::Balanced);
+    }
+    #[test]
+    fn stance_orders_check_national_authority_and_are_save_compatible() {
+        let (w,mut navy)=fixture();
+        assert!(navy.set_carrier_stance("B",1,CarrierStance::Aggressive,&w).is_err());
+        assert!(navy.set_carrier_stance("B",2,CarrierStance::Aggressive,&w).is_err());
+        navy.set_carrier_stance("A",1,CarrierStance::FullyDefensive,&w).unwrap();
+        assert_eq!(navy.carrier_stance(1),CarrierStance::FullyDefensive);
+        let json=serde_json::to_string(&navy).unwrap();
+        let saved:NavalState=serde_json::from_str(&json).unwrap();
+        assert_eq!(saved.carrier_stance(1),CarrierStance::FullyDefensive);
+        let mut old:serde_json::Value=serde_json::from_str(&json).unwrap();
+        old.as_object_mut().unwrap().remove("carrier_stances");
+        let old:NavalState=serde_json::from_value(old).unwrap();
+        assert_eq!(old.carrier_stance(1),CarrierStance::Balanced);
+    }
+    #[test]
+    fn stance_limits_offensive_sorties_without_spawning_or_sacrificing_planes() {
+        let (w,mut navy)=fixture();
+        navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",10,&w).unwrap();
+        navy.carrier_wings.get_mut(&(1,0)).unwrap()[0].planes=10;
+        navy.set_carrier_stance("A",1,CarrierStance::FullyDefensive,&w).unwrap();
+        assert!(navy.carrier_air_strike(1,2,&w,4).is_empty());
+        assert_eq!(navy.carrier_wings[&(1,0)][0].last_launch,None);
+        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,10);
+        navy.set_carrier_stance("A",1,CarrierStance::Cautious,&w).unwrap();
+        let first=navy.carrier_air_strike(1,2,&w,4);
+        assert_eq!(first[0].aircraft_launched,3);
+        navy.set_carrier_stance("A",1,CarrierStance::Aggressive,&w).unwrap();
+        assert!(navy.carrier_air_strike(1,2,&w,5).is_empty());
+        let next=navy.carrier_air_strike(1,2,&w,8);
+        assert_eq!(next[0].aircraft_launched,10);
+        assert_eq!(navy.carrier_wings[&(1,0)][0].sorties,13);
+    }
+
+    #[test]
     fn deck_size_and_research_gate_carrier_aircraft() {
         let (mut w, mut navy) = fixture();
         assert_eq!(navy.carrier_capacity(1, 0, &w), 10);
@@ -557,6 +601,8 @@ mod tests {
     #[test]
     fn imported_air_defines_override_the_old_nonexistent_names() {
         let (mut w, mut navy) = fixture();
+        // Preserve the define-only regression independently of carrier stance.
+        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w).unwrap();
         {
             let cat = std::sync::Arc::make_mut(&mut w.catalogue);
             cat.literal_defines.insert(
@@ -634,6 +680,7 @@ mod tests {
     #[test]
     fn inventory_funded_airgroups_launch_only_when_present_and_respect_cooldowns() {
         let (w, mut navy) = fixture();
+        navy.set_carrier_stance("A", 1, CarrierStance::Aggressive, &w).unwrap();
         let world = test_world();
         navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
             .unwrap();
