@@ -9,8 +9,8 @@ use crate::construction::{
 };
 use crate::game::GameState;
 use crate::production::{ProductionRules, ProductionState};
-use crate::resource_economy::ResourceEconomy;
 use crate::research::{ResearchCatalogue, ResearchRules, ResearchWorld};
+use crate::resource_economy::ResourceEconomy;
 use crate::world::World;
 
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
@@ -318,23 +318,32 @@ impl GameSession {
         let policies: BTreeMap<_, _> = tags
             .iter()
             .map(|tag| {
-                let mut policy = self.construction.get(tag).map_or(
-                    CountryConstructionPolicy::default(),
-                    |c| c.policy,
-                );
+                let mut policy = self
+                    .construction
+                    .get(tag)
+                    .map_or(CountryConstructionPolicy::default(), |c| c.policy);
                 policy.trade_civilian_factories = 0;
                 (tag.clone(), policy)
             })
             .collect();
         self.resources.settle(&mut self.world, &policies);
         for tag in &tags {
-            self.construction.entry(tag.clone()).or_default()
-                .policy.trade_civilian_factories = self.resources.last
-                .get(tag).map_or(0, |r| r.factories_spent);
+            self.construction
+                .entry(tag.clone())
+                .or_default()
+                .policy
+                .trade_civilian_factories = self
+                .resources
+                .last
+                .get(tag)
+                .map_or(0, |r| r.factories_spent);
             if let Some(economy) = self.world.country_economy(tag) {
                 let effective = production.for_research(self.research.country(tag));
-                let mut pool = self.resources.last
-                    .get(tag).map_or_else(BTreeMap::new, |r| r.available.clone());
+                let mut pool = self
+                    .resources
+                    .last
+                    .get(tag)
+                    .map_or_else(BTreeMap::new, |r| r.available.clone());
                 self.production.country_mut(tag).tick_with_resource_pool(
                     economy.military_factories,
                     &effective,
