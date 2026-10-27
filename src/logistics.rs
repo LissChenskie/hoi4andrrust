@@ -76,6 +76,9 @@ pub struct CountryLogistics {
     pub capital: Option<u32>,
     pub fuel: f64,
     pub fuel_capacity: f64,
+    /// Fixed national capacity, excluding dynamically controlled fuel silos.
+    /// None migrates existing profiles/saves on the first logistics tick.
+    pub fuel_capacity_base: Option<f64>,
     /// Explicit extraction/import input, in fuel units/day. No free oil is invented.
     pub fuel_income_daily: f64,
     pub convoys: u64,
@@ -296,6 +299,7 @@ impl LogisticsState {
                 || [c.fuel, c.fuel_capacity, c.fuel_income_daily]
                     .iter()
                     .any(|n| !n.is_finite() || *n < 0.)
+                || c.fuel_capacity_base.is_some_and(|n| !n.is_finite() || n < 0.)
                 || c.fuel > c.fuel_capacity
             {
                 return Err(format!("Invalid logistics country {tag}"));
@@ -605,9 +609,14 @@ impl LogisticsState {
                 .map(|(_, n)| *n)
                 .sum::<f64>();
             let silos = world.country_economy(tag).map_or(0, |e| e.fuel_silos);
-            c.fuel_capacity = c.fuel_capacity.max(
-                self.rules.base_fuel_capacity + f64::from(silos) * self.rules.silo_fuel_capacity,
-            );
+            // Remember the fixed capacity once, rather than treating yesterday's
+            // computed silo capacity as another permanent national bonus.
+            let base = *c.fuel_capacity_base.get_or_insert_with(|| {
+                c.fuel_capacity.max(self.rules.base_fuel_capacity)
+            });
+            c.fuel_capacity = base + f64::from(silos) * self.rules.silo_fuel_capacity;
+            // Capturing or losing a silo cannot leave fuel above the new limit.
+            c.fuel = c.fuel.min(c.fuel_capacity);
             let income = (c.fuel_income_daily
                 + oil * self.rules.oil_fuel_per_day
                 + f64::from(refineries) * self.rules.refinery_fuel_per_day)
@@ -789,5 +798,70 @@ impl LogisticsState {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod integration_regressions {
+    use super::*;
+    use crate::military_model::EquipmentDefinition;
+    use crate::production::ProductionState;
+    use crate::state::StateEconomy;
+    use std::collections::HashMap;
+
+    #[test]
+    fn motorization_reserves_only_real_trucks_and_returns_them_when_disabled() {
+        let world = crate::warfare::tests::world();
+        let mut logistics = LogisticsState::default();
+        logistics.countries.insert("A".into(), CountryLogistics::default());
+        logistics.motorized_hubs.insert(1);
+        let mut production = ProductionState::default();
+        production.country_mut("A").model_stockpile.insert("truck_test".into(), 55);
+        let mut db = crate::military_model::MilitaryCatalogue::default();
+        db.equipment.insert("truck_test".into(), EquipmentDefinition {
+            id: "truck_test".into(), archetype: "motorized_equipment".into(),
+            year: 1936, active: true, buildable: true,
+            stats: Default::default(), cost: 2., modular: false, source: "test".into(),
+        });
+        logistics.reserve_trucks(&mut production, &world, &db);
+        assert_eq!(production.country("A").unwrap().model_stockpile["truck_test"], 15);
+        assert_eq!(logistics.countries["A"].truck_models["truck_test"], 40);
+        // Repeated calls must never consume another forty trucks for the same hub.
+        logistics.reserve_trucks(&mut production, &world, &db);
+        assert_eq!(production.country("A").unwrap().model_stockpile["truck_test"], 15);
+        logistics.motorized_hubs.clear();
+        logistics.reserve_trucks(&mut production, &world, &db);
+        assert_eq!(production.country("A").unwrap().model_stockpile["truck_test"], 55);
+        assert_eq!(logistics.countries["A"].truck_count(), 0);
+    }
+
+    #[test]
+    fn fuel_silo_capacity_shrinks_after_capture_without_becoming_permanent() {
+        let mut world = crate::warfare::tests::world();
+        world.states.get_mut(&1).unwrap().economy = StateEconomy {
+            fuel_silos: 1, ..Default::default()
+        };
+        let mut logistics = LogisticsState::default();
+        logistics.enabled = true;
+        logistics.countries.insert("A".into(), CountryLogistics {
+            capital: Some(1), fuel: 75., fuel_capacity: 100.,
+            ..Default::default()
+        });
+        logistics.rules.base_fuel_capacity = 100.;
+        logistics.rules.silo_fuel_capacity = 100.;
+        let mut warfare = Warfare::default();
+        // Avoid unrelated network/import dependencies: no divisions are required.
+        logistics.tick(&mut warfare, &world, 1);
+        assert_eq!(logistics.countries["A"].fuel_capacity, 200.);
+        assert_eq!(logistics.countries["A"].fuel_capacity_base, Some(100.));
+        world.set_province_controller(1, Some("B"));
+        logistics.tick(&mut warfare, &world, 2);
+        assert_eq!(logistics.countries["A"].fuel_capacity, 100.);
+        logistics.countries.get_mut("A").unwrap().fuel = 150.;
+        logistics.tick(&mut warfare, &world, 3);
+        assert_eq!(logistics.countries["A"].fuel, 100.);
+        world.set_province_controller(1, Some("A"));
+        logistics.tick(&mut warfare, &world, 4);
+        assert_eq!(logistics.countries["A"].fuel_capacity, 200.);
     }
 }
