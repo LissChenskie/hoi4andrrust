@@ -2208,7 +2208,8 @@ fn handle_hud_action(
         Action::NavalOrder(id, mission, region) => {
             if let Some(tag) = tag {
                 let mut navy = std::mem::take(&mut military.naval);
-                hud.notice = navy.assign_mission(tag, id, mission, region, world, military)
+                hud.notice = navy
+                    .assign_mission(tag, id, mission, region, world, military)
                     .map_or_else(|e| e, |_| format!("Приказ флоту: {}", mission.label()));
                 military.naval = navy;
             }
@@ -2216,7 +2217,8 @@ fn handle_hud_action(
         Action::NavalQueueShip(model, base) => {
             if let Some(tag) = tag {
                 let mut navy = std::mem::take(&mut military.naval);
-                hud.notice = navy.queue_ship(tag, &model, base, 5, world, military)
+                hud.notice = navy
+                    .queue_ship(tag, &model, base, 5, world, military)
                     .map_or_else(|e| e, |_| format!("Корабль {model} поставлен на верфи"));
                 military.naval = navy;
             }
