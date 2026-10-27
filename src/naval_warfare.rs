@@ -68,6 +68,9 @@ pub struct NavalRules {
     pub escort_coverage: f64,
     /// Maximum fraction of committed ships lost in a single daily encounter.
     pub daily_loss_cap: f64,
+    /// IC output of one naval dockyard/day (overridable from imported defines).
+    pub dockyard_output: f64,
+    pub dockyards_per_line: u32,
 }
 impl Default for NavalRules {
     fn default() -> Self {
@@ -75,14 +78,29 @@ impl Default for NavalRules {
             raid_exposure: 0.035,
             escort_coverage: 0.06,
             daily_loss_cap: 0.35,
+            dockyard_output: 2.5,
+            dockyards_per_line: 5,
         }
     }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavalConstruction {
+    pub id: u64,
+    pub country: String,
+    pub model: String,
+    pub base: u32,
+    pub requested_dockyards: u32,
+    pub partial_ic: f64,
+    pub completed: u64,
+    pub last_day_ic: f64,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NavalState {
     pub task_forces: BTreeMap<u64, NavalTaskForce>,
     pub next_id: u64,
+    pub shipbuilding: BTreeMap<String, Vec<NavalConstruction>>,
+    pub next_construction_id: u64,
     pub rules: NavalRules,
     /// Fractional expected losses carried forward to preserve determinism.
     pub loss_progress: BTreeMap<(String, String, String), f64>,
@@ -180,6 +198,111 @@ impl NavalState {
         country: &MilitaryModifiers,
     ) -> bool {
         is_ship_model(model, catalogue) && catalogue.equipment_available(model, country)
+    }
+
+    /// Queue only a researched and buildable ship model. Historical ships
+    /// remain separate from a country's ability to construct new ones.
+    pub fn queue_ship(
+        &mut self, tag: &str, model: &str, base: u32, dockyards: u32,
+        world: &World, warfare: &Warfare,
+    ) -> Result<u64, String> {
+        let modifiers = warfare.countries.get(tag).map(|c| &c.modifiers)
+            .ok_or("Неизвестная страна")?;
+        if !Self::can_build_ship(&warfare.catalogue, model, modifiers) {
+            return Err("Нужна исследованная и допустимая конструкция корабля".into());
+        }
+        if world.controller_of_province(base) != Some(tag)
+            || warfare.conditions.get(&base).is_none_or(|c| c.naval_base == 0)
+        {
+            return Err("Для выпуска нужен действующий собственный морской порт".into());
+        }
+        if dockyards == 0 || warfare.catalogue.equipment.get(model)
+            .is_none_or(|e| !e.cost.is_finite() || e.cost <= 0.0)
+        {
+            return Err("Недопустимое количество верфей или стоимость корабля".into());
+        }
+        self.next_construction_id = self.next_construction_id.saturating_add(1);
+        let id = self.next_construction_id;
+        self.shipbuilding.entry(tag.into()).or_default().push(NavalConstruction {
+            id, country: tag.into(), model: model.into(), base,
+            requested_dockyards: dockyards.min(self.rules.dockyards_per_line.max(1)),
+            partial_ic: 0.0, completed: 0, last_day_ic: 0.0,
+        });
+        Ok(id)
+    }
+
+    pub fn cancel_ship(&mut self, tag: &str, id: u64) -> bool {
+        let Some(lines) = self.shipbuilding.get_mut(tag) else { return false; };
+        let before = lines.len();
+        lines.retain(|l| l.id != id);
+        before != lines.len()
+    }
+
+    /// Daily dockyard production draws from the same finite strategic-resource
+    /// pool as military factories. A ship is commissioned only after accumulating
+    /// the imported model's IC cost and only while the technology remains usable.
+    pub fn tick_shipbuilding(
+        &mut self, tag: &str, dockyards: u32, world: &World,
+        warfare: &Warfare, pool: &mut BTreeMap<String, u32>,
+        shortage_penalty: f64,
+    ) {
+        let Some(lines) = self.shipbuilding.get_mut(tag) else { return };
+        let Some(modifiers) = warfare.countries.get(tag).map(|c| &c.modifiers) else { return; };
+        let mut free = dockyards;
+        let mut ships = Vec::new();
+        for line in lines {
+            line.last_day_ic = 0.0;
+            if !Self::can_build_ship(&warfare.catalogue, &line.model, modifiers)
+                || world.controller_of_province(line.base) != Some(tag)
+                || warfare.conditions.get(&line.base).is_none_or(|c| c.naval_base == 0)
+            {
+                continue;
+            }
+            let Some(def) = warfare.catalogue.equipment.get(&line.model) else { continue; };
+            if !def.cost.is_finite() || def.cost <= 0.0 { continue; }
+            let assigned = free.min(line.requested_dockyards.min(self.rules.dockyards_per_line.max(1)));
+            free -= assigned;
+            let needs = warfare.catalogue.equipment_resources.get(&line.model);
+            let mut ic = 0.0;
+            for _ in 0..assigned {
+                let mut maximum_missing = 0_u32;
+                if let Some(needs) = needs {
+                    for (resource, &needed) in needs {
+                        let available = pool.entry(resource.clone()).or_default();
+                        maximum_missing = maximum_missing.max(needed.saturating_sub(*available));
+                        *available = available.saturating_sub(needed);
+                    }
+                }
+                ic += self.rules.dockyard_output.max(0.0)
+                    * (1.0 - f64::from(maximum_missing) * shortage_penalty).clamp(0.0, 1.0);
+            }
+            line.last_day_ic = ic;
+            line.partial_ic += ic;
+            let count = (line.partial_ic / def.cost).floor().clamp(0.0, 1000.0) as u32;
+            line.partial_ic -= f64::from(count) * def.cost;
+            line.completed = line.completed.saturating_add(u64::from(count));
+            for _ in 0..count {
+                ships.push((line.model.clone(), def.archetype.clone(), line.base));
+            }
+        }
+        for (model, definition, base) in ships {
+            let existing = self.task_forces.values_mut().find(|t|
+                t.country == tag && t.base == base
+                && t.name == "Новые корабли" && t.mission == NavalMission::Hold);
+            let name = format!("{} №{}", model, self.next_id.saturating_add(1));
+            let ship = NavalShip { name, model, definition, variant: None, strength: 1.0 };
+            if let Some(force) = existing {
+                force.ships.push(ship);
+            } else {
+                self.next_id = self.next_id.saturating_add(1);
+                let id = self.next_id;
+                self.task_forces.insert(id, NavalTaskForce {
+                    id, country: tag.into(), name: "Новые корабли".into(),
+                    base, mission: NavalMission::Hold, regions: BTreeSet::new(),
+                    ships: vec![ship],
+                });
+            }
+        }
     }
 
     pub fn assign_mission(
