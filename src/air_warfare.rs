@@ -270,11 +270,7 @@ impl AirState {
             let target = region
                 .and_then(|r| self.regions.get(&r))
                 .ok_or("Выберите воздушный регион для миссии")?;
-            let range = aircraft
-                .stats
-                .get("air_range")
-                .copied()
-                .unwrap_or(0.0);
+            let range = aircraft.stats.get("air_range").copied().unwrap_or(0.0);
             let in_range = target.contains(&base)
                 || catalogue.rules.pixels_to_km.is_some_and(|scale| {
                     scale.is_finite()
@@ -601,22 +597,33 @@ mod air_operations_tests {
         let id = air
             .create_wing("A", "test_fighter", 1, &world, &db)
             .unwrap();
-        assert!(air
-            .rebase_and_assign("A", id, 2, AirMission::Superiority, Some(7), &world, &db)
-            .is_err());
-        assert!(air
-            .rebase_and_assign("A", id, 1, AirMission::Superiority, Some(99), &world, &db)
-            .is_err());
-        assert!(air
-            .rebase_and_assign("A", id, 1, AirMission::Superiority, Some(7), &world, &db)
-            .is_err());
+        assert!(
+            air.rebase_and_assign("A", id, 2, AirMission::Superiority, Some(7), &world, &db)
+                .is_err()
+        );
+        assert!(
+            air.rebase_and_assign("A", id, 1, AirMission::Superiority, Some(99), &world, &db)
+                .is_err()
+        );
+        assert!(
+            air.rebase_and_assign("A", id, 1, AirMission::Superiority, Some(7), &world, &db)
+                .is_err()
+        );
         assert_eq!(air.wings[&id].base, 1);
         assert_eq!(air.wings[&id].mission, AirMission::Standby);
         assert_eq!(air.wings[&id].region, None);
 
         world.set_province_controller(3, Some("A"));
-        air.rebase_and_assign("A", id, 3, AirMission::CloseAirSupport, Some(7), &world, &db)
-            .unwrap();
+        air.rebase_and_assign(
+            "A",
+            id,
+            3,
+            AirMission::CloseAirSupport,
+            Some(7),
+            &world,
+            &db,
+        )
+        .unwrap();
         assert_eq!(air.wings[&id].base, 3);
         assert_eq!(air.wings[&id].mission, AirMission::CloseAirSupport);
         assert_eq!(air.wings[&id].region, Some(7));
