@@ -134,10 +134,19 @@ impl GameSession {
         self.refresh_research_building_slots();
     }
     pub fn refresh_research_building_slots(&mut self) {
+        let controllers: BTreeMap<_, _> = self
+            .world
+            .states
+            .keys()
+            .filter_map(|&id| {
+                self.world
+                    .state_controller(id)
+                    .map(|tag| (id, tag.to_owned()))
+            })
+            .collect();
         for (id, state) in &mut self.world.states {
-            let bonus = state
-                .owner
-                .as_deref()
+            let bonus = controllers
+                .get(id)
                 .and_then(|tag| self.research.country(tag))
                 .map_or(0.0, |c| c.modifier("global_building_slots_factor"));
             if let Some(base) = self.base_shared_slots.get(id) {
@@ -243,6 +252,8 @@ impl GameSession {
         catalogue: &ResearchCatalogue,
         research: &ResearchRules,
     ) -> bool {
+        construction::initialize_builders(&self.world, &mut self.construction_queues);
+        let control_revision = self.world.control_revision;
         let completed_day = self.clock.advance_one_hour();
         self.military.tick_hour(
             &mut self.world,
@@ -251,6 +262,9 @@ impl GameSession {
             self.clock.elapsed_hours,
             self.player_country.as_deref(),
         );
+        if self.world.control_revision != control_revision {
+            self.refresh_research_building_slots();
+        }
         let Some(completed_day) = completed_day else {
             return false;
         };
@@ -293,7 +307,7 @@ impl GameSession {
             let effective = buildings.for_research(self.research.country(tag), catalogue);
             let modifiers = ConstructionModifiers::from_research(self.research.country(tag));
             let country = self.construction.entry(tag.clone()).or_default();
-            construction::advance_day_by_order(
+            let removed = construction::advance_day_by_order(
                 &mut self.world,
                 tag,
                 &mut self.construction_queues,
@@ -302,6 +316,15 @@ impl GameSession {
                 country.policy,
                 &modifiers,
             );
+            for (other, country) in &mut self.construction {
+                if other != tag {
+                    for key in &removed {
+                        country
+                            .order
+                            .on_project_removed(key.state_id, key.project_index);
+                    }
+                }
+            }
         }
         true
     }
@@ -415,6 +438,7 @@ mod tests {
             .entry(2)
             .or_default()
             .push_back(ConstructionProject {
+                builder: None,
                 building: BuildingType::MilitaryFactory,
                 progress: 0.0,
                 cost: 1.0,
@@ -444,6 +468,57 @@ mod tests {
         hours(&mut s, 24);
         assert!(s.production.country("BBB").unwrap().lines[0].last_day_ic > 0.9);
         assert_eq!(s.research.day_index, 2);
+    }
+
+    #[test]
+    fn finishing_an_occupiers_project_preserves_the_other_countrys_paused_priorities() {
+        let mut s = session();
+        let project = |builder: &str, building, cost| ConstructionProject {
+            builder: Some(builder.into()),
+            building,
+            cost,
+            progress: 0.0,
+        };
+        s.construction_queues.insert(
+            2,
+            std::collections::VecDeque::from([
+                project("BBB", BuildingType::Infrastructure, 1.0),
+                project("AAA", BuildingType::MilitaryFactory, 10000.0),
+                project("AAA", BuildingType::Dockyard, 10000.0),
+            ]),
+        );
+        s.construction.get_mut("AAA").unwrap().order.lines = vec![
+            construction::ProjectRef {
+                state_id: 2,
+                project_index: 2,
+            },
+            construction::ProjectRef {
+                state_id: 2,
+                project_index: 1,
+            },
+        ];
+        hours(&mut s, 24);
+        assert_eq!(s.construction_queues[&2].len(), 2);
+        assert_eq!(
+            s.construction["AAA"].order.lines,
+            vec![
+                construction::ProjectRef {
+                    state_id: 2,
+                    project_index: 1
+                },
+                construction::ProjectRef {
+                    state_id: 2,
+                    project_index: 0
+                }
+            ]
+        );
+        assert!(s.construction_queues[&2].iter().all(|p| p.progress == 0.0));
+        let provinces = s.world.states[&2].province_ids.clone();
+        for id in provinces {
+            s.world.set_province_controller(id, Some("AAA"));
+        }
+        hours(&mut s, 24);
+        assert!(s.construction_queues[&2].iter().all(|p| p.progress > 0.0));
     }
 
     #[test]

@@ -792,6 +792,7 @@ pub struct OrderOfBattle {
     pub diagnostics: Vec<String>,
     pub warnings: Vec<String>,
     pub declared_divisions: usize,
+    pub initial_effects: Vec<Entry>,
 }
 pub fn parse_oob(source: &str) -> Result<OrderOfBattle, String> {
     parse_oob_for_country(
@@ -808,8 +809,10 @@ pub fn parse_oob_for_country(
     today: crate::game::GameDate,
 ) -> Result<OrderOfBattle, String> {
     let parsed = crate::pdx::parse_pdx_compatible(source)?;
+    let source_entries =
+        hoi4_mobile::script_constants::resolve(&parsed.entries, &Default::default());
     let (root, diagnostics) =
-        crate::history_conditions::resolve(&parsed.entries, tag, modifiers, today);
+        crate::history_conditions::resolve(&source_entries, tag, modifiers, today);
     let warnings = parsed
         .eof_terminated_blocks
         .into_iter()
@@ -821,6 +824,11 @@ pub fn parse_oob_for_country(
         })
         .collect();
     let mut result = OrderOfBattle {
+        initial_effects: root
+            .iter()
+            .filter(|e| !matches!(e.key.as_str(), "division_template" | "units"))
+            .cloned()
+            .collect(),
         diagnostics,
         warnings,
         ..Default::default()

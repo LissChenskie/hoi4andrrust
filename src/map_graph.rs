@@ -102,6 +102,8 @@ pub struct ProvinceGeography {
     /// A future movement model must calibrate pixel distances to game distances.
     pub center: Option<MapPosition>,
     pub pixel_count: u64,
+    /// Additional scripted VP; every province also contributes the base 0.1.
+    pub victory_points: f64,
     pub bounds: Option<ProvinceBounds>,
 }
 
@@ -300,6 +302,7 @@ impl MapGraph {
                         definition,
                         center,
                         pixel_count: t.count,
+                        victory_points: 0.0,
                         bounds: t.bounds,
                     },
                 )

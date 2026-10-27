@@ -141,6 +141,10 @@ pub fn resolve(
                 continue;
             }
             match e.key.as_str() {
+                "instant_effect" | "hidden_effect" => {
+                    walk(e.block().unwrap_or(&[]), tag, m, today, out, diagnostics);
+                    continue;
+                }
                 "units" => {
                     // Country/OOB conditions also occur inside the units
                     // container. Resolve them in the same ordered context.

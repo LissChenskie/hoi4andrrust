@@ -41,6 +41,19 @@ pub struct Province {
     pub control_revision: u64,
 }
 
+/// Derived control index; ignored by save files and gameplay equality.
+#[derive(Debug, Clone, Default)]
+pub struct StateControlCache {
+    revision: Option<u64>,
+    state_count: usize,
+    controllers: BTreeMap<u32, Option<u32>>,
+}
+impl PartialEq for StateControlCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct World {
     pub countries: BTreeMap<String, Country>,
@@ -49,6 +62,8 @@ pub struct World {
     #[serde(skip)]
     pub geography: crate::map_graph::MapGraph,
     pub control_revision: u64,
+    #[serde(skip)]
+    pub state_control_cache: std::cell::RefCell<StateControlCache>,
 }
 
 impl World {
@@ -137,14 +152,16 @@ impl World {
         world
     }
 
-    /// Aggregate state-level factory counts for a country. Production rules are separate.
+    /// State industry follows effective control, independently of legal ownership.
+    /// Occupation/compliance reductions are a separate, not yet modelled layer.
     pub fn country_economy(&self, country_tag: &str) -> Option<CountryEconomy> {
-        let country = self.countries.get(country_tag)?;
+        self.countries.get(country_tag)?;
         let mut totals = CountryEconomy::default();
-        for state_id in &country.state_ids {
-            let Some(state) = self.states.get(state_id) else {
-                continue;
-            };
+        for state in self
+            .states
+            .values()
+            .filter(|s| self.state_controller(s.id) == Some(country_tag))
+        {
             totals.states += 1;
             totals.infrastructure_total += u32::from(state.economy.infrastructure);
             totals.civilian_factories += u32::from(state.economy.civilian_factories);
@@ -156,6 +173,88 @@ impl World {
             totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
         }
         Some(totals)
+    }
+
+    /// State-wide buildings require at least half the state's control VP:
+    /// 0.1 per province plus its scripted VP. A tie favours the legal owner,
+    /// then the lexical tag; faction transfer/occupation laws are not inferred.
+    pub fn state_controller(&self, state_id: u32) -> Option<&str> {
+        let state = self.states.get(&state_id)?;
+        if state.province_ids.is_empty() {
+            return state.owner.as_deref();
+        }
+        let stale = {
+            let cache = self.state_control_cache.borrow();
+            cache.revision != Some(self.control_revision) || cache.state_count != self.states.len()
+        };
+        if stale {
+            let controllers = self
+                .states
+                .values()
+                .map(|s| {
+                    let representative = self.compute_state_controller(s.id).and_then(|tag| {
+                        s.province_ids
+                            .iter()
+                            .copied()
+                            .find(|&id| self.controller_of_province(id) == Some(tag))
+                    });
+                    (s.id, representative)
+                })
+                .collect();
+            *self.state_control_cache.borrow_mut() = StateControlCache {
+                revision: Some(self.control_revision),
+                state_count: self.states.len(),
+                controllers,
+            };
+        }
+        let representative = self
+            .state_control_cache
+            .borrow()
+            .controllers
+            .get(&state_id)
+            .copied()
+            .flatten()?;
+        self.controller_of_province(representative)
+    }
+    fn compute_state_controller(&self, state_id: u32) -> Option<&str> {
+        let state = self.states.get(&state_id)?;
+        if state.province_ids.is_empty() {
+            return state.owner.as_deref();
+        }
+        let first = self.controller_of_province(state.province_ids[0]);
+        if state
+            .province_ids
+            .iter()
+            .all(|&id| self.controller_of_province(id) == first)
+        {
+            return first;
+        }
+        let mut votes = BTreeMap::<&str, f64>::new();
+        let mut total = 0.0;
+        for &id in &state.province_ids {
+            let vp = self
+                .geography
+                .provinces
+                .get(&id)
+                .map_or(0.0, |p| p.victory_points);
+            let weight = 0.1 + if vp.is_finite() { vp.max(0.0) } else { 0.0 };
+            total += weight;
+            if let Some(tag) = self.controller_of_province(id) {
+                *votes.entry(tag).or_default() += weight;
+            }
+        }
+        votes
+            .into_iter()
+            .filter(|(_, vp)| *vp + 1e-9 >= total * 0.5)
+            .max_by(|(a, av), (b, bv)| {
+                av.total_cmp(bv)
+                    .then_with(|| {
+                        (Some(*a) == state.owner.as_deref())
+                            .cmp(&(Some(*b) == state.owner.as_deref()))
+                    })
+                    .then_with(|| b.cmp(a))
+            })
+            .map(|(tag, _)| tag)
     }
 
     pub fn state_for_province(&self, province_id: u32) -> Option<&State> {
@@ -172,7 +271,7 @@ impl World {
     }
 
     /// Occupying a province does not transfer its state, legal ownership,
-    /// factories, or the controllers of neighbouring provinces.
+    /// legal factory ownership, or the controllers of neighbouring provinces.
     pub fn set_province_controller(&mut self, province_id: u32, controller: Option<&str>) -> bool {
         if controller.is_some_and(|tag| {
             tag.is_empty()
@@ -207,6 +306,7 @@ impl World {
         let Some(state) = self.states.get_mut(&state_id) else {
             return false;
         };
+        self.state_control_cache.get_mut().revision = None;
         let old_owner = state.owner.take();
         // Peaceful ownership transfers also move unoccupied control. A province
         // occupied by a third country retains that independent controller.
@@ -370,5 +470,71 @@ mod tests {
         assert_eq!(world.owner_of_province(101), Some("POL"));
         assert_eq!(world.controller_of_province(101), Some("FRA"));
         assert_eq!(world.controller_of_province(102), Some("POL"));
+    }
+}
+
+#[cfg(test)]
+mod occupied_industry_regressions {
+    use super::*;
+    #[test]
+    fn vp_control_moves_industry_without_annexing_and_is_not_double_counted() {
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1), (2, 1), (3, 1)]),
+            &HashMap::from([(1, "AAA".into())]),
+            &Default::default(),
+            &HashMap::from([(
+                1,
+                StateEconomy {
+                    civilian_factories: 3,
+                    military_factories: 2,
+                    ..Default::default()
+                },
+            )]),
+            &Default::default(),
+        );
+        world.geography = crate::map_graph::MapGraph::from_rgba(
+            3,
+            1,
+            &[1, 1, 1, 255, 2, 1, 1, 255, 3, 1, 1, 255],
+            "1;1;1;1;land;false;plains;1\n2;2;1;1;land;false;plains;1\n3;3;1;1;land;false;plains;1",
+            false,
+        )
+        .unwrap();
+        world
+            .geography
+            .provinces
+            .get_mut(&1)
+            .unwrap()
+            .victory_points = 5.0;
+        assert_eq!(world.state_controller(1), Some("AAA"));
+        world.set_province_controller(2, Some("BBB"));
+        assert_eq!(world.state_controller(1), Some("AAA"));
+        world.set_province_controller(1, Some("BBB"));
+        assert_eq!(world.state_controller(1), Some("BBB"));
+        assert_eq!(world.states[&1].owner.as_deref(), Some("AAA"));
+        assert_eq!(world.country_economy("AAA").unwrap().military_factories, 0);
+        assert_eq!(world.country_economy("BBB").unwrap().military_factories, 2);
+        assert!(world.countries["AAA"].state_ids.contains(&1));
+        world.set_province_controller(1, Some("AAA"));
+        assert_eq!(world.state_controller(1), Some("AAA"));
+        assert_eq!(world.country_economy("BBB").unwrap().military_factories, 0);
+        let snapshot = serde_json::to_string(&world).unwrap();
+        assert!(!snapshot.contains("state_control_cache"));
+    }
+    #[test]
+    fn fragmented_state_without_half_of_control_points_has_no_operational_industry() {
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1), (2, 1), (3, 1)]),
+            &HashMap::from([(1, "AAA".into())]),
+            &Default::default(),
+            &Default::default(),
+            &Default::default(),
+        );
+        world.set_province_controller(2, Some("BBB"));
+        world.set_province_controller(3, Some("CCC"));
+        assert_eq!(world.state_controller(1), None);
+        for tag in ["AAA", "BBB", "CCC"] {
+            assert_eq!(world.country_economy(tag).unwrap().states, 0);
+        }
     }
 }

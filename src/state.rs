@@ -400,6 +400,62 @@ pub fn parse_state_controllers(
     parse_state_history_field(source, map_date, "controller")
 }
 
+/// Scripted VP at the selected bookmark. The implicit 0.1 per province is
+/// applied by state control, not added to the imported named VP value.
+pub fn parse_state_victory_points(
+    source: &str,
+    at: (u32, u32, u32),
+) -> Result<HashMap<u32, f64>, String> {
+    use crate::pdx::Entry as ScriptEntry;
+    fn collect(entries: &[ScriptEntry], at: (u32, u32, u32), out: &mut HashMap<u32, f64>) {
+        for vp in entries
+            .iter()
+            .filter(|e| e.key == "victory_points")
+            .filter_map(ScriptEntry::block)
+        {
+            for pair in vp.chunks_exact(2) {
+                if let (Ok(id), Ok(value)) =
+                    (pair[0].key.parse::<u32>(), pair[1].key.parse::<f64>())
+                {
+                    if value.is_finite() && value >= 0.0 {
+                        out.insert(id, value);
+                    }
+                }
+            }
+        }
+        let mut dates: Vec<_> = entries
+            .iter()
+            .filter_map(|e| {
+                parse_history_date(&e.key)
+                    .filter(|d| *d <= at)
+                    .map(|d| (d, e))
+            })
+            .collect();
+        dates.sort_by_key(|(d, _)| *d);
+        for (_, e) in dates {
+            if let Some(b) = e.block() {
+                collect(b, at, out);
+            }
+        }
+    }
+    let root = crate::pdx::parse_pdx_compatible(source)?.entries;
+    let mut result = HashMap::new();
+    for state in root
+        .iter()
+        .filter(|e| e.key == "state")
+        .filter_map(ScriptEntry::block)
+    {
+        for history in state
+            .iter()
+            .filter(|e| e.key == "history")
+            .filter_map(ScriptEntry::block)
+        {
+            collect(history, at, &mut result);
+        }
+    }
+    Ok(result)
+}
+
 fn parse_state_history_field(
     source: &str,
     map_date: (u32, u32, u32),
@@ -833,5 +889,19 @@ mod bookmark_economy_tests {
         .unwrap();
         assert_eq!(later.military_factories, 7);
         assert_eq!(later.civilian_factories, 3);
+    }
+}
+
+#[cfg(test)]
+mod victory_point_regressions {
+    #[test]
+    fn starting_control_uses_dated_victory_points_without_future_overrides() {
+        let source = "state={id=1 provinces={1 2} history={victory_points={1 2} 1935.1.1={victory_points={1 5}} 1939.1.1={victory_points={1 20} victory_points={2 10}}}}";
+        let early = super::parse_state_victory_points(source, (1936, 1, 1)).unwrap();
+        assert_eq!(early[&1], 5.0);
+        assert!(!early.contains_key(&2));
+        let late = super::parse_state_victory_points(source, (1939, 1, 1)).unwrap();
+        assert_eq!(late[&1], 20.0);
+        assert_eq!(late[&2], 10.0);
     }
 }

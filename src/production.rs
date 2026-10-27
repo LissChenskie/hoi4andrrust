@@ -2,8 +2,8 @@
 //!
 //! Implements factory allocation by line priority, equipment output (IC),
 //! efficiency growth and national stockpiles. Exact equipment definitions,
-//! historical 1936 lines, technologies, resource consumption and energy must
-//! be imported later. Defaults below are explicit prototypes, not hidden
+//! starting lines and stockpiles come from selected country/OOB effects.
+//! Resource consumption and energy still require further modelling. Defaults below are explicit prototypes, not hidden
 //! guesses about a country's historical production.
 use crate::world::World;
 use serde::{Deserialize, Serialize};
@@ -90,6 +90,37 @@ impl Default for ProductionRules {
 }
 
 impl ProductionRules {
+    pub fn from_defines(defines: &BTreeMap<String, f64>) -> Self {
+        let mut r = Self::default();
+        for (key, field, scale) in [
+            ("BASE_FACTORY_SPEED_MIL", &mut r.powered_factory_output, 1.0),
+            (
+                "BASE_FACTORY_START_EFFICIENCY_FACTOR",
+                &mut r.starting_efficiency,
+                0.01,
+            ),
+            (
+                "BASE_FACTORY_MAX_EFFICIENCY_FACTOR",
+                &mut r.efficiency_cap,
+                0.01,
+            ),
+            (
+                "BASE_FACTORY_EFFICIENCY_GAIN",
+                &mut r.efficiency_growth,
+                1.0,
+            ),
+        ] {
+            if let Some(value) = defines
+                .get(&format!("NDefines.NProduction.{key}"))
+                .copied()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+            {
+                *field = value * scale;
+            }
+        }
+        r.starting_efficiency = r.starting_efficiency.min(r.efficiency_cap);
+        r
+    }
     pub fn for_research(&self, c: Option<&crate::research::CountryResearch>) -> Self {
         let mut r = *self;
         if let Some(c) = c {
@@ -124,8 +155,22 @@ impl ProductionRules {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartingProduction {
+    pub equipment: String,
+    pub creator: Option<String>,
+    pub variant: Option<String>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProductionLine {
     pub id: u64,
+    #[serde(default)]
+    pub starting: Option<StartingProduction>,
+    #[serde(default)]
+    pub blocked_reason: Option<String>,
+    #[serde(default)]
+    pub remaining: Option<u64>,
     pub equipment: Equipment,
     /// Concrete imported equipment model; None retains the original prototype category.
     pub model: Option<String>,
@@ -149,6 +194,8 @@ pub struct CountryProduction {
     pub lines: Vec<ProductionLine>,
     pub stockpile: BTreeMap<Equipment, u64>,
     pub model_stockpile: BTreeMap<String, u64>,
+    #[serde(default)]
+    pub starting_data_applied: bool,
     next_id: u64,
 }
 
@@ -158,6 +205,9 @@ impl CountryProduction {
         let id = self.next_id;
         self.lines.push(ProductionLine {
             id,
+            starting: None,
+            blocked_reason: None,
+            remaining: None,
             equipment,
             model: None,
             requested_factories: requested.min(rules.max_factories_per_line),
@@ -228,6 +278,9 @@ impl CountryProduction {
             return false;
         }
         line.equipment = equipment;
+        line.starting = None;
+        line.blocked_reason = None;
+        line.remaining = None;
         line.model = None;
         line.efficiency = (line.efficiency * rules.switch_retention)
             .clamp(rules.starting_efficiency, rules.efficiency_cap);
@@ -250,6 +303,9 @@ impl CountryProduction {
             return false;
         }
         line.equipment = equipment;
+        line.starting = None;
+        line.blocked_reason = None;
+        line.remaining = None;
         line.model = Some(model.into());
         line.efficiency = (line.efficiency * rules.switch_retention)
             .clamp(rules.starting_efficiency, rules.efficiency_cap);
@@ -268,7 +324,11 @@ impl CountryProduction {
             .iter()
             .map(|line| {
                 let requested = line.requested_factories.min(rules.max_factories_per_line);
-                let assigned = free.min(requested);
+                let assigned = if line.blocked_reason.is_some() || line.remaining == Some(0) {
+                    0
+                } else {
+                    free.min(requested)
+                };
                 free -= assigned;
                 Allocation {
                     assigned,
@@ -297,7 +357,7 @@ impl CountryProduction {
         for (line, allocation) in self.lines.iter_mut().zip(allocations) {
             line.last_day_units = 0;
             line.last_day_ic = 0.0;
-            if allocation.assigned == 0 {
+            if allocation.assigned == 0 || line.blocked_reason.is_some() {
                 continue;
             }
             let ic = allocation.assigned as f64 * ic_per_factory * line.efficiency.max(0.0);
@@ -318,8 +378,16 @@ impl CountryProduction {
                 line.equipment.placeholder_cost()
             };
             let budget = line.partial_ic + ic;
-            let made = (budget / item_cost).floor().clamp(0.0, u64::MAX as f64) as u64;
-            line.partial_ic = (budget - made as f64 * item_cost).max(0.0);
+            let made = ((budget / item_cost).floor().clamp(0.0, u64::MAX as f64) as u64)
+                .min(line.remaining.unwrap_or(u64::MAX));
+            if let Some(remaining) = &mut line.remaining {
+                *remaining -= made;
+            }
+            line.partial_ic = if line.remaining == Some(0) {
+                0.0
+            } else {
+                (budget - made as f64 * item_cost).max(0.0)
+            };
             if line.partial_ic >= item_cost {
                 // Floating point roundoff correction only; never lose whole items.
                 line.partial_ic %= item_cost;
@@ -572,5 +640,28 @@ mod tests {
         c.create(Equipment::InfantryKit, 10, &rules);
         c.tick(10, &rules);
         assert_eq!(c.stockpile.get(&Equipment::InfantryKit), None);
+    }
+}
+
+#[cfg(test)]
+mod historical_line_regressions {
+    use super::*;
+    #[test]
+    fn blocked_and_finished_orders_never_consume_factories_or_create_prototype_stock() {
+        let rules = ProductionRules::default();
+        let mut c = CountryProduction::default();
+        c.create(Equipment::FieldEquipment, 5, &rules);
+        c.lines[0].blocked_reason = Some("unresolved variant".into());
+        c.create_model("rifle_1", Equipment::InfantryKit, 5, &rules);
+        c.lines[1].remaining = Some(3);
+        c.lines[1].efficiency = 0.5;
+        c.tick_with_models(5, &rules, &BTreeMap::from([("rifle_1".into(), 1.0)]));
+        assert_eq!(c.model_stockpile["rifle_1"], 3);
+        assert!(c.stockpile.is_empty());
+        assert_eq!(c.lines[1].remaining, Some(0));
+        assert_eq!(c.lines[1].partial_ic, 0.0);
+        assert!(c.allocations(5, &rules).iter().all(|a| a.assigned == 0));
+        c.tick_with_models(5, &rules, &BTreeMap::from([("rifle_1".into(), 1.0)]));
+        assert_eq!(c.model_stockpile["rifle_1"], 3);
     }
 }

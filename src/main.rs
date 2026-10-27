@@ -2930,7 +2930,7 @@ async fn main() {
     let mut production_view = production_ui::ProductionView::default();
     let mut army_view = army_ui::ArmyView::default();
     let mut hud = campaign_ui::Hud::default();
-    let production_rules = production::ProductionRules::default();
+    let mut production_rules;
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
     let research_dataset =
@@ -3000,7 +3000,22 @@ async fn main() {
         session
             .military
             .use_research_registry(&research_catalogue, &session.research);
-        let report = military_history::import_report(&session.military, start_date);
+        let mut report = military_history::import_report(&session.military, start_date);
+        report["production"] = serde_json::json!(
+            session
+                .production
+                .by_country
+                .iter()
+                .map(|(tag, c)| (
+                    tag,
+                    serde_json::json!({
+                        "starting_data_applied": c.starting_data_applied,
+                        "lines":c.lines,
+                        "model_stockpile":c.model_stockpile,
+                    })
+                ))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        );
         match serde_json::to_vec_pretty(&report)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
@@ -3020,6 +3035,8 @@ async fn main() {
         Ok(session) => (session, String::new()),
         Err(error) => (GameSession::new(World::default()), error),
     };
+    production_rules =
+        production::ProductionRules::from_defines(&session.military.catalogue.literal_defines);
     draw_loading("Подготовка карты и интерфейса…", 0.85);
     next_frame().await;
     let mut map = if session.world.geography.width > 0 {
@@ -3064,6 +3081,9 @@ async fn main() {
                     match start_session(scenario_choice) {
                         Ok(fresh) => {
                             session = fresh;
+                            production_rules = production::ProductionRules::from_defines(
+                                &session.military.catalogue.literal_defines,
+                            );
                             drop(map.take());
                             match ProvinceMap::load(&session.world) {
                                 Ok(m) => {
@@ -3082,6 +3102,9 @@ async fn main() {
                         Ok(mut fresh) => {
                             fresh.player_country = country_choice.clone();
                             session = fresh;
+                            production_rules = production::ProductionRules::from_defines(
+                                &session.military.catalogue.literal_defines,
+                            );
                             drop(map.take());
                             match ProvinceMap::load(&session.world) {
                                 Ok(mut loaded) => {

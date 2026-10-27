@@ -219,11 +219,19 @@ pub fn draw(
             42.0,
             view.selected_line == Some(line.id),
         );
+        if let Some(reason) = &line.blocked_reason {
+            ui::tooltip(row, "Производство приостановлено", reason);
+        }
         let tx = row.x + 56.0;
         let bx = row.x + row.w - 159.0;
         let tw = (bx - tx - 6.0).max(35.0);
         let title = compact_label(
-            line.model.as_deref().unwrap_or(line.equipment.label()),
+            line.starting
+                .as_ref()
+                .and_then(|s| s.variant.as_deref())
+                .or(line.model.as_deref())
+                .or_else(|| line.starting.as_ref().map(|s| s.equipment.as_str()))
+                .unwrap_or(line.equipment.label()),
             tw,
             if compact { 11 } else { 13 },
         );
@@ -241,8 +249,14 @@ pub fn draw(
         );
         draw_ui_text(
             &format!(
-                "Заводы: {allocated}/{} · {:.1} ПМ/сут",
-                line.requested_factories, line.last_day_ic
+                "{} {allocated}/{} · {:.1} ПМ/сут",
+                if line.blocked_reason.is_some() {
+                    "Ожидание:"
+                } else {
+                    "Заводы:"
+                },
+                line.requested_factories,
+                line.last_day_ic
             ),
             tx,
             row.y + 35.0,
@@ -384,6 +398,11 @@ pub fn draw(
         footer_y + 99.0,
         10.0,
         ui::TEXT,
+    );
+    ui::tooltip(
+        Rect::new(list_x, footer_y + 84.0, list_w, 19.0),
+        "Склад техники",
+        &stock,
     );
     if !view.notice.is_empty() {
         draw_ui_text(

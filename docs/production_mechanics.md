@@ -1,60 +1,38 @@
-# Military factory production milestone
+# Производство и стартовые запасы
 
-An **original** Rust gameplay prototype inspired by HOI4's abstract military
-industry, integrated with the existing map, country economies, construction
-queues, and daily simulation. This is not an imported copy of HOI4's engine.
+Обновлено 27 октября 2026. Подсистема работает внутри существующей кампании: тот же календарь, экономика, склад, пополнение и набор дивизий.
 
-## Player workflow
+## Исторический старт
 
-1. Load locally provided map/state data and select a country.
-2. Open **PRODUCTION** (top bar or `P`).
-3. Select a product category (INF / SUP / TRK / FLD / AIR).
-4. Press **ADD LINE**, then assign factories with **+ / -**. Lines with
-   higher priority (buttons **UP / DN**) claim factories first.
-5. Run the game clock. Equipment is produced daily and added to the selected
-   country's inventory. The UI shows assigned factories, IC/day, current
-   efficiency and items completed last tick.
-6. Select a line and use **CHANGE SELECTED** to change equipment. Switching
-   discards the old unfinished item and retains only part of production
-   efficiency. **X** deletes the line, not the completed stockpile.
-7. Construct a new military factory in the construction screen. Production
-   from the additional factory begins on the *following* day.
+`military_history::initialize` читает историю каждой страны и только выбранные для даты/DLC OOB. Выполняются экономические эффекты из `instant_effect` и `hidden_effect`, включая вложенные условия. Один OOB не применяется повторно из-за нескольких ссылок на него. Будущие даты и неподдержанные условия не выдают технику.
 
-## Simulation model
+- `add_equipment_production`: конкретная модель, creator, version_name, requested_factories, progress, efficiency и amount. Источник сохраняется у линии. Эффективность скрипта измеряется в процентах; 100 преобразуется в 1.0 и ограничивается текущим пределом страны. Progress переводится в незавершённые IC относительно импортированной стоимости модели; готовая техника появится только при производстве. Положительный amount ограничивает количество, ноль/отсутствие означает непрерывное производство.
+- `add_equipment_to_stockpile`: точная модель или архетип. Архетип разрешается в доступную стране модель; будущая неоткрытая модель не выбирается вместо неё. Отрицательное количество снимает имеющуюся технику без ухода склада ниже нуля. Именной вариант без разрешённой конструкции не заменяется базовой моделью.
+- `@`-переменные файла разрешаются до обработки. Неподдержанные числовые выражения отмечаются диагностикой вместо подстановки выдуманного количества.
+- `starting_data_applied` предотвращает повторное заполнение склада и дублирование линий при повторной инициализации экономики. Загрузка сохранения восстанавливает прежнюю экономику, а не выдаёт стартовые ресурсы заново.
 
-- National military factories are obtained from the authoritative
-  `World::country_economy`, so factory construction/ownership affects capacity.
-- Each country's `CountryProduction` owns an ordered vector of production
-  lines and a stockpile indexed by product category. Countries are isolated.
-- Factories are allocated in priority order up to requested counts (maximum
-  150 per line), never exceeding the country's available military factories.
-- Base factory output interpolates between 3.5 and 4.5 abstract IC/day
-  based on the configuration's powered fraction. Factory output and resource
-  multipliers are configurable; neither is yet connected to the map's energy
-  or resources.
-- New lines begin at 10% efficiency, capped at 50% by default. A HOI4-like
-  daily increase is `gain = 0.001 * cap² / max(current_efficiency, 0.01)`.
-- `daily IC = assigned MIL * factory IC output * efficiency`. Fractional
-  industrial work carries forward to the next day. Only whole equipment
-  items enter a country's stockpile. The equipment costs are **temporary
-  prototype constants**, not claims of accurate current HOI4 values.
-- Simulation updates on day ticks, independently of rendering.
-- `switch_equipment` uses a **temporary 50% efficiency-retention factor**,
-  clamped to the starting efficiency.
+Стартовые данные проверяются в **новой кампании**. Старое сохранение не заполняется заново: в нём игрок уже мог потратить технику или удалить линии. Нужны локальные `history/countries`, `history/units`, `common/units/equipment`, технологии и определения той же установки. Эти каталоги уже включены в существующий полный экспорт.
 
-## Scope still missing
+`data/hoi4/military-import-report.json` теперь содержит раздел `production`: фактические линии, запасы конкретных моделей, происхождение и причины блокировки. Количество техники не выводится из названия страны или её числа заводов.
 
-- Historical starting production lines and equipment technology unlocks.
-- Authentic equipment stats/costs and variant definitions from local data.
-- Resource extraction, shortages, country trade, energy consumption and
-  industry law/tech modifiers.
-- Dockyard/ship lines (not covered by this MIL-focused prototype).
-- Equipment demand, training, stockpile consumption and combat systems.
-- Save/load, Android QA and actual frame-time profiling.
+## Производственная симуляция
 
-Reference research:
-- [Paradox industry developer news](https://store.steampowered.com/news/posts/?appids=394360&enddate=1787058179&feed=steam_community_announcements)
-- [Production formulas overview](https://cooderatom.github.io/hoi4-zh-wiki/Production.html)
+Каждая страна хранит независимые линии с устойчивыми ID, приоритетом, эффективностью, частичным IC и фактическим складом моделей. Новые игровые линии используют импортированные модели и стоимость; старые категории без модели остаются совместимым прототипным режимом.
 
-Tests cover production output, IC carry, prioritization, stockpile isolation,
-newly completed factories, efficiency and product switching.
+Доступные военные заводы берутся из `World::country_economy` по фактическому контролю штатов. При потере контроля они перестают давать производственную мощность прежней стране. Линии при этом сохраняются и ждут заводов. Построенный завод участвует в производстве со следующего суточного шага.
+
+Правила получают доступные `NDefines.NProduction.BASE_FACTORY_SPEED_MIL`, `BASE_FACTORY_START_EFFICIENCY_FACTOR`, `BASE_FACTORY_MAX_EFFICIENCY_FACTOR`, `BASE_FACTORY_EFFICIENCY_GAIN`. Применяются существующие исследовательские модификаторы страны. Для отсутствующих defines сохраняются явные прежние значения прототипа; это не сертификация чисел версии 1.19.3.
+
+Суточный IC равен выделенным MIL × IC одного завода × эффективности. Дробный остаток переносится дальше, на склад поступают целые экземпляры. Склад используется существующими пополнением и очередью подготовки. Кадровая частота не выдаёт дополнительную продукцию. Ресурсные/энергетические доли остаются внешними входами; полноценной добычи, торговли и энергосети пока нет.
+
+## Интерфейс и неподдержанные определения
+
+В существующем «Выпуске» отображаются импортированные стартовые линии. Кнопки приоритета, числа заводов и смены модели действуют на эти же линии. Полный текст склада доступен в подсказке; отдельный «Склад» показывает реальные запасы и потребность частей.
+
+Неразрешённые именные/модульные варианты и морские заказы **сохраняются видимыми, но приостановленными**, с исходным названием и причиной в подсказке. Они не расходуют MIL и не производят абстрактный заменитель. Морское производство на верфях, полноценные конструкции вариантов/MIO и точные правила переключения ещё требуют отдельных механик. Это ограничение нельзя считать реализованным оригинальным производством танков, самолётов и кораблей.
+
+## Проверка
+
+Тесты покрывают выбранные OOB/DLC/даты, независимые запасы двух стран, разрешение архетипа, отрицательное списание, повторную инициализацию, эффективность/начальный прогресс, конечный заказ, отсутствие фиктивной продукции у заблокированной линии, суточную выдачу, потребление склада и совместимость сохранений. Fixtures авторские, не исторические числа Франции/Германии.
+
+Первичные справочные страницы: [Division modding](https://hoi4.paradoxwikis.com/Division_modding), [Effect](https://hoi4.paradoxwikis.com/Effect), [Defines](https://hoi4.paradoxwikis.com/Defines). Числа страны берутся из её локальных файлов.

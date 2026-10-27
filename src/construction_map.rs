@@ -51,10 +51,14 @@ pub fn availability(
     rules: &BuildingRules,
 ) -> Option<BuildAvailability> {
     let state = world.states.get(&state_id)?;
-    let owned = state.owner.as_deref() == Some(tag);
+    let controlled = world.state_controller(state_id) == Some(tag);
     let queued = queues.get(&state_id);
     let of_type = queued.map_or(0usize, |q| {
-        q.iter().filter(|p| p.building == building).count()
+        q.iter()
+            .filter(|p| {
+                p.building == building && construction::project_belongs(world, state_id, p, tag)
+            })
+            .count()
     });
     let existing_type = usize::from(building.built_count(state.economy));
     let type_capacity = usize::from(rules.max_state_level(building));
@@ -64,13 +68,18 @@ pub fn availability(
             used: existing_type + of_type,
             capacity: type_capacity,
             free: type_free,
-            eligible: owned,
+            eligible: controlled,
         });
     }
     let capacity = construction::shared_slot_limit(world, state_id, rules).unwrap_or(0);
     let occupied = usize::from(state.economy.occupied_shared_slots());
     let reserved = queued.map_or(0usize, |q| {
-        construction::queued_shared_slots_with_rules(q, rules)
+        q.iter()
+            .filter(|p| {
+                rules.shares_slots(p.building)
+                    && construction::project_belongs(world, state_id, p, tag)
+            })
+            .count()
     });
     let used = occupied + reserved;
     let free = capacity.saturating_sub(used).min(type_free);
@@ -78,7 +87,7 @@ pub fn availability(
         used,
         capacity,
         free,
-        eligible: owned,
+        eligible: controlled,
     })
 }
 

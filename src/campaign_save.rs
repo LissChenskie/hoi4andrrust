@@ -63,6 +63,7 @@ fn military_fingerprint(w: &crate::warfare::Warfare) -> Result<u64, String> {
 }
 impl GameSession {
     pub fn save_game(&mut self, path: &Path, cat: &ResearchCatalogue) -> Result<(), String> {
+        crate::construction::initialize_builders(&self.world, &mut self.construction_queues);
         self.military.clean_references();
         let data = Save {
             schema: 1,
@@ -129,6 +130,7 @@ impl GameSession {
         {
             return Err("Несовместимый набор провинций/штатов".into());
         }
+        crate::construction::initialize_builders(&s.world, &mut s.construction_queues);
         s.military.clean_references();
         s.military.validate_references(&s.world)?;
         for (id, state) in &s.world.states {
@@ -202,6 +204,105 @@ mod tests {
             Some("A"),
         );
     }
+    #[test]
+    fn occupied_industry_and_starting_production_survive_load_and_legacy_defaults() {
+        let mut s = configured();
+        let cat = ResearchCatalogue::default();
+        let path = file("starting-economy");
+        s.world
+            .geography
+            .provinces
+            .get_mut(&9)
+            .unwrap()
+            .victory_points = 20.0;
+        s.world.set_province_controller(9, Some("A"));
+        assert_eq!(s.world.state_controller(2), Some("A"));
+        s.construction_queues.entry(2).or_default().push_back(
+            crate::construction::ConstructionProject {
+                builder: None,
+                building: crate::construction::BuildingType::MilitaryFactory,
+                progress: 17.0,
+                cost: 100.0,
+            },
+        );
+        let p = s.production.country_mut("A");
+        p.starting_data_applied = true;
+        p.model_stockpile.insert("fixture_model".into(), 19);
+        p.create_model(
+            "fixture_model",
+            crate::production::Equipment::InfantryKit,
+            2,
+            &Default::default(),
+        );
+        p.lines[0].partial_ic = 0.25;
+        p.lines[0].remaining = Some(3);
+        s.save_game(&path, &cat).unwrap();
+        let mut restored = configured();
+        restored
+            .world
+            .geography
+            .provinces
+            .get_mut(&9)
+            .unwrap()
+            .victory_points = 20.0;
+        restored.restore_game(&path, &cat).unwrap();
+        assert_eq!(restored.world.state_controller(2), Some("A"));
+        assert_eq!(restored.world.states[&2].owner.as_deref(), Some("B"));
+        assert_eq!(
+            restored.construction_queues[&2][0].builder.as_deref(),
+            Some("B")
+        );
+        assert_eq!(restored.construction_queues[&2][0].progress, 17.0);
+        assert!(
+            restored
+                .production
+                .country("A")
+                .unwrap()
+                .starting_data_applied
+        );
+        assert_eq!(
+            restored.production.country("A").unwrap().lines[0].remaining,
+            Some(3)
+        );
+        assert_eq!(
+            restored.production.country("A").unwrap().model_stockpile["fixture_model"],
+            19
+        );
+        let mut raw: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        raw["session"]["construction_queues"]["2"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("builder");
+        let country = raw["session"]["production"]["by_country"]["A"]
+            .as_object_mut()
+            .unwrap();
+        country.remove("starting_data_applied");
+        for line in country.get_mut("lines").unwrap().as_array_mut().unwrap() {
+            for field in ["remaining", "starting", "blocked_reason"] {
+                line.as_object_mut().unwrap().remove(field);
+            }
+        }
+        std::fs::write(&path, serde_json::to_vec(&raw).unwrap()).unwrap();
+        restored.restore_game(&path, &cat).unwrap();
+        assert!(
+            !restored
+                .production
+                .country("A")
+                .unwrap()
+                .starting_data_applied
+        );
+        assert_eq!(
+            restored.production.country("A").unwrap().model_stockpile["fixture_model"],
+            19
+        );
+        assert_eq!(
+            restored.construction_queues[&2][0].builder.as_deref(),
+            Some("B")
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn full_chain_refit_front_battle_capture_and_save_replay() {
         let mut s = configured();

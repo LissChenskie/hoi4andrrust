@@ -378,6 +378,7 @@ impl BuildingRules {
             + f32::from(level) * definition.per_level_extra_cost
             + definition.per_controlled_building_extra_cost * controlled_building_count as f32;
         ConstructionProject {
+            builder: None,
             building,
             progress: 0.0,
             cost: raw_cost.max(1.0),
@@ -591,6 +592,9 @@ fn top_level_yes_no(block: &str, field: &str) -> Option<bool> {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConstructionProject {
+    /// None is a legacy project created by the legal state owner.
+    #[serde(default)]
+    pub builder: Option<String>,
     pub building: BuildingType,
     pub progress: f32,
     pub cost: f32,
@@ -802,6 +806,48 @@ pub fn shared_slot_limit(world: &World, state_id: u32, rules: &BuildingRules) ->
     )
 }
 
+/// Freeze legacy queue ownership before the first movement/capture after load.
+pub fn initialize_builders(world: &World, queues: &mut ConstructionQueues) {
+    for (id, queue) in queues {
+        if queue.iter().all(|p| p.builder.is_some()) {
+            continue;
+        }
+        let owner = world.states.get(id).and_then(|s| s.owner.clone());
+        for project in queue {
+            if project.builder.is_none() {
+                project.builder = owner.clone();
+            }
+        }
+    }
+}
+fn project_has_space(
+    world: &World,
+    state_id: u32,
+    project: &ConstructionProject,
+    rules: &BuildingRules,
+) -> bool {
+    world.states.get(&state_id).is_some_and(|s| {
+        project.building.built_count(s.economy) < rules.max_state_level(project.building)
+            && (!rules.shares_slots(project.building)
+                || usize::from(s.economy.occupied_shared_slots())
+                    < shared_slot_limit(world, state_id, rules).unwrap_or(0))
+    })
+}
+
+/// A captured state does not transfer another country's unfinished orders.
+pub fn project_belongs(
+    world: &World,
+    state_id: u32,
+    project: &ConstructionProject,
+    tag: &str,
+) -> bool {
+    project
+        .builder
+        .as_deref()
+        .or_else(|| world.states.get(&state_id).and_then(|s| s.owner.as_deref()))
+        == Some(tag)
+}
+
 /// Validate without mutating the queue on failure, including non-shared level caps.
 pub fn enqueue_project(
     world: &World,
@@ -812,25 +858,26 @@ pub fn enqueue_project(
     building: BuildingType,
 ) -> Result<(), &'static str> {
     let state = world.states.get(&state_id).ok_or("Unknown state")?;
-    if state.owner.as_deref() != Some(country_tag) {
+    if world.state_controller(state_id) != Some(country_tag) {
         return Err("State is not controlled by this country");
     }
     let national_queued: usize = queues
         .iter()
-        .filter(|(id, _)| {
-            world
-                .states
-                .get(id)
-                .is_some_and(|state| state.owner.as_deref() == Some(country_tag))
+        .map(|(&id, q)| {
+            q.iter()
+                .filter(|p| project_belongs(world, id, p, country_tag))
+                .count()
         })
-        .map(|(_, queue)| queue.len())
         .sum();
     if national_queued >= MAX_CONSTRUCTION_QUEUE_ITEMS {
         return Err("Country construction queue is full");
     }
     let existing = queues.get(&state_id);
     let queued_type = existing.map_or(0usize, |queue| {
-        queue.iter().filter(|p| p.building == building).count()
+        queue
+            .iter()
+            .filter(|p| p.building == building && project_belongs(world, state_id, p, country_tag))
+            .count()
     });
     let current_level = usize::from(building.built_count(state.economy));
     if current_level + queued_type >= usize::from(rules.max_state_level(building)) {
@@ -838,26 +885,33 @@ pub fn enqueue_project(
     }
     if rules.shares_slots(building) {
         let occupied = usize::from(state.economy.occupied_shared_slots());
-        let reserved = existing.map_or(0, |queue| queued_shared_slots_with_rules(queue, rules));
+        let reserved = existing.map_or(0, |queue| {
+            queue
+                .iter()
+                .filter(|p| {
+                    rules.shares_slots(p.building)
+                        && project_belongs(world, state_id, p, country_tag)
+                })
+                .count()
+        });
         if occupied + reserved >= shared_slot_limit(world, state_id, rules).unwrap_or(0) {
             return Err("No shared building slots available");
         }
     }
-    let controlled_count = world.countries.get(country_tag).map_or(0u32, |country| {
-        country
-            .state_ids
-            .iter()
-            .filter_map(|id| world.states.get(id))
-            .map(|s| u32::from(building.built_count(s.economy)))
-            .sum()
-    });
+    let controlled_count = world
+        .states
+        .values()
+        .filter(|s| world.state_controller(s.id) == Some(country_tag))
+        .map(|s| u32::from(building.built_count(s.economy)))
+        .sum();
     let level = (current_level + queued_type).min(u16::MAX as usize) as u16;
-    let project = rules.project(
+    let mut project = rules.project(
         building,
         level,
         controlled_count,
         state.economy.infrastructure,
     );
+    project.builder = Some(country_tag.to_owned());
     queues.entry(state_id).or_default().push_back(project);
     Ok(())
 }
@@ -895,31 +949,21 @@ impl ConstructionOrder {
     pub fn sync(&mut self, world: &World, tag: &str, queues: &ConstructionQueues) {
         let mut seen = HashSet::new();
         self.lines.retain(|line| {
-            world
-                .states
+            queues
                 .get(&line.state_id)
-                .is_some_and(|state| state.owner.as_deref() == Some(tag))
-                && queues
-                    .get(&line.state_id)
-                    .is_some_and(|q| line.project_index < q.len())
+                .and_then(|q| q.get(line.project_index))
+                .is_some_and(|p| project_belongs(world, line.state_id, p, tag))
                 && seen.insert(*line)
         });
-        let mut state_ids: Vec<u32> = queues.keys().copied().collect();
+        let mut state_ids: Vec<_> = queues.keys().copied().collect();
         state_ids.sort_unstable();
         for state_id in state_ids {
-            if world
-                .states
-                .get(&state_id)
-                .is_none_or(|state| state.owner.as_deref() != Some(tag))
-            {
-                continue;
-            }
-            for project_index in 0..queues[&state_id].len() {
+            for (project_index, project) in queues[&state_id].iter().enumerate() {
                 let key = ProjectRef {
                     state_id,
                     project_index,
                 };
-                if seen.insert(key) {
+                if project_belongs(world, state_id, project, tag) && seen.insert(key) {
                     self.lines.push(key);
                 }
             }
@@ -989,11 +1033,7 @@ pub fn allocate_factories_by_order(
         if available == 0 {
             break;
         }
-        if world
-            .states
-            .get(&key.state_id)
-            .is_none_or(|state| state.owner.as_deref() != Some(tag))
-        {
+        if world.state_controller(key.state_id) != Some(tag) {
             continue;
         }
         let Some(project) = queues
@@ -1002,6 +1042,11 @@ pub fn allocate_factories_by_order(
         else {
             continue;
         };
+        if !project_belongs(world, key.state_id, project, tag)
+            || !project_has_space(world, key.state_id, project, rules)
+        {
+            continue;
+        }
         if !project.cost.is_finite()
             || !project.progress.is_finite()
             || project.progress >= project.cost
@@ -1031,7 +1076,7 @@ pub fn advance_day_by_order(
     rules: &BuildingRules,
     policy: CountryConstructionPolicy,
     modifiers: &ConstructionModifiers,
-) {
+) -> Vec<ProjectRef> {
     order.sync(world, tag, queues);
     let allocations = allocate_factories_by_order(world, tag, queues, order, rules, policy);
     let mut completed = Vec::new();
@@ -1067,9 +1112,22 @@ pub fn advance_day_by_order(
     // Reverse per-state indices so completed projects cannot shift other
     // removal targets during the same in-game day.
     completed.sort_unstable_by(|a, b| (b.0, b.1).cmp(&(a.0, a.1)));
+    let removed = completed
+        .iter()
+        .map(|&(state_id, project_index, _)| ProjectRef {
+            state_id,
+            project_index,
+        })
+        .collect();
     for (state_id, index, building) in completed {
-        if let Some(state) = world.states.get_mut(&state_id) {
-            building.add_one(&mut state.economy);
+        let can_complete = queues
+            .get(&state_id)
+            .and_then(|q| q.get(index))
+            .is_some_and(|p| project_has_space(world, state_id, p, rules));
+        if can_complete {
+            if let Some(state) = world.states.get_mut(&state_id) {
+                building.add_one(&mut state.economy);
+            }
         }
         order.cancel(
             queues,
@@ -1080,6 +1138,7 @@ pub fn advance_day_by_order(
         );
     }
     order.sync(world, tag, queues);
+    removed
 }
 
 /// One independently scheduled project. Up to 15 CIV are assigned per line.
@@ -1124,16 +1183,16 @@ pub fn allocate_factories(
         if available == 0 {
             break;
         }
-        let Some(state) = world.states.get(&state_id) else {
-            continue;
-        };
-        if state.owner.as_deref() != Some(country_tag) {
+        if world.state_controller(state_id) != Some(country_tag) {
             continue;
         }
         let Some(queue) = queues.get(&state_id) else {
             continue;
         };
         for (project_index, project) in queue.iter().enumerate() {
+            if !project_belongs(world, state_id, project, country_tag) {
+                continue;
+            }
             if available == 0 {
                 break;
             }
@@ -1413,6 +1472,7 @@ mod tests {
         queues.insert(
             1,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::CivilianFactory,
                 progress: 0.0,
                 cost: 1_000.0,
@@ -1444,6 +1504,7 @@ mod tests {
         queues.insert(
             1,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::MilitaryFactory,
                 progress: 0.0,
                 cost: 1_000.0,
@@ -1452,6 +1513,7 @@ mod tests {
         queues.insert(
             2,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::Dockyard,
                 progress: 0.0,
                 cost: 1_000.0,
@@ -1598,6 +1660,7 @@ mod tests {
         q.insert(
             1,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::MilitaryFactory,
                 progress: 0.0,
                 cost: 10000.0,
@@ -1606,6 +1669,7 @@ mod tests {
         q.insert(
             2,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::MilitaryFactory,
                 progress: 0.0,
                 cost: 10000.0,
@@ -1644,6 +1708,7 @@ mod tests {
         q.insert(
             1,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::CivilianFactory,
                 progress: 0.0,
                 cost: 1000.0,
@@ -1773,11 +1838,13 @@ mod tests {
             1,
             VecDeque::from([
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::MilitaryFactory,
                     progress: 0.0,
                     cost: 1000.0,
                 },
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::Dockyard,
                     progress: 0.0,
                     cost: 1000.0,
@@ -1810,11 +1877,13 @@ mod tests {
             1,
             VecDeque::from([
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::Infrastructure,
                     progress: 9.0,
                     cost: 10.0,
                 },
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::MilitaryFactory,
                     progress: 0.0,
                     cost: 1000.0,
@@ -1958,11 +2027,13 @@ mod tests {
             1,
             VecDeque::from([
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::MilitaryFactory,
                     progress: 0.0,
                     cost: 1000.0,
                 },
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::MilitaryFactory,
                     progress: 0.0,
                     cost: 1000.0,
@@ -1972,6 +2043,7 @@ mod tests {
         queues.insert(
             2,
             VecDeque::from([ConstructionProject {
+                builder: None,
                 building: BuildingType::Dockyard,
                 progress: 0.0,
                 cost: 1000.0,
@@ -2019,16 +2091,19 @@ mod tests {
             1,
             VecDeque::from([
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::Infrastructure,
                     progress: 0.0,
                     cost: 1.0,
                 },
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::MilitaryFactory,
                     progress: 0.0,
                     cost: 1000.0,
                 },
                 ConstructionProject {
+                    builder: None,
                     building: BuildingType::Dockyard,
                     progress: 0.0,
                     cost: 1000.0,
@@ -2077,6 +2152,7 @@ mod tests {
     #[test]
     fn eta_handles_stopped_lines_and_exact_completion_day() {
         let project = ConstructionProject {
+            builder: None,
             building: BuildingType::CivilianFactory,
             progress: 40.0,
             cost: 110.0,
@@ -2112,5 +2188,184 @@ mod tests {
         let cap = find_definition_block(block, "level_cap").unwrap();
         assert_eq!(top_level_number(cap, "state_max"), Some(7.0));
         assert_eq!(top_level_yes_no(cap, "shares_slots"), Some(false));
+    }
+}
+
+#[cfg(test)]
+mod occupation_regressions {
+    use super::*;
+    #[test]
+    fn occupier_can_build_and_owner_queue_is_paused_without_losing_its_progress() {
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1), (2, 2)]),
+            &HashMap::from([(1, "AAA".into()), (2, "BBB".into())]),
+            &Default::default(),
+            &HashMap::from([
+                (
+                    1,
+                    crate::state::StateEconomy {
+                        civilian_factories: 4,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    2,
+                    crate::state::StateEconomy {
+                        civilian_factories: 3,
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            &HashMap::from([(1, 20), (2, 20)]),
+        );
+        let rules = BuildingRules::default();
+        let mut queues = ConstructionQueues::new();
+        enqueue_project(
+            &world,
+            "BBB",
+            2,
+            &mut queues,
+            &rules,
+            BuildingType::CivilianFactory,
+        )
+        .unwrap();
+        queues.get_mut(&2).unwrap()[0].progress = 37.0;
+        world.set_province_controller(2, Some("AAA"));
+        assert!(
+            crate::construction_map::availability(
+                &world,
+                "AAA",
+                2,
+                BuildingType::MilitaryFactory,
+                &queues,
+                &rules
+            )
+            .unwrap()
+            .eligible
+        );
+        assert!(
+            !crate::construction_map::availability(
+                &world,
+                "BBB",
+                2,
+                BuildingType::MilitaryFactory,
+                &queues,
+                &rules
+            )
+            .unwrap()
+            .eligible
+        );
+        assert!(
+            enqueue_project(
+                &world,
+                "BBB",
+                2,
+                &mut queues,
+                &rules,
+                BuildingType::MilitaryFactory
+            )
+            .is_err()
+        );
+        enqueue_project(
+            &world,
+            "AAA",
+            2,
+            &mut queues,
+            &rules,
+            BuildingType::MilitaryFactory,
+        )
+        .unwrap();
+        queues.get_mut(&2).unwrap()[1].cost = 1.0;
+        let mut order = ConstructionOrder::default();
+        advance_day_by_order(
+            &mut world,
+            "AAA",
+            &mut queues,
+            &mut order,
+            &rules,
+            Default::default(),
+            &Default::default(),
+        );
+        assert_eq!(world.states[&2].economy.military_factories, 1);
+        assert_eq!(queues[&2].len(), 1);
+        assert_eq!(queues[&2][0].progress, 37.0);
+        assert_eq!(queues[&2][0].builder.as_deref(), Some("BBB"));
+        assert_eq!(world.states[&2].owner.as_deref(), Some("BBB"));
+        assert_eq!(world.country_economy("AAA").unwrap().military_factories, 1);
+        world.set_province_controller(2, Some("BBB"));
+        let mut old = ConstructionOrder::default();
+        advance_day_by_order(
+            &mut world,
+            "BBB",
+            &mut queues,
+            &mut old,
+            &rules,
+            Default::default(),
+            &Default::default(),
+        );
+        assert!(queues[&2][0].progress > 37.0);
+    }
+    #[test]
+    fn legacy_builder_is_frozen_and_simultaneous_completion_never_overfills_a_state() {
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1)]),
+            &HashMap::from([(1, "AAA".into())]),
+            &Default::default(),
+            &HashMap::from([(
+                1,
+                crate::state::StateEconomy {
+                    civilian_factories: 20,
+                    infrastructure: 4,
+                    ..Default::default()
+                },
+            )]),
+            &HashMap::from([(1, 25)]),
+        );
+        let mut queues = ConstructionQueues::from([(
+            1,
+            VecDeque::from([
+                ConstructionProject {
+                    builder: None,
+                    building: BuildingType::Infrastructure,
+                    cost: 1.0,
+                    progress: 0.0,
+                },
+                ConstructionProject {
+                    builder: None,
+                    building: BuildingType::Infrastructure,
+                    cost: 1.0,
+                    progress: 0.0,
+                },
+            ]),
+        )]);
+        initialize_builders(&world, &mut queues);
+        world.set_state_owner(1, Some("BBB"));
+        assert!(
+            queues[&1]
+                .iter()
+                .all(|p| p.builder.as_deref() == Some("AAA"))
+        );
+        let mut order = ConstructionOrder::default();
+        advance_day_by_order(
+            &mut world,
+            "BBB",
+            &mut queues,
+            &mut order,
+            &Default::default(),
+            Default::default(),
+            &Default::default(),
+        );
+        assert_eq!(world.states[&1].economy.infrastructure, 4);
+        world.set_state_owner(1, Some("AAA"));
+        advance_day_by_order(
+            &mut world,
+            "AAA",
+            &mut queues,
+            &mut order,
+            &Default::default(),
+            Default::default(),
+            &Default::default(),
+        );
+        assert_eq!(world.states[&1].economy.infrastructure, 5);
     }
 }
