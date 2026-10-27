@@ -25,6 +25,8 @@ pub struct ProvinceConditions {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
     #[serde(default)]
+    pub naval: crate::naval_warfare::NavalState,
+    #[serde(default)]
     pub logistics: crate::logistics::LogisticsState,
     #[serde(default)]
     pub air: crate::air_warfare::AirState,
