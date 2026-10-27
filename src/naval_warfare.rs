@@ -156,6 +156,9 @@ pub struct NavalState {
     /// Country-owned immutable blueprints referenced by ship variants.
     pub designs: BTreeMap<String, crate::naval_designer::NavalDesign>,
     pub next_design_id: u64,
+    /// Ship retrofits share dockyards and strategic resources with new hulls.
+    pub refits: BTreeMap<u64, crate::naval_refit::NavalRefit>,
+    pub next_refit_id: u64,
     /// On-deck squadrons, keyed by task force and ship index.
     #[serde(default, with = "save_pairs")]
     pub carrier_wings: BTreeMap<(u64, usize), Vec<crate::naval_carrier::CarrierAirGroup>>,
@@ -450,13 +453,15 @@ impl NavalState {
         pool: &mut BTreeMap<String, u32>,
         shortage_penalty: f64,
     ) {
+        let free_after_refits =
+            self.advance_refits(tag, dockyards, world, warfare, pool, shortage_penalty);
         let Some(lines) = self.shipbuilding.get_mut(tag) else {
             return;
         };
         let Some(modifiers) = warfare.countries.get(tag).map(|c| &c.modifiers) else {
             return;
         };
-        let mut free = dockyards;
+        let mut free = free_after_refits;
         let mut ships = Vec::new();
         for line in lines {
             line.last_day_ic = 0.0;
@@ -566,6 +571,9 @@ impl NavalState {
         warfare: &Warfare,
     ) -> Result<(), String> {
         let force = self.task_forces.get(&id).ok_or("Флот не найден")?;
+        if mission != NavalMission::Hold && self.refits.values().any(|j| j.task_force == id) {
+            return Err("Сначала завершите переоборудование кораблей".into());
+        }
         if force.country != tag {
             return Err("Невозможно командовать чужим флотом".into());
         }

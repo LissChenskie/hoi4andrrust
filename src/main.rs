@@ -18,6 +18,7 @@ mod mobile_army_ui;
 mod naval_carrier;
 mod naval_combat;
 mod naval_designer;
+mod naval_refit;
 mod naval_warfare;
 mod support_import;
 #[cfg(test)]
@@ -2258,6 +2259,18 @@ fn handle_hud_action(
                 hud.notice = navy
                     .queue_design(tag, &design, base, 5, world, military)
                     .map_or_else(|e| e, |id| format!("Проект передан на верфи (линия #{id})"));
+                military.naval = navy;
+            }
+        }
+        Action::NavalQueueRefit(tf, index, design) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy
+                    .queue_refit(tag, tf, index, &design, 5, world, military)
+                    .map_or_else(
+                        |e| e,
+                        |id| format!("Рефит корабля поставлен на верфи (#{id})"),
+                    );
                 military.naval = navy;
             }
         }
