@@ -671,5 +671,4 @@ mod tests {
             .insert("second".into(), "unknown_slot".into());
         assert!(data.hull("ship_hull_light_1").is_err());
     }
-
 }
