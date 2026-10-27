@@ -337,7 +337,12 @@ impl GameSession {
         // Take the naval state out so route/war/country data stay read-only.
         let mut navy = std::mem::take(&mut self.military.naval);
         let mut losses = BTreeMap::new();
-        navy.process_trade(&self.world, &self.military, &mut self.resources, &mut losses);
+        navy.process_trade(
+            &self.world,
+            &self.military,
+            &mut self.resources,
+            &mut losses,
+        );
         self.military.naval = navy;
         for (tag, sunk) in losses {
             if let Some(country) = self.military.logistics.countries.get_mut(&tag) {
