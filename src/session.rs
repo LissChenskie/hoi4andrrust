@@ -331,15 +331,23 @@ impl GameSession {
         // Oil is not stockpiled as a raw material: the same delivered
         // oil flow funds fuel conversion every subsequent simulation hour.
         for tag in &tags {
-            let delivered_oil = self.resources.last.get(tag)
+            let delivered_oil = self
+                .resources
+                .last
+                .get(tag)
                 .and_then(|r| r.available.get("oil"))
-                .copied().unwrap_or(0);
-            self.military.logistics.countries.entry(tag.clone()).or_default()
+                .copied()
+                .unwrap_or(0);
+            self.military
+                .logistics
+                .countries
+                .entry(tag.clone())
+                .or_default()
                 .oil_supply_daily = if self.world.resources_by_state.is_empty() {
-                    None
-                } else {
-                    Some(f64::from(delivered_oil))
-                };
+                None
+            } else {
+                Some(f64::from(delivered_oil))
+            };
         }
         for tag in &tags {
             self.construction
