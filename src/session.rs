@@ -469,16 +469,25 @@ mod tests {
             .model_stockpile
             .insert("test_truck".into(), 45);
         hours(&mut s, 1);
-        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 5);
+        assert_eq!(
+            s.production.country("AAA").unwrap().model_stockpile["test_truck"],
+            5
+        );
         assert_eq!(
             s.military.logistics.countries["AAA"].truck_models["test_truck"],
             40
         );
         hours(&mut s, 1);
-        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 5);
+        assert_eq!(
+            s.production.country("AAA").unwrap().model_stockpile["test_truck"],
+            5
+        );
         s.military.logistics.motorized_hubs.clear();
         hours(&mut s, 1);
-        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 45);
+        assert_eq!(
+            s.production.country("AAA").unwrap().model_stockpile["test_truck"],
+            45
+        );
         assert_eq!(s.military.logistics.countries["AAA"].truck_count(), 0);
     }
 
