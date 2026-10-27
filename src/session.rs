@@ -240,6 +240,12 @@ impl GameSession {
             &mut self.production,
             self.clock.date,
         );
+        // Starting motorized hubs must claim vehicles from historical stockpiles.
+        self.military.logistics.reserve_trucks(
+            &mut self.production,
+            &self.world,
+            &self.military.catalogue,
+        );
     }
 
     /// One simulation boundary for movement and combat. Simulation
@@ -253,6 +259,13 @@ impl GameSession {
         research: &ResearchRules,
     ) -> bool {
         construction::initialize_builders(&self.world, &mut self.construction_queues);
+        // Reconcile the logistics allocation before recalculating hub ranges:
+        // toggles and occupied hubs release trucks, new hubs reserve available stock.
+        self.military.logistics.reserve_trucks(
+            &mut self.production,
+            &self.world,
+            &self.military.catalogue,
+        );
         let control_revision = self.world.control_revision;
         let completed_day = self.clock.advance_one_hour();
         self.military
@@ -425,6 +438,48 @@ mod tests {
                 &ResearchRules::default(),
             );
         }
+    }
+
+    #[test]
+    fn hourly_motorization_uses_stock_and_returns_it_to_the_same_country() {
+        let mut s = session();
+        let mut db = (*s.military.catalogue).clone();
+        db.equipment.insert(
+            "test_truck".into(),
+            crate::military_model::EquipmentDefinition {
+                id: "test_truck".into(),
+                archetype: "motorized_equipment".into(),
+                year: 1936,
+                active: true,
+                buildable: true,
+                stats: Default::default(),
+                cost: 2.5,
+                modular: false,
+                source: "test".into(),
+            },
+        );
+        s.military.catalogue = std::sync::Arc::new(db);
+        s.military
+            .logistics
+            .countries
+            .insert("AAA".into(), Default::default());
+        s.military.logistics.motorized_hubs.insert(11);
+        s.production
+            .country_mut("AAA")
+            .model_stockpile
+            .insert("test_truck".into(), 45);
+        hours(&mut s, 1);
+        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 5);
+        assert_eq!(
+            s.military.logistics.countries["AAA"].truck_models["test_truck"],
+            40
+        );
+        hours(&mut s, 1);
+        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 5);
+        s.military.logistics.motorized_hubs.clear();
+        hours(&mut s, 1);
+        assert_eq!(s.production.country("AAA").unwrap().model_stockpile["test_truck"], 45);
+        assert_eq!(s.military.logistics.countries["AAA"].truck_count(), 0);
     }
 
     #[test]
