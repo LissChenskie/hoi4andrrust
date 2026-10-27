@@ -1726,6 +1726,208 @@ fn trade(
     // Convoys, embargoes, subject price bonuses and political-power costs not yet supported.
 }
 
+fn naval_designer_view(
+    h:&mut Hud,world:&World,tag:&str,w:&Warfare,
+    x:f32,mut y:f32,width:f32,bottom:f32,actions:&mut Vec<Action>,
+) {
+    let Some(country)=w.countries.get(tag) else {return};
+    let schemas=&w.catalogue.naval_designer;
+    let hulls:Vec<_>=w.catalogue.equipment.values().filter(|e|
+        schemas.hulls.contains_key(&e.id) && e.buildable &&
+        (e.active || country.modifiers.unlocked_equipment.contains(&e.id))
+    ).collect();
+    ui::section("КОНСТРУКТОР КОРАБЛЕЙ — КОРПУС, СЛОТЫ, МОДУЛИ",x,y,width);
+    y+=30.0;
+    if hulls.is_empty() {
+        ui::label("Исследованных корпусов с данными слотов нет",
+            Rect::new(x,y,width,25.0),12.0,ui::GOLD);
+        return;
+    }
+    h.naval_hull_index%=hulls.len();
+    let hull=hulls[h.naval_hull_index];
+    let arrow=38.0_f32.min(width/5.0);
+    if ui::small_button("◀",Rect::new(x,y,arrow,28.0),false) {
+        h.naval_hull_index=(h.naval_hull_index+hulls.len()-1)%hulls.len();
+        h.naval_slot_index=0;h.naval_module_index=0;h.naval_draft.clear();
+    }
+    ui::label(&format!("Корпус: {}",w.catalogue.label(&hull.id)),
+        Rect::new(x+arrow+5.0,y+3.0,width-2.0*arrow-10.0,22.0),12.0,ui::TEXT);
+    if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,28.0),false) {
+        h.naval_hull_index=(h.naval_hull_index+1)%hulls.len();
+        h.naval_slot_index=0;h.naval_module_index=0;h.naval_draft.clear();
+    }
+    y+=40.0;
+    let Ok(schema)=schemas.hull(&hull.id) else{return};
+    let slots:Vec<_>=schema.slots.iter().collect();
+    if slots.is_empty(){
+        ui::label("У корпуса нет импортированных слотов",
+            Rect::new(x,y,width,24.0),12.0,ui::GOLD);return;
+    }
+    h.naval_slot_index%=slots.len();
+    let (slot,rule)=slots[h.naval_slot_index];
+    ui::section("СЛОТЫ КОРПУСА",x,y,width);y+=27.0;
+    if ui::small_button("◀",Rect::new(x,y,arrow,27.0),false){
+        h.naval_slot_index=(h.naval_slot_index+slots.len()-1)%slots.len();
+        h.naval_module_index=0;
+    }
+    ui::label(&format!("{} {} ({}/{})",slot,
+        if rule.required {"обязателен"} else {"свободный"},
+        h.naval_slot_index+1,slots.len()),
+        Rect::new(x+arrow+5.0,y+2.0,width-2.0*arrow-10.0,24.0),11.0,ui::TEXT);
+    if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,27.0),false){
+        h.naval_slot_index=(h.naval_slot_index+1)%slots.len();
+        h.naval_module_index=0;
+    }
+    y+=36.0;
+    let mut modules=schemas.allowed_modules(&hull.id,slot);
+    modules.retain(|id|schemas.modules.get(id).is_some_and(|m|
+        m.active || schema.default_modules.get(slot)==Some(id) ||
+        country.modifiers.unlocked_modules.contains(id) ||
+        country.modifiers.unlocked_modules.contains(&m.category)));
+    if !rule.required {modules.insert(0,"empty".into());}
+    if modules.is_empty(){
+        ui::label("Нет доступных модулей для этого слота",
+            Rect::new(x,y,width,23.0),11.0,ui::GOLD);
+    }else{
+        let current=h.naval_draft.get(slot).or_else(||schema.default_modules.get(slot))
+            .map(String::as_str).unwrap_or("empty");
+        let index=modules.iter().position(|m|m==current).unwrap_or(0);
+        if ui::small_button("◀",Rect::new(x,y,arrow,27.0),false){
+            let new=(index+modules.len()-1)%modules.len();
+            h.naval_draft.insert(slot.clone(),modules[new].clone());
+        }
+        ui::label(&format!("Модуль: {current}"),
+            Rect::new(x+arrow+5.0,y+3.0,width-2.0*arrow-10.0,22.0),
+            11.0,ui::TEXT);
+        if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,27.0),false){
+            let new=(index+1)%modules.len();
+            h.naval_draft.insert(slot.clone(),modules[new].clone());
+        }
+    }
+    y+=36.0;
+    // Display real computed stats / validation errors, not hardcoded prices.
+    let preview=schemas.construct(tag,"Мой проект",&hull.id,&h.naval_draft,
+        &w.catalogue,&country.modifiers,None);
+    match &preview {
+        Ok(p)=>ui::label(&format!("Проект: {:.0} IC · {} слотов · палуба {:.0}",
+            p.cost,p.modules.len(),p.stats.get("deck_size").copied().unwrap_or(0.)),
+            Rect::new(x,y,width,22.0),12.0,ui::TEXT),
+        Err(error)=>ui::label(error,Rect::new(x,y,width,22.0),11.0,ui::GOLD),
+    }
+    y+=29.0;
+    if ui::small_button("Сохранить проект корабля",Rect::new(x,y,width,30.0),false){
+        actions.push(Action::NavalSaveDesign(
+            hull.id.clone(),format!("{} — проект",w.catalogue.label(&hull.id)),
+            h.naval_draft.clone()));
+    }
+    y+=44.0;
+    if y+100.0>bottom{return}
+    ui::section("СОХРАНЁННЫЕ КОНСТРУКЦИИ",x,y,width);
+    y+=27.0;
+    let designs:Vec<_>=w.naval.designs.values().filter(|d|d.country==tag).collect();
+    if designs.is_empty(){
+        ui::label("Сохранённых проектов ещё нет",Rect::new(x,y,width,24.0),
+            11.0,ui::MUTED);return;
+    }
+    h.naval_design_index%=designs.len();
+    let design=designs[h.naval_design_index];
+    if ui::small_button("◀",Rect::new(x,y,arrow,28.0),false){
+        h.naval_design_index=(h.naval_design_index+designs.len()-1)%designs.len();
+    }
+    ui::label(&format!("{} · {:.0} IC",design.name,design.cost),
+        Rect::new(x+arrow+5.0,y+3.0,width-2.0*arrow-10.0,22.0),12.0,ui::TEXT);
+    if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,28.0),false){
+        h.naval_design_index=(h.naval_design_index+1)%designs.len();
+    }
+    y+=37.0;
+    if ui::small_button("Поставить проект на верфи",Rect::new(x,y,width,28.0),false){
+        let base=w.conditions.iter().find(|(id,c)|c.naval_base>0
+            &&world.controller_of_province(**id)==Some(tag)).map(|(&id,_)|id);
+        if let Some(base)=base{actions.push(Action::NavalQueueDesign(design.id.clone(),base))}
+        else{h.notice="Нет доступного морского порта".into()}
+    }
+}
+
+fn naval_carrier_view(
+    h:&mut Hud,tag:&str,w:&Warfare,
+    x:f32,mut y:f32,width:f32,bottom:f32,actions:&mut Vec<Action>,
+) {
+    ui::section("ПАЛУБНАЯ АВИАЦИЯ — ЗАПАСЫ И АВИАГРУППЫ",x,y,width);
+    y+=28.0;
+    let mut carriers=Vec::new();
+    for force in w.naval.task_forces.values().filter(|f|f.country==tag){
+        for (idx,ship) in force.ships.iter().enumerate(){
+            let cap=w.naval.carrier_capacity(force.id,idx,w);
+            if cap>0{carriers.push((force.id,idx,cap));}
+        }
+    }
+    if carriers.is_empty(){
+        ui::label("Действующих авианосцев с палубой нет",
+            Rect::new(x,y,width,24.0),12.0,ui::GOLD);return;
+    }
+    h.naval_carrier_index%=carriers.len();
+    let (id,index,capacity)=carriers[h.naval_carrier_index];
+    let ship=&w.naval.task_forces[&id].ships[index];
+    let arrow=38.0_f32.min(width/5.0);
+    if ui::small_button("◀",Rect::new(x,y,arrow,27.0),false) {
+        h.naval_carrier_index=(h.naval_carrier_index+carriers.len()-1)%carriers.len();
+    }
+    ui::label(&format!("{} (палуба {capacity})",ship.name),
+        Rect::new(x+arrow+5.0,y+3.0,width-2.0*arrow-10.0,22.0),
+        12.0,ui::TEXT);
+    if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,27.0),false){
+        h.naval_carrier_index=(h.naval_carrier_index+1)%carriers.len();
+    }
+    y+=42.0;
+    let groups=w.naval.carrier_wings.get(&(id,index));
+    let deployed=groups.map_or(0,|gs|gs.iter().map(|g|g.planes).sum::<u32>());
+    let reserved=groups.map_or(0,|gs|gs.iter().map(|g|g.target).sum::<u32>());
+    ui::label(&format!("На палубе {deployed}/{capacity} · заказано {reserved}"),
+        Rect::new(x,y,width,23.0),12.0,ui::TEXT);
+    y+=30.0;
+    for group in groups.into_iter().flatten().take(5) {
+        if y+22.0>bottom-115.0{break}
+        ui::label(&format!("{}: {}/{} · вылетов {} · потерь {}",
+            group.model,group.planes,group.target,group.sorties,group.losses),
+            Rect::new(x,y,width,20.0),11.0,ui::TEXT);
+        y+=24.0;
+    }
+    y=y.max(bottom-145.0);
+    if y+130.0>bottom{return;}
+    let aircraft:Vec<_>=w.countries.get(tag).map(|country|
+        w.catalogue.equipment.values().filter(|def|
+            crate::naval_carrier::role(def).is_some() &&
+            w.catalogue.equipment_available(&def.id,&country.modifiers)
+        ).collect::<Vec<_>>()).unwrap_or_default();
+    if aircraft.is_empty(){
+        ui::label("Нет исследованной палубной авиации",
+            Rect::new(x,y,width,25.0),11.0,ui::GOLD);return;
+    }
+    h.naval_aircraft_index%=aircraft.len();
+    let model=aircraft[h.naval_aircraft_index];
+    if ui::small_button("◀",Rect::new(x,y,arrow,26.0),false){
+        h.naval_aircraft_index=(h.naval_aircraft_index+aircraft.len()-1)%aircraft.len();
+    }
+    ui::label(w.catalogue.label(&model.id),
+        Rect::new(x+arrow+5.0,y+3.0,width-2.0*arrow-10.0,22.0),12.0,ui::TEXT);
+    if ui::small_button("▶",Rect::new(x+width-arrow,y,arrow,26.0),false){
+        h.naval_aircraft_index=(h.naval_aircraft_index+1)%aircraft.len();
+    }
+    y+=33.0;
+    if ui::small_button("−10",Rect::new(x,y,arrow+15.0,27.0),false){
+        h.naval_target_planes=h.naval_target_planes.saturating_sub(10).max(1);
+    }
+    ui::label(&format!("Цель: {} самолётов",h.naval_target_planes),
+        Rect::new(x+arrow+20.0,y+3.0,width-2.*(arrow+20.0),22.0),11.0,ui::TEXT);
+    if ui::small_button("+10",Rect::new(x+width-arrow-15.0,y,arrow+15.0,27.0),false){
+        h.naval_target_planes=h.naval_target_planes.saturating_add(10).min(capacity);
+    }
+    y+=33.0;
+    if ui::small_button("Назначить авиагруппу",Rect::new(x,y,width,29.0),false){
+        actions.push(Action::NavalAssignCarrierWing(id,index,
+            model.id.clone(),h.naval_target_planes.min(capacity)));
+    }
+}
 fn navy(
     h: &mut Hud,
     world: &World,
