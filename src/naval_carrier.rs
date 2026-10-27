@@ -57,21 +57,29 @@ pub struct CarrierAirSortie {
 fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
     let defs = &w.catalogue.literal_defines;
     let get = |keys: &[&str], fallback: f64| {
-        keys.iter().find_map(|k| defs.get(*k).copied()
-            .filter(|v| v.is_finite() && *v > 0.0)).unwrap_or(fallback)
+        keys.iter()
+            .find_map(|k| defs.get(*k).copied().filter(|v| v.is_finite() && *v > 0.0))
+            .unwrap_or(fallback)
     };
-    let delay = get(&[
-        "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
-        "NDefines.NNavy.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
-        "NDefines.NNavy.CARRIER_HOURS_DELAY",
-    ], 4.0).ceil().max(1.0) as u64;
-    let sortie_fraction = get(&[
-        "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY",
-    ], 0.2).clamp(0.0, 1.0);
-    let damage_scale = get(&[
-        "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR",
-        "NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR",
-    ], 0.015);
+    let delay = get(
+        &[
+            "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+            "NDefines.NNavy.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT",
+            "NDefines.NNavy.CARRIER_HOURS_DELAY",
+        ],
+        4.0,
+    )
+    .ceil()
+    .max(1.0) as u64;
+    let sortie_fraction =
+        get(&["NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY"], 0.2).clamp(0.0, 1.0);
+    let damage_scale = get(
+        &[
+            "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR",
+            "NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR",
+        ],
+        0.015,
+    );
     (delay, sortie_fraction, damage_scale)
 }
 impl NavalState {
@@ -157,7 +165,12 @@ impl NavalState {
     }
     /// Replenishment only happens when the carrier is in a friendly naval
     /// base with an idle order. Prevents spawning aircraft at sea.
-    pub fn replenish_carriers(&mut self, world: &World, w: &Warfare, production: &mut ProductionState) {
+    pub fn replenish_carriers(
+        &mut self,
+        world: &World,
+        w: &Warfare,
+        production: &mut ProductionState,
+    ) {
         self.reconcile_sunk_carriers();
         for (&(id, index), groups) in &mut self.carrier_wings {
             let Some(force) = self.task_forces.get(&id) else {
@@ -189,7 +202,9 @@ impl NavalState {
     /// return to production inventory. Preserve cumulative losses for save data.
     pub fn reconcile_sunk_carriers(&mut self) {
         for (&(force_id, index), groups) in &mut self.carrier_wings {
-            let sunk = self.task_forces.get(&force_id)
+            let sunk = self
+                .task_forces
+                .get(&force_id)
                 .and_then(|f| f.ships.get(index))
                 .is_none_or(|ship| ship.strength <= 0.0);
             if sunk {
@@ -230,15 +245,23 @@ impl NavalState {
         let mut attacks = Vec::new();
         let (delay, base_sortie_fraction, air_damage) = carrier_air_parameters(w);
         let sortie_modifier = w.countries.get(&source_tag).map_or(0., |c| {
-            c.modifiers.country.get("sortie_efficiency").copied().unwrap_or(0.)
+            c.modifiers
+                .country
+                .get("sortie_efficiency")
+                .copied()
+                .unwrap_or(0.)
         });
-        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0))
-            .clamp(0.0, 1.0);
+        let efficiency = (base_sortie_fraction * (1.0 + sortie_modifier).max(0.0)).clamp(0.0, 1.0);
         let enemy_fighters = self
             .carrier_wings
             .iter()
-            .filter(|((id, index), _)| *id == dst
-                && enemy.ships.get(*index).is_some_and(|ship| ship.strength > 0.0))
+            .filter(|((id, index), _)| {
+                *id == dst
+                    && enemy
+                        .ships
+                        .get(*index)
+                        .is_some_and(|ship| ship.strength > 0.0)
+            })
             .flat_map(|(_, gs)| gs.iter())
             .filter_map(|g| {
                 w.catalogue.equipment.get(&g.model).and_then(|m| {
@@ -337,7 +360,9 @@ mod tests {
         World::from_map_data(
             &HashMap::from([(1, 1)]),
             &HashMap::from([(1, "A".to_owned())]),
-            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
         )
     }
     fn fixture() -> (Warfare, NavalState) {
@@ -383,9 +408,9 @@ mod tests {
             );
         }
         // Explicit full-sortie fixture: separate tests check lower rates.
-        catalogue.literal_defines.insert(
-            "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 1.0,
-        );
+        catalogue
+            .literal_defines
+            .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 1.0);
         let mut w = Warfare::new(catalogue);
         w.countries.insert("A".into(), CountryArmy::default());
         w.countries.insert("B".into(), CountryArmy::default());
@@ -463,20 +488,20 @@ mod tests {
         {
             let cat = std::sync::Arc::make_mut(&mut w.catalogue);
             cat.literal_defines.insert(
-                "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT".into(), 6.0,
+                "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT".into(),
+                6.0,
             );
-            cat.literal_defines.insert(
-                "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05,
-            );
-            cat.literal_defines.insert(
-                "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4,
-            );
+            cat.literal_defines
+                .insert("NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05);
+            cat.literal_defines
+                .insert("NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4);
         }
         let (delay, portion, damage) = carrier_air_parameters(&w);
         assert_eq!(delay, 6);
         assert_eq!(portion, 0.4);
         assert_eq!(damage, 0.05);
-        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w).unwrap();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w)
+            .unwrap();
         navy.carrier_wings.get_mut(&(1, 0)).unwrap()[0].planes = 10;
         let strikes = navy.carrier_air_strike(1, 2, &w, 6);
         assert_eq!(strikes[0].aircraft_launched, 4);
@@ -488,13 +513,19 @@ mod tests {
     fn occupied_port_cannot_refill_and_sunk_carrier_cannot_keep_aircraft() {
         let (w, mut navy) = fixture();
         let mut world = test_world();
-        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 6, &w).unwrap();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 6, &w)
+            .unwrap();
         let mut prod = ProductionState::default();
-        prod.country_mut("A").model_stockpile.insert("cv_nav_bomber_1".into(), 6);
+        prod.country_mut("A")
+            .model_stockpile
+            .insert("cv_nav_bomber_1".into(), 6);
         assert!(world.set_province_controller(1, Some("B")));
         navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
-        assert_eq!(prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"], 6);
+        assert_eq!(
+            prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
+            6
+        );
         assert!(world.set_province_controller(1, Some("A")));
         navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 6);
