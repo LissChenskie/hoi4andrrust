@@ -306,86 +306,158 @@ impl NavalState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::military_model::{CountryArmy,EquipmentDefinition,MilitaryCatalogue};
-    use crate::naval_warfare::{NavalMission,NavalShip,NavalTaskForce};
+    use crate::military_model::{CountryArmy, EquipmentDefinition, MilitaryCatalogue};
+    use crate::naval_warfare::{NavalMission, NavalShip, NavalTaskForce};
     use crate::warfare::ProvinceConditions;
-    use std::collections::{BTreeMap,BTreeSet};
-    fn fixture()->(Warfare,NavalState) {
-        let mut catalogue=MilitaryCatalogue::default();
-        for (id,arch,stats) in [
-            ("ship_hull_carrier_1","ship_hull_carrier",
-                BTreeMap::from([("deck_size".into(),10.),("max_strength".into(),200.)])),
-            ("ship_hull_light_1","ship_hull_light",
-                BTreeMap::from([("max_strength".into(),100.)])),
-            ("cv_nav_bomber_1","cv_nav_bomber_equipment",
-                BTreeMap::from([("air_range".into(),150.),("naval_strike_attack".into(),10.)])),
-            ("fighter_1","fighter_equipment",
-                BTreeMap::from([("air_range".into(),100.),("air_attack".into(),5.)])),
+    use std::collections::{BTreeMap, BTreeSet};
+    fn fixture() -> (Warfare, NavalState) {
+        let mut catalogue = MilitaryCatalogue::default();
+        for (id, arch, stats) in [
+            (
+                "ship_hull_carrier_1",
+                "ship_hull_carrier",
+                BTreeMap::from([("deck_size".into(), 10.), ("max_strength".into(), 200.)]),
+            ),
+            (
+                "ship_hull_light_1",
+                "ship_hull_light",
+                BTreeMap::from([("max_strength".into(), 100.)]),
+            ),
+            (
+                "cv_nav_bomber_1",
+                "cv_nav_bomber_equipment",
+                BTreeMap::from([
+                    ("air_range".into(), 150.),
+                    ("naval_strike_attack".into(), 10.),
+                ]),
+            ),
+            (
+                "fighter_1",
+                "fighter_equipment",
+                BTreeMap::from([("air_range".into(), 100.), ("air_attack".into(), 5.)]),
+            ),
         ] {
-            catalogue.equipment.insert(id.into(),EquipmentDefinition{
-                id:id.into(),archetype:arch.into(),year:1936,active:true,buildable:true,
-                stats,cost:20.,modular:false,source:"fixture".into(),
-            });
+            catalogue.equipment.insert(
+                id.into(),
+                EquipmentDefinition {
+                    id: id.into(),
+                    archetype: arch.into(),
+                    year: 1936,
+                    active: true,
+                    buildable: true,
+                    stats,
+                    cost: 20.,
+                    modular: false,
+                    source: "fixture".into(),
+                },
+            );
         }
-        let mut w=Warfare::new(catalogue);
-        w.countries.insert("A".into(),CountryArmy::default());
-        w.countries.insert("B".into(),CountryArmy::default());
-        w.conditions.insert(1,ProvinceConditions{naval_base:2,..Default::default()});
-        let mut navy=NavalState::default();
-        for (id,tag,model) in [(1,"A","ship_hull_carrier_1"),(2,"B","ship_hull_light_1")]{
-            navy.task_forces.insert(id,NavalTaskForce{
-                id,country:tag.into(),name:"Fleet".into(),base:1,
-                mission:NavalMission::Hold,regions:BTreeSet::new(),
-                ships:vec![NavalShip{
-                    name:model.into(),model:model.into(),definition:model.into(),
-                    variant:None,strength:1.0,
-                }],
-            });
+        let mut w = Warfare::new(catalogue);
+        w.countries.insert("A".into(), CountryArmy::default());
+        w.countries.insert("B".into(), CountryArmy::default());
+        w.conditions.insert(
+            1,
+            ProvinceConditions {
+                naval_base: 2,
+                ..Default::default()
+            },
+        );
+        let mut navy = NavalState::default();
+        for (id, tag, model) in [
+            (1, "A", "ship_hull_carrier_1"),
+            (2, "B", "ship_hull_light_1"),
+        ] {
+            navy.task_forces.insert(
+                id,
+                NavalTaskForce {
+                    id,
+                    country: tag.into(),
+                    name: "Fleet".into(),
+                    base: 1,
+                    mission: NavalMission::Hold,
+                    regions: BTreeSet::new(),
+                    ships: vec![NavalShip {
+                        name: model.into(),
+                        model: model.into(),
+                        definition: model.into(),
+                        variant: None,
+                        strength: 1.0,
+                    }],
+                },
+            );
         }
-        (w,navy)
+        (w, navy)
     }
     #[test]
     fn deck_size_and_research_gate_carrier_aircraft() {
-        let (mut w,mut navy)=fixture();
-        assert_eq!(navy.carrier_capacity(1,0,&w),10);
-        assert!(navy.assign_carrier_aircraft("A",1,0,"fighter_1",5,&w).is_err());
-        assert!(navy.assign_carrier_aircraft("B",1,0,"cv_nav_bomber_1",5,&w).is_err());
-        assert!(navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",11,&w).is_err());
-        w.catalogue=std::sync::Arc::new({
-            let mut cat=(*w.catalogue).clone();
-            cat.equipment.get_mut("cv_nav_bomber_1").unwrap().active=false;
+        let (mut w, mut navy) = fixture();
+        assert_eq!(navy.carrier_capacity(1, 0, &w), 10);
+        assert!(
+            navy.assign_carrier_aircraft("A", 1, 0, "fighter_1", 5, &w)
+                .is_err()
+        );
+        assert!(
+            navy.assign_carrier_aircraft("B", 1, 0, "cv_nav_bomber_1", 5, &w)
+                .is_err()
+        );
+        assert!(
+            navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 11, &w)
+                .is_err()
+        );
+        w.catalogue = std::sync::Arc::new({
+            let mut cat = (*w.catalogue).clone();
+            cat.equipment.get_mut("cv_nav_bomber_1").unwrap().active = false;
             cat
         });
-        assert!(navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",5,&w).is_err());
-        w.countries.get_mut("A").unwrap().modifiers
-            .unlocked_equipment.insert("cv_nav_bomber_1".into());
-        navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",5,&w).unwrap();
-        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,0);
+        assert!(
+            navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
+                .is_err()
+        );
+        w.countries
+            .get_mut("A")
+            .unwrap()
+            .modifiers
+            .unlocked_equipment
+            .insert("cv_nav_bomber_1".into());
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
+            .unwrap();
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
     }
     #[test]
     fn inventory_funded_airgroups_launch_only_when_present_and_respect_cooldowns() {
-        let (w,mut navy)=fixture();
-        navy.assign_carrier_aircraft("A",1,0,"cv_nav_bomber_1",5,&w).unwrap();
-        let mut prod=ProductionState::default();
-        navy.replenish_carriers(&w,&mut prod);
-        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,0);
-        prod.country_mut("A").model_stockpile.insert("cv_nav_bomber_1".into(),3);
-        navy.replenish_carriers(&w,&mut prod);
-        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,3);
-        assert_eq!(prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],0);
-        let strike=navy.carrier_air_strike(1,2,&w,8);
-        assert_eq!(strike.len(),1);
-        assert!(strike[0].relative_damage>0.);
-        assert_eq!(strike[0].aircraft_launched,3);
-        assert!(navy.carrier_air_strike(1,2,&w,9).is_empty());
-        assert_eq!(navy.carrier_air_strike(1,2,&w,16).len(),1);
-        navy.task_forces.get_mut(&1).unwrap().mission=NavalMission::Patrol;
-        prod.country_mut("A").model_stockpile.insert("cv_nav_bomber_1".into(),10);
-        navy.replenish_carriers(&w,&mut prod);
-        assert_eq!(navy.carrier_wings[&(1,0)][0].planes,3);
-        assert_eq!(prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],10);
-        let json=serde_json::to_string(&navy).unwrap();
-        let loaded:NavalState=serde_json::from_str(&json).unwrap();
-        assert_eq!(loaded.carrier_wings[&(1,0)][0].sorties,6);
+        let (w, mut navy) = fixture();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
+            .unwrap();
+        let mut prod = ProductionState::default();
+        navy.replenish_carriers(&w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
+        prod.country_mut("A")
+            .model_stockpile
+            .insert("cv_nav_bomber_1".into(), 3);
+        navy.replenish_carriers(&w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
+        assert_eq!(
+            prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
+            0
+        );
+        let strike = navy.carrier_air_strike(1, 2, &w, 8);
+        assert_eq!(strike.len(), 1);
+        assert!(strike[0].relative_damage > 0.);
+        assert_eq!(strike[0].aircraft_launched, 3);
+        assert!(navy.carrier_air_strike(1, 2, &w, 9).is_empty());
+        assert_eq!(navy.carrier_air_strike(1, 2, &w, 16).len(), 1);
+        navy.task_forces.get_mut(&1).unwrap().mission = NavalMission::Patrol;
+        prod.country_mut("A")
+            .model_stockpile
+            .insert("cv_nav_bomber_1".into(), 10);
+        navy.replenish_carriers(&w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
+        assert_eq!(
+            prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
+            10
+        );
+        let json = serde_json::to_string(&navy).unwrap();
+        let loaded: NavalState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.carrier_wings[&(1, 0)][0].sorties, 6);
     }
 }
