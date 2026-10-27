@@ -1,7 +1,10 @@
 //! Daily HOI4-style strategic-resource allocation and civilian-factory trade.
 //! Resources are a *flow*, not a stockpile. All quantities are integer units/day.
 //! No imaginary default national laws, routes or starting trade deals are added.
-use crate::{construction::{self, CountryConstructionPolicy}, world::World};
+use crate::{
+    construction::{self, CountryConstructionPolicy},
+    world::World,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -51,22 +54,27 @@ pub struct ResourceEconomy {
 }
 impl ResourceEconomy {
     pub fn set_deal(&mut self, world: &World, deal: TradeDeal) -> Result<(), String> {
-        if deal.buyer == deal.seller || deal.factories == 0 || deal.resource.is_empty()
+        if deal.buyer == deal.seller
+            || deal.factories == 0
+            || deal.resource.is_empty()
             || !world.countries.contains_key(&deal.buyer)
             || !world.countries.contains_key(&deal.seller)
         {
             return Err("Некорректный торговый договор".into());
         }
         // Replace a buyer/seller/resource pair, never silently duplicate it.
-        self.deals.retain(|existing|
-            existing.buyer != deal.buyer || existing.seller != deal.seller || existing.resource != deal.resource
-        );
+        self.deals.retain(|existing| {
+            existing.buyer != deal.buyer
+                || existing.seller != deal.seller
+                || existing.resource != deal.resource
+        });
         self.deals.push(deal);
         Ok(())
     }
     pub fn cancel_deal(&mut self, buyer: &str, seller: &str, resource: &str) -> bool {
         let before = self.deals.len();
-        self.deals.retain(|d| d.buyer != buyer || d.seller != seller || d.resource != resource);
+        self.deals
+            .retain(|d| d.buyer != buyer || d.seller != seller || d.resource != resource);
         before != self.deals.len()
     }
     /// Snapshot daily deposits, reserve national exports, fulfill available
@@ -80,12 +88,22 @@ impl ResourceEconomy {
         policies: &BTreeMap<String, CountryConstructionPolicy>,
     ) {
         world.trade_factory_income.clear();
-        let mut reports: BTreeMap<String, CountryResources> = world.countries.keys()
-            .cloned().map(|tag| (tag, CountryResources::default())).collect();
+        let mut reports: BTreeMap<String, CountryResources> = world
+            .countries
+            .keys()
+            .cloned()
+            .map(|tag| (tag, CountryResources::default()))
+            .collect();
         for (&state_id, deposits) in &world.resources_by_state {
-            let Some(tag) = world.state_controller(state_id) else { continue };
-            let Some(report) = reports.get_mut(tag) else { continue };
-            let infrastructure = world.states.get(&state_id)
+            let Some(tag) = world.state_controller(state_id) else {
+                continue;
+            };
+            let Some(report) = reports.get_mut(tag) else {
+                continue;
+            };
+            let infrastructure = world
+                .states
+                .get(&state_id)
                 .map_or(0, |state| state.economy.infrastructure);
             for (resource, &base) in deposits {
                 // +20% resource extraction per infrastructure level; fractional
@@ -97,35 +115,60 @@ impl ResourceEconomy {
             }
         }
         for (tag, report) in &mut reports {
-            let export = self.laws.get(tag).copied().unwrap_or_default().export_percentage();
+            let export = self
+                .laws
+                .get(tag)
+                .copied()
+                .unwrap_or_default()
+                .export_percentage();
             for (resource, &total) in &report.extracted {
                 let reserved = u64::from(total) * u64::from(export) / 100;
                 let reserved = reserved.min(u64::from(u32::MAX)) as u32;
                 report.export_reserved.insert(resource.clone(), reserved);
-                report.available.insert(resource.clone(), total.saturating_sub(reserved));
+                report
+                    .available
+                    .insert(resource.clone(), total.saturating_sub(reserved));
             }
         }
         // The buyer cannot rent more factories than are free after consumer
         // goods. Over-subscribed offers and exhausted exports are only partially
         // fulfilled; no resources or factories are created out of thin air.
-        let mut unspent = BTreeMap::<String,u32>::new();
+        let mut unspent = BTreeMap::<String, u32>::new();
         for tag in world.countries.keys() {
             let policy = policies.get(tag).copied().unwrap_or_default();
-            unspent.insert(tag.clone(),
-                construction::country_capacity(world, tag, policy).map_or(0, |c| c.available));
+            unspent.insert(
+                tag.clone(),
+                construction::country_capacity(world, tag, policy).map_or(0, |c| c.available),
+            );
         }
         for deal in &self.deals {
-            if deal.buyer == deal.seller || deal.factories == 0
-                || !reports.contains_key(&deal.buyer) || !reports.contains_key(&deal.seller)
-            { continue }
-            let offer = reports[&deal.seller].export_reserved.get(&deal.resource).copied().unwrap_or(0);
-            let sold = reports[&deal.seller].exported.get(&deal.resource).copied().unwrap_or(0);
+            if deal.buyer == deal.seller
+                || deal.factories == 0
+                || !reports.contains_key(&deal.buyer)
+                || !reports.contains_key(&deal.seller)
+            {
+                continue;
+            }
+            let offer = reports[&deal.seller]
+                .export_reserved
+                .get(&deal.resource)
+                .copied()
+                .unwrap_or(0);
+            let sold = reports[&deal.seller]
+                .exported
+                .get(&deal.resource)
+                .copied()
+                .unwrap_or(0);
             let remaining = offer.saturating_sub(sold);
-            if remaining == 0 { continue; }
+            if remaining == 0 {
+                continue;
+            }
             let available_factories = unspent.get(&deal.buyer).copied().unwrap_or(0);
             let requested = deal.factories.min(available_factories);
             let used_factories = requested.min(remaining.saturating_add(7) / 8);
-            if used_factories == 0 { continue; }
+            if used_factories == 0 {
+                continue;
+            }
             let delivered = remaining.min(used_factories.saturating_mul(8));
             *unspent.get_mut(&deal.buyer).unwrap() -= used_factories;
             let buyer = reports.get_mut(&deal.buyer).unwrap();
@@ -138,7 +181,9 @@ impl ResourceEconomy {
         }
         for (tag, report) in &reports {
             if report.factories_received > 0 {
-                world.trade_factory_income.insert(tag.clone(), report.factories_received);
+                world
+                    .trade_factory_income
+                    .insert(tag.clone(), report.factories_received);
             }
         }
         self.last = reports;
@@ -156,13 +201,29 @@ mod tests {
             &HashMap::from([(1, "A".into()), (2, "B".into())]),
             &HashMap::new(),
             &HashMap::from([
-                (1, StateEconomy { civilian_factories: 1, ..Default::default() }),
-                (2, StateEconomy { civilian_factories: 4, ..Default::default() }),
+                (
+                    1,
+                    StateEconomy {
+                        civilian_factories: 1,
+                        ..Default::default()
+                    },
+                ),
+                (
+                    2,
+                    StateEconomy {
+                        civilian_factories: 4,
+                        ..Default::default()
+                    },
+                ),
             ]),
             &HashMap::new(),
         );
-        world.resources_by_state.insert(1, BTreeMap::from([("steel".into(), 10)]));
-        world.resources_by_state.insert(2, BTreeMap::from([("oil".into(), 5)]));
+        world
+            .resources_by_state
+            .insert(1, BTreeMap::from([("steel".into(), 10)]));
+        world
+            .resources_by_state
+            .insert(2, BTreeMap::from([("oil".into(), 5)]));
         world
     }
     #[test]
@@ -180,9 +241,17 @@ mod tests {
         let mut world = world();
         let mut market = ResourceEconomy::default();
         market.laws.insert("A".into(), TradeLaw::FreeTrade);
-        market.set_deal(&world, TradeDeal {
-            buyer: "B".into(), seller: "A".into(), resource: "steel".into(), factories: 8
-        }).unwrap();
+        market
+            .set_deal(
+                &world,
+                TradeDeal {
+                    buyer: "B".into(),
+                    seller: "A".into(),
+                    resource: "steel".into(),
+                    factories: 8,
+                },
+            )
+            .unwrap();
         market.settle(&mut world, &BTreeMap::new());
         assert_eq!(market.last["B"].imported["steel"], 8);
         assert_eq!(market.last["B"].factories_spent, 1);
