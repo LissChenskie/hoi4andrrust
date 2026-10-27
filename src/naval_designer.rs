@@ -27,6 +27,43 @@ pub struct NavalModule {
     #[serde(default)]
     pub forbidden_categories: BTreeSet<String>,
 }
+/// Native HOI4 module_count_limit condition (matchers are OR, not AND).
+/// A child hull replaces inherited rules with the same matcher set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CountRelation {
+    Less,
+    Greater,
+    Equal,
+    /// count = any overrides a previously inherited limit.
+    Any,
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NavalModuleCountLimit {
+    pub modules: BTreeSet<String>,
+    pub categories: BTreeSet<String>,
+    pub relation: CountRelation,
+    pub count: u32,
+    pub title: Option<String>,
+}
+impl NavalModuleCountLimit {
+    fn matches(&self, id: &str, module: Option<&NavalModule>) -> bool {
+        // Empty includes omitted and explicit empty/inherit slots.
+        let empty = module.is_none();
+        self.modules.contains(id)
+            || (empty && self.modules.contains("empty"))
+            || (!empty && (self.modules.contains("any")
+                || self.categories.contains("any")
+                || module.is_some_and(|m| self.categories.contains(&m.category))))
+    }
+    fn valid(&self, n: u32) -> bool {
+        match self.relation {
+            CountRelation::Less => n < self.count,
+            CountRelation::Greater => n > self.count,
+            CountRelation::Equal => n == self.count,
+            CountRelation::Any => true,
+        }
+    }
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NavalHull {
     pub parent: Option<String>,
@@ -35,6 +72,8 @@ pub struct NavalHull {
     #[serde(default)]
     pub slot_aliases: BTreeMap<String, String>,
     pub default_modules: BTreeMap<String, String>,
+    #[serde(default)]
+    pub module_count_limits: Vec<NavalModuleCountLimit>,
     pub base_stats: StatBlock,
     pub base_resources: BTreeMap<String, u32>,
 }
@@ -72,6 +111,15 @@ impl NavalDesignerCatalogue {
         base.slots.extend(hull.slots.clone());
         base.slot_aliases.extend(hull.slot_aliases.clone());
         base.default_modules.extend(hull.default_modules.clone());
+        for rule in &hull.module_count_limits {
+            if let Some(previous) = base.module_count_limits.iter_mut().find(|previous|
+                previous.modules == rule.modules && previous.categories == rule.categories)
+            {
+                *previous = rule.clone();
+            } else {
+                base.module_count_limits.push(rule.clone());
+            }
+        }
         base.base_stats.extend(hull.base_stats.clone());
         base.base_resources.extend(hull.base_resources.clone());
         seen.remove(id);
@@ -186,6 +234,24 @@ impl NavalDesignerCatalogue {
                 *average_count.entry(key.clone()).or_default() += 1;
             }
             placed.push((selected, module));
+        }
+        // A limit matches a slot when ANY listed module or category condition
+        // matches. Every slot contributes no more than one to that limit.
+        for limit in &h.module_count_limits {
+            if limit.relation == CountRelation::Any { continue; }
+            let count = h.slots.keys().filter(|slot| {
+                let selected = combined.get(*slot).map(String::as_str).unwrap_or("empty");
+                let module = if selected == "empty" || selected == "inherit" {
+                    None
+                } else {
+                    self.modules.get(selected)
+                };
+                limit.matches(selected, module)
+            }).count() as u32;
+            if !limit.valid(count) {
+                return Err(format!("Нарушен module_count_limit {}: {} модулей",
+                    limit.title.as_deref().unwrap_or(""), count));
+            }
         }
         // Module exclusions are evaluated against the *complete* loadout,
         // independently of the order in which the slots were parsed.
@@ -351,6 +417,39 @@ pub fn import_from_layers(root: &Path) -> NavalDesignerCatalogue {
                         }
                     }
                 }
+            }
+            for limit_entry in b.iter().filter(|entry| entry.key == "module_count_limit") {
+                let Some(rule) = limit_entry.block() else {
+                    result.diagnostics.push(format!("Invalid module_count_limit for {}",node.key));
+                    continue;
+                };
+                let modules = rule.iter().filter(|e|e.key == "module")
+                    .filter_map(|e|e.atom().map(str::to_owned)).collect();
+                let categories = rule.iter().filter(|e|e.key == "category")
+                    .filter_map(|e|e.atom().map(str::to_owned)).collect();
+                let count = rule.iter().find(|e|e.key == "count");
+                let relation = count.and_then(|e|{
+                    match (e.operator.as_str(), e.atom()) {
+                        ("=",Some("any")) => Some(CountRelation::Any),
+                        ("<",Some(_)) => Some(CountRelation::Less),
+                        (">",Some(_)) => Some(CountRelation::Greater),
+                        ("=",Some(_)) => Some(CountRelation::Equal),
+                        _ => None,
+                    }
+                });
+                if let (Some(relation),Some(count)) = (relation,count) {
+                    let number = if relation == CountRelation::Any { Some(0) } else {
+                        count.atom().and_then(|a|a.parse::<u32>().ok())
+                    };
+                    if let Some(count) = number {
+                        hull.module_count_limits.push(NavalModuleCountLimit {
+                            modules,categories,relation,count,
+                            title:atom(rule,"title").map(str::to_owned),
+                        });
+                        continue;
+                    }
+                }
+                result.diagnostics.push(format!("Unparseable module_count_limit for {}",node.key));
             }
             if let Some(defaults) = block(b, "default_modules") {
                 hull.default_modules = defaults
