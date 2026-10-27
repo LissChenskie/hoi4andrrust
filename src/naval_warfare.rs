@@ -939,6 +939,27 @@ mod tests {
     }
 
     #[test]
+    fn json_saves_persist_contacts_damage_and_prior_trade_records() {
+        let mut navy = NavalState::default();
+        navy.spotting.insert((100, 1, 2), 0.8);
+        navy.last_contact_battle.insert((100, 1, 2), 48);
+        navy.loss_progress.insert(("A".into(), "B".into(), "steel".into()), 0.35);
+        navy.conditions.insert((1, 0), crate::naval_combat::ShipCondition {
+            organisation: 0.3, critical_damage: 0.2,
+        });
+        let saved = serde_json::to_string(&navy).unwrap();
+        let loaded: NavalState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.spotting[&(100, 1, 2)], 0.8);
+        assert_eq!(loaded.last_contact_battle[&(100, 1, 2)], 48);
+        assert_eq!(loaded.loss_progress[&("A".into(), "B".into(), "steel".into())], 0.35);
+        assert_eq!(loaded.conditions[&(1, 0)].organisation, 0.3);
+        let legacy: NavalState = serde_json::from_str(
+            r#"{"admirals":{},"loss_progress":{},"spotting":{},"conditions":{}}"#
+        ).unwrap();
+        assert!(legacy.admirals.is_empty() && legacy.loss_progress.is_empty());
+    }
+
+    #[test]
     fn navy_commanders_are_national_unique_and_survive_save() {
         let mut navy = NavalState::default();
         for (id, tag) in [(1, "A"), (2, "A"), (3, "B")] {
