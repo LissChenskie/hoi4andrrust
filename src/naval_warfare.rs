@@ -106,6 +106,11 @@ pub struct NavalState {
     pub loss_progress: BTreeMap<(String, String, String), f64>,
     pub last_events: Vec<ConvoyEvent>,
     pub diagnostics: Vec<String>,
+    /// Persistent spotted-task-force contacts, bounded by assigned regions.
+    pub spotting: BTreeMap<(u32, u64, u64), f64>,
+    pub last_contact_battle: BTreeMap<(u32, u64, u64), u64>,
+    pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
+    pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConvoyEvent {
