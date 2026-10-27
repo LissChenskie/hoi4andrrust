@@ -248,6 +248,9 @@ impl GameSession {
         // and air forces. Hull types are never manufactured as placeholders.
         self.military.naval =
             crate::naval_warfare::import_naval_oob(root, &self.world, &self.military);
+        let mut navy = std::mem::take(&mut self.military.naval);
+        crate::naval_warfare::import_navy_leaders(root, &self.military, self.clock.date, &mut navy);
+        self.military.naval = navy;
         if let Some(speed) = self
             .military
             .catalogue
@@ -296,6 +299,11 @@ impl GameSession {
             self.clock.elapsed_hours,
             self.player_country.as_deref(),
         );
+        // Sea operations are hourly, not tied to the midnight production tick.
+        // Temporarily extract the naval state to avoid borrowing warfare twice.
+        let mut naval = std::mem::take(&mut self.military.naval);
+        naval.tick_naval_combat(&self.world, &mut self.military, self.clock.elapsed_hours);
+        self.military.naval = naval;
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();
         }

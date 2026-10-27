@@ -337,6 +337,7 @@ pub enum Action {
     NavalOrder(u64, NavalMission, u32),
     NavalQueueShip(String, u32),
     NavalCancelShip(u64),
+    NavalAssignAdmiral(u64, Option<String>),
 }
 
 fn icon_button(icon: Icon, r: Rect, active: bool, title: &str, body: &str) -> bool {
@@ -1755,7 +1756,26 @@ fn navy(
         12.0,
         ui::TEXT,
     );
-    let mut yy = y + 27.0;
+    let battle = w
+        .naval
+        .battle_reports
+        .iter()
+        .rev()
+        .find(|battle| battle.attacker == tag || battle.defender == tag);
+    if let Some(battle) = battle {
+        ui::label(
+            &format!(
+                "Последний бой: регион #{} · попаданий {} · потоплено {}",
+                battle.region,
+                battle.hits,
+                battle.sunk.len()
+            ),
+            Rect::new(x, y + 22.0, width, 19.0),
+            11.0,
+            ui::GOLD,
+        );
+    }
+    let mut yy = y + if battle.is_some() { 47.0 } else { 27.0 };
     if sea_regions.is_empty() {
         ui::label(
             "Морские регионы не импортированы",
@@ -1784,7 +1804,7 @@ fn navy(
     yy += 33.0;
     ui::section("СОЕДИНЕНИЯ И ПРИКАЗЫ", x, yy, width);
     yy += 28.0;
-    let max_visible = ((bottom - yy - 149.0) / 48.0).max(0.0) as usize;
+    let max_visible = ((bottom - yy - 149.0) / 69.0).max(0.0) as usize;
     let max_visible = max_visible.min(6);
     if forces.is_empty() {
         ui::label(
@@ -1798,12 +1818,23 @@ fn navy(
             .scroll
             .min(forces.len().saturating_sub(max_visible.max(1)));
         for force in forces.iter().skip(h.scroll).take(max_visible.max(1)) {
-            if yy + 42.0 > bottom - 124.0 {
+            if yy + 65.0 > bottom - 124.0 {
                 break;
             }
-            ui::row_bg(Rect::new(x, yy, width, 43.0), false, false);
+            ui::row_bg(Rect::new(x, yy, width, 65.0), false, false);
+            let alive = force.ships.iter().filter(|ship| ship.strength > 0.).count();
+            let strength = if alive == 0 {
+                0.0
+            } else {
+                force.ships.iter().map(|ship| ship.strength).sum::<f64>() / alive as f64
+            };
             ui::label(
-                &format!("{} · {} кораблей", force.name, force.ships.len()),
+                &format!(
+                    "{} · {alive}/{} · прочность {:.0}%",
+                    force.name,
+                    force.ships.len(),
+                    100.0 * strength
+                ),
                 Rect::new(x + 5.0, yy + 2.0, width - 10.0, 19.0),
                 11.0,
                 ui::TEXT,
@@ -1820,7 +1851,34 @@ fn navy(
                     sea_regions.get(h.naval_region_index).copied().unwrap_or(0),
                 ));
             }
-            yy += 48.0;
+            let commander = w
+                .naval
+                .admiral_for(force.id)
+                .map_or("Без командира", |a| a.name.as_str());
+            if ui::small_button(
+                &format!("Адмирал: {commander} →"),
+                Rect::new(x + 4.0, yy + 43.0, width - 8.0, 20.0),
+                false,
+            ) {
+                let eligible: Vec<_> = w
+                    .naval
+                    .admirals
+                    .values()
+                    .filter(|a| a.country == tag)
+                    .map(|a| a.name.as_str())
+                    .collect();
+                let next = if eligible.is_empty() {
+                    None
+                } else {
+                    let index = eligible
+                        .iter()
+                        .position(|name| *name == commander)
+                        .map_or(0, |pos| pos + 1);
+                    eligible.get(index).map(|s| (*s).to_owned())
+                };
+                actions.push(Action::NavalAssignAdmiral(force.id, next));
+            }
+            yy += 69.0;
         }
         if forces.len() > max_visible.max(1) && yy + 29.0 < bottom - 119.0 {
             let bw = (width - 8.0) / 2.0;

@@ -9,6 +9,41 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// A JSON-safe, ordered representation of non-string map keys. An empty
+/// JSON object produced by older saves remains readable during migration.
+pub mod save_pairs {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+    pub fn serialize<K: Ord + Serialize, V: Serialize, S: Serializer>(
+        value: &BTreeMap<K, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        value.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+    pub fn deserialize<
+        'de,
+        K: Ord + Deserialize<'de>,
+        V: Deserialize<'de>,
+        D: Deserializer<'de>,
+    >(
+        deserializer: D,
+    ) -> Result<BTreeMap<K, V>, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Representation<K, V> {
+            Pairs(Vec<(K, V)>),
+            OldEmpty(BTreeMap<String, V>),
+        }
+        match Representation::<K, V>::deserialize(deserializer)? {
+            Representation::Pairs(pairs) => Ok(pairs.into_iter().collect()),
+            Representation::OldEmpty(m) if m.is_empty() => Ok(BTreeMap::new()),
+            Representation::OldEmpty(_) => Err(serde::de::Error::custom(
+                "Legacy JSON object cannot contain compound-key map entries",
+            )),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NavalMission {
     #[default]
@@ -94,18 +129,44 @@ pub struct NavalConstruction {
     pub completed: u64,
     pub last_day_ic: f64,
 }
+/// Country-owned commander imported from the scenario's historical history.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavalAdmiral {
+    pub country: String,
+    pub name: String,
+    pub skill: u32,
+    pub attack: u32,
+    pub defense: u32,
+    pub maneuvering: u32,
+    pub coordination: u32,
+    pub traits: BTreeSet<String>,
+}
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NavalState {
     pub task_forces: BTreeMap<u64, NavalTaskForce>,
+    /// Country and name uniquely scope imported commanders.
+    #[serde(default, with = "save_pairs")]
+    pub admirals: BTreeMap<(String, String), NavalAdmiral>,
+    /// Each task force can carry one commander; a commander cannot lead two.
+    pub assigned_admirals: BTreeMap<u64, String>,
     pub next_id: u64,
     pub shipbuilding: BTreeMap<String, Vec<NavalConstruction>>,
     pub next_construction_id: u64,
     pub rules: NavalRules,
     /// Fractional expected losses carried forward to preserve determinism.
+    #[serde(default, with = "save_pairs")]
     pub loss_progress: BTreeMap<(String, String, String), f64>,
     pub last_events: Vec<ConvoyEvent>,
     pub diagnostics: Vec<String>,
+    /// Persistent spotted-task-force contacts, bounded by assigned regions.
+    #[serde(default, with = "save_pairs")]
+    pub spotting: BTreeMap<(u32, u64, u64), f64>,
+    #[serde(default, with = "save_pairs")]
+    pub last_contact_battle: BTreeMap<(u32, u64, u64), u64>,
+    #[serde(default, with = "save_pairs")]
+    pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
+    pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConvoyEvent {
@@ -141,6 +202,32 @@ pub fn is_ship_model(model: &str, catalogue: &MilitaryCatalogue) -> bool {
 }
 
 impl NavalState {
+    pub fn assign_admiral(&mut self, tag: &str, tf: u64, name: Option<&str>) -> Result<(), String> {
+        if !self.task_forces.get(&tf).is_some_and(|t| t.country == tag) {
+            return Err("Нельзя назначить адмирала чужому флоту".into());
+        }
+        if let Some(name) = name {
+            if !self.admirals.contains_key(&(tag.into(), name.into())) {
+                return Err("Адмирал не найден в истории этой страны".into());
+            }
+            if self.assigned_admirals.iter().any(|(&id, current)| {
+                id != tf
+                    && current == name
+                    && self.task_forces.get(&id).is_some_and(|f| f.country == tag)
+            }) {
+                return Err("Этот адмирал уже руководит другим соединением".into());
+            }
+            self.assigned_admirals.insert(tf, name.into());
+        } else {
+            self.assigned_admirals.remove(&tf);
+        }
+        Ok(())
+    }
+    pub fn admiral_for(&self, id: u64) -> Option<&NavalAdmiral> {
+        let tf = self.task_forces.get(&id)?;
+        let name = self.assigned_admirals.get(&id)?;
+        self.admirals.get(&(tf.country.clone(), name.clone()))
+    }
     pub fn add_historical(
         &mut self,
         tag: &str,
@@ -578,6 +665,69 @@ impl NavalState {
     }
 }
 
+/// Import navy commanders from the *same selected bookmark* and country
+/// history files used by the land army importer. Traits are preserved even
+/// before every scripted trait effect has an implemented consumer.
+pub fn import_navy_leaders(
+    root: &Path,
+    warfare: &Warfare,
+    today: crate::game::GameDate,
+    navy: &mut NavalState,
+) {
+    use crate::military_data::{atom, block, layered_files};
+    let files = layered_files(
+        &crate::military_data::data_layers(root),
+        "history/countries",
+        false,
+        "txt",
+    );
+    for (tag, country) in &warfare.countries {
+        let name = format!("{tag} -");
+        let Some(file) = files.iter().find(|p| {
+            p.file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.starts_with(&name) || s == format!("{tag}.txt"))
+        }) else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(file) else {
+            continue;
+        };
+        let Ok(parsed) = crate::pdx::parse_pdx_compatible(&source) else {
+            continue;
+        };
+        let (resolved, _) =
+            crate::history_conditions::resolve(&parsed.entries, tag, &country.modifiers, today);
+        for e in resolved.iter().filter(|e| e.key == "create_navy_leader") {
+            let Some(props) = e.block() else { continue };
+            let Some(name) = atom(props, "name") else {
+                continue;
+            };
+            let val = |k: &str| {
+                atom(props, k)
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0)
+            };
+            let traits = block(props, "traits")
+                .unwrap_or(&[])
+                .iter()
+                .map(|e| e.key.clone())
+                .collect();
+            let admiral = NavalAdmiral {
+                country: tag.clone(),
+                name: name.into(),
+                skill: val("skill"),
+                attack: val("attack_skill"),
+                defense: val("defense_skill"),
+                maneuvering: val("maneuvering_skill"),
+                coordination: val("coordination_skill"),
+                traits,
+            };
+            navy.admirals.insert((tag.clone(), name.into()), admiral);
+        }
+    }
+}
+
 /// Import HOI4 fleet -> task_force -> ship history records from the selected OOBs.
 pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalState {
     use crate::military_data::{atom, block, layered_files};
@@ -792,6 +942,80 @@ mod tests {
         naval.process_trade(&world, &warfare, &mut shipping, &mut losses);
         assert!(losses.is_empty());
         assert_eq!(shipping.last["A"].imported["steel"], 16);
+    }
+
+    #[test]
+    fn json_saves_persist_contacts_damage_and_prior_trade_records() {
+        let mut navy = NavalState::default();
+        navy.spotting.insert((100, 1, 2), 0.8);
+        navy.last_contact_battle.insert((100, 1, 2), 48);
+        navy.loss_progress
+            .insert(("A".into(), "B".into(), "steel".into()), 0.35);
+        navy.conditions.insert(
+            (1, 0),
+            crate::naval_combat::ShipCondition {
+                organisation: 0.3,
+                critical_damage: 0.2,
+            },
+        );
+        let saved = serde_json::to_string(&navy).unwrap();
+        let loaded: NavalState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.spotting[&(100, 1, 2)], 0.8);
+        assert_eq!(loaded.last_contact_battle[&(100, 1, 2)], 48);
+        assert_eq!(
+            loaded.loss_progress[&("A".into(), "B".into(), "steel".into())],
+            0.35
+        );
+        assert_eq!(loaded.conditions[&(1, 0)].organisation, 0.3);
+        let legacy: NavalState = serde_json::from_str(
+            r#"{"admirals":{},"loss_progress":{},"spotting":{},"conditions":{}}"#,
+        )
+        .unwrap();
+        assert!(legacy.admirals.is_empty() && legacy.loss_progress.is_empty());
+    }
+
+    #[test]
+    fn navy_commanders_are_national_unique_and_survive_save() {
+        let mut navy = NavalState::default();
+        for (id, tag) in [(1, "A"), (2, "A"), (3, "B")] {
+            navy.task_forces.insert(
+                id,
+                NavalTaskForce {
+                    id,
+                    country: tag.into(),
+                    name: format!("Fleet {id}"),
+                    base: 1,
+                    mission: NavalMission::Hold,
+                    regions: BTreeSet::new(),
+                    ships: Vec::new(),
+                },
+            );
+        }
+        for tag in ["A", "B"] {
+            navy.admirals.insert(
+                (tag.into(), "Commander".into()),
+                NavalAdmiral {
+                    country: tag.into(),
+                    name: "Commander".into(),
+                    skill: 3,
+                    attack: 2,
+                    defense: 3,
+                    maneuvering: 4,
+                    coordination: 2,
+                    traits: BTreeSet::new(),
+                },
+            );
+        }
+        navy.assign_admiral("A", 1, Some("Commander")).unwrap();
+        assert!(navy.assign_admiral("A", 2, Some("Commander")).is_err());
+        assert!(navy.assign_admiral("B", 1, Some("Commander")).is_err());
+        navy.assign_admiral("B", 3, Some("Commander")).unwrap();
+        let json = serde_json::to_string(&navy).unwrap();
+        let mut restored: NavalState = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.admiral_for(1).unwrap().maneuvering, 4);
+        restored.assign_admiral("A", 1, None).unwrap();
+        restored.assign_admiral("A", 2, Some("Commander")).unwrap();
+        assert_eq!(restored.admiral_for(2).unwrap().skill, 3);
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod construction_ui;
 mod division_designer_ui;
 mod logistics;
 mod mobile_army_ui;
+mod naval_combat;
 mod naval_warfare;
 mod support_import;
 #[cfg(test)]
@@ -2230,6 +2231,14 @@ fn handle_hud_action(
                 } else {
                     "Производственная линия не найдена".into()
                 };
+            }
+        }
+        Action::NavalAssignAdmiral(id, name) => {
+            if let Some(tag) = tag {
+                hud.notice = military
+                    .naval
+                    .assign_admiral(tag, id, name.as_deref())
+                    .map_or_else(|e| e, |_| "Адмирал назначен или снят".into());
             }
         }
         Action::Save => hud.save_requested = true,
