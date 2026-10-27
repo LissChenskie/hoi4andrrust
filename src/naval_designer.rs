@@ -391,7 +391,7 @@ mod tests {
             data.construct("A", "X", "ship_hull_light_1", &blocked, &db, &mods, None)
                 .is_err()
         );
-        let mut tech = CountryResearch::default();
+        let mut tech = CountryResearch::new(1, &crate::research::ResearchRules::default());
         tech.unlocks
             .insert("enable_equipment_modules:advanced".into());
         assert_eq!(
