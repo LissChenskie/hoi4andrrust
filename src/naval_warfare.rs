@@ -106,37 +106,69 @@ pub fn is_ship_model(model: &str, catalogue: &MilitaryCatalogue) -> bool {
     catalogue.equipment.get(model).is_some_and(|e| {
         let a = e.archetype.to_ascii_lowercase();
         let id = e.id.to_ascii_lowercase();
-        ["ship_hull_", "destroyer", "submarine", "cruiser", "battleship", "battlecruiser", "carrier"]
-            .iter().any(|p| a.contains(p) || id.contains(p))
-            && !a.contains("convoy") && !id.contains("convoy")
+        [
+            "ship_hull_",
+            "destroyer",
+            "submarine",
+            "cruiser",
+            "battleship",
+            "battlecruiser",
+            "carrier",
+        ]
+        .iter()
+        .any(|p| a.contains(p) || id.contains(p))
+            && !a.contains("convoy")
+            && !id.contains("convoy")
     })
 }
 
 impl NavalState {
     pub fn add_historical(
-        &mut self, tag: &str, name: &str, base: u32, ships: Vec<NavalShip>,
-        world: &World, warfare: &Warfare,
+        &mut self,
+        tag: &str,
+        name: &str,
+        base: u32,
+        ships: Vec<NavalShip>,
+        world: &World,
+        warfare: &Warfare,
     ) -> Result<u64, String> {
         if !world.countries.contains_key(tag)
             || world.controller_of_province(base) != Some(tag)
-            || warfare.conditions.get(&base).is_none_or(|c| c.naval_base == 0)
+            || warfare
+                .conditions
+                .get(&base)
+                .is_none_or(|c| c.naval_base == 0)
             || ships.is_empty()
         {
-            return Err(format!("{tag}: invalid historical naval base or empty task force"));
+            return Err(format!(
+                "{tag}: invalid historical naval base or empty task force"
+            ));
         }
         for ship in &ships {
             if !is_ship_model(&ship.model, &warfare.catalogue)
-                || !ship.strength.is_finite() || !(0.0..=1.0).contains(&ship.strength)
+                || !ship.strength.is_finite()
+                || !(0.0..=1.0).contains(&ship.strength)
             {
-                return Err(format!("{tag}: unknown or invalid ship model {}", ship.model));
+                return Err(format!(
+                    "{tag}: unknown or invalid ship model {}",
+                    ship.model
+                ));
             }
         }
         self.next_id = self.next_id.saturating_add(1);
         let id = self.next_id;
-        self.task_forces.insert(id, NavalTaskForce {
-            id, country: tag.into(), name: name.into(), base,
-            mission: NavalMission::Hold, regions: BTreeSet::new(), ships,
-        });
+        self.task_forces.insert(
+            id,
+            NavalTaskForce {
+                id,
+                country: tag.into(),
+                name: name.into(),
+                base,
+                mission: NavalMission::Hold,
+                regions: BTreeSet::new(),
+                ships,
+            },
+        );
         Ok(id)
     }
 
@@ -151,23 +183,39 @@ impl NavalState {
     }
 
     pub fn assign_mission(
-        &mut self, tag: &str, id: u64, mission: NavalMission, region: u32,
-        world: &World, warfare: &Warfare,
+        &mut self,
+        tag: &str,
+        id: u64,
+        mission: NavalMission,
+        region: u32,
+        world: &World,
+        warfare: &Warfare,
     ) -> Result<(), String> {
         let force = self.task_forces.get(&id).ok_or("Флот не найден")?;
         if force.country != tag {
             return Err("Невозможно командовать чужим флотом".into());
         }
         if world.controller_of_province(force.base) != Some(tag)
-            || warfare.conditions.get(&force.base).is_none_or(|b| b.naval_base == 0)
+            || warfare
+                .conditions
+                .get(&force.base)
+                .is_none_or(|b| b.naval_base == 0)
         {
             return Err("Морская база недоступна".into());
         }
         if mission != NavalMission::Hold {
-            let sea = warfare.air.regions.get(&region).ok_or("Неизвестный морской регион")?;
-            if !sea.iter().any(|p| world.geography.provinces.get(p).is_some_and(|g|
-                g.definition.kind == crate::map_graph::ProvinceKind::Sea))
-            {
+            let sea = warfare
+                .air
+                .regions
+                .get(&region)
+                .ok_or("Неизвестный морской регион")?;
+            if !sea.iter().any(|p| {
+                world
+                    .geography
+                    .provinces
+                    .get(p)
+                    .is_some_and(|g| g.definition.kind == crate::map_graph::ProvinceKind::Sea)
+            }) {
                 return Err("Регион не содержит моря".into());
             }
         }
@@ -182,23 +230,32 @@ impl NavalState {
     }
 
     fn strength_in(
-        &self, w: &Warfare, ship_country: &str, mission: NavalMission, region: u32,
+        &self,
+        w: &Warfare,
+        ship_country: &str,
+        mission: NavalMission,
+        region: u32,
     ) -> f64 {
-        self.task_forces.values()
-            .filter(|f| f.country == ship_country && f.mission == mission
-                && f.regions.contains(&region))
+        self.task_forces
+            .values()
+            .filter(|f| {
+                f.country == ship_country && f.mission == mission && f.regions.contains(&region)
+            })
             .flat_map(|f| f.ships.iter())
             .filter_map(|s| {
                 let e = w.catalogue.equipment.get(&s.model)?;
                 let stat = match mission {
-                    NavalMission::ConvoyRaiding => e.stats.get("torpedo_attack")
-                        .copied().unwrap_or(0.0)
-                        + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.1,
-                    NavalMission::ConvoyEscort => e.stats.get("sub_detection")
-                        .copied().unwrap_or(0.0)
-                        + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.3,
-                    NavalMission::Patrol | NavalMission::StrikeForce => e.stats.get("surface_detection")
-                        .copied().unwrap_or(0.0),
+                    NavalMission::ConvoyRaiding => {
+                        e.stats.get("torpedo_attack").copied().unwrap_or(0.0)
+                            + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.1
+                    }
+                    NavalMission::ConvoyEscort => {
+                        e.stats.get("sub_detection").copied().unwrap_or(0.0)
+                            + e.stats.get("surface_detection").copied().unwrap_or(0.0) * 0.3
+                    }
+                    NavalMission::Patrol | NavalMission::StrikeForce => {
+                        e.stats.get("surface_detection").copied().unwrap_or(0.0)
+                    }
                     NavalMission::Hold => 0.0,
                 };
                 Some(stat.max(0.0) * s.strength.clamp(0.0, 1.0))
@@ -216,47 +273,93 @@ impl NavalState {
         convoy_losses: &mut BTreeMap<String, u64>,
     ) {
         self.last_events.clear();
-        let all_sea_regions: BTreeMap<u32, Vec<u32>> = warfare.air.regions.iter()
-            .map(|(&region, provinces)| (region, provinces.iter().copied()
-                .filter(|id| world.geography.provinces.get(id).is_some_and(|p|
-                    p.definition.kind == crate::map_graph::ProvinceKind::Sea)).collect()))
+        let all_sea_regions: BTreeMap<u32, Vec<u32>> = warfare
+            .air
+            .regions
+            .iter()
+            .map(|(&region, provinces)| {
+                (
+                    region,
+                    provinces
+                        .iter()
+                        .copied()
+                        .filter(|id| {
+                            world.geography.provinces.get(id).is_some_and(|p| {
+                                p.definition.kind == crate::map_graph::ProvinceKind::Sea
+                            })
+                        })
+                        .collect(),
+                )
+            })
             .collect();
-        let mut remaining_convoys: BTreeMap<String, u64> = warfare.logistics.countries.iter()
-            .map(|(tag,c)| (tag.clone(), c.convoys)).collect();
+        let mut remaining_convoys: BTreeMap<String, u64> = warfare
+            .logistics
+            .countries
+            .iter()
+            .map(|(tag, c)| (tag.clone(), c.convoys))
+            .collect();
         for shipment in &mut shipping.last_shipments {
             let crate::trade_routes::TradeRoute::Sea { sea_provinces, .. } = &shipment.route else {
                 continue;
             };
-            if shipment.assigned_convoys == 0 || shipment.delivered == 0 { continue; }
-            let crossed = all_sea_regions.iter().filter_map(|(&r, ps)| {
-                if ps.iter().any(|p| sea_provinces.contains(p)) {Some(r)} else {None}
-            }).collect::<Vec<_>>();
+            if shipment.assigned_convoys == 0 || shipment.delivered == 0 {
+                continue;
+            }
+            let crossed = all_sea_regions
+                .iter()
+                .filter_map(|(&r, ps)| {
+                    if ps.iter().any(|p| sea_provinces.contains(p)) {
+                        Some(r)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
             let mut strongest: Option<(f64, u32, String)> = None;
             for region in crossed {
                 for raider in warfare.countries.keys() {
-                    if !warfare.at_war(raider, &shipment.buyer) { continue; }
-                    let strike = self.strength_in(warfare, raider,
-                        NavalMission::ConvoyRaiding, region);
-                    if strike <= 0.0 { continue; }
-                    let escort = self.strength_in(warfare, &shipment.buyer,
-                        NavalMission::ConvoyEscort, region);
+                    if !warfare.at_war(raider, &shipment.buyer) {
+                        continue;
+                    }
+                    let strike =
+                        self.strength_in(warfare, raider, NavalMission::ConvoyRaiding, region);
+                    if strike <= 0.0 {
+                        continue;
+                    }
+                    let escort = self.strength_in(
+                        warfare,
+                        &shipment.buyer,
+                        NavalMission::ConvoyEscort,
+                        region,
+                    );
                     // Detected raiders are increasingly ineffective against
                     // covered cargo; rates are versioned, currently provisional.
                     let exposure = (strike * self.rules.raid_exposure
-                        / (1.0 + escort * self.rules.escort_coverage)).clamp(0.0,
-                            self.rules.daily_loss_cap);
+                        / (1.0 + escort * self.rules.escort_coverage))
+                        .clamp(0.0, self.rules.daily_loss_cap);
                     if strongest.as_ref().is_none_or(|(best, ..)| exposure > *best) {
                         strongest = Some((exposure, region, raider.clone()));
                     }
                 }
             }
-            let Some((rate, region, raider_country)) = strongest else { continue; };
-            let key = (shipment.buyer.clone(), shipment.seller.clone(), shipment.resource.clone());
+            let Some((rate, region, raider_country)) = strongest else {
+                continue;
+            };
+            let key = (
+                shipment.buyer.clone(),
+                shipment.seller.clone(),
+                shipment.resource.clone(),
+            );
             let debt = self.loss_progress.entry(key).or_default();
             *debt += rate * shipment.assigned_convoys as f64;
-            let losses = (*debt).floor().max(0.0).min(shipment.assigned_convoys as f64) as u64;
+            let losses = (*debt)
+                .floor()
+                .max(0.0)
+                .min(shipment.assigned_convoys as f64) as u64;
             *debt -= losses as f64;
-            if losses == 0 { continue; }
+            if losses == 0 {
+                continue;
+            }
             let budget = remaining_convoys.entry(shipment.buyer.clone()).or_default();
             let losses = losses.min(*budget);
             *budget -= losses;
@@ -266,7 +369,9 @@ impl NavalState {
             shipment.delivered = if shipment.required_convoys > 0 {
                 (u64::from(shipment.contracted) * shipment.assigned_convoys
                     / shipment.required_convoys) as u32
-            } else { initial };
+            } else {
+                initial
+            };
             shipment.delivered = shipment.delivered.min(initial);
             let undelivered = initial - shipment.delivered;
             if let Some(report) = shipping.last.get_mut(&shipment.buyer) {
@@ -279,60 +384,85 @@ impl NavalState {
                 report.trade_convoys_used = report.trade_convoys_used.saturating_sub(losses);
             }
             self.last_events.push(ConvoyEvent {
-                buyer: shipment.buyer.clone(), seller: shipment.seller.clone(),
-                resource: shipment.resource.clone(), convoy_losses: losses,
-                delivered_after: shipment.delivered, region, raider_country,
+                buyer: shipment.buyer.clone(),
+                seller: shipment.seller.clone(),
+                resource: shipment.resource.clone(),
+                convoy_losses: losses,
+                delivered_after: shipment.delivered,
+                region,
+                raider_country,
             });
         }
     }
 }
 
 /// Import HOI4 fleet -> task_force -> ship history records from the selected OOBs.
-pub fn import_naval_oob(
-    root: &Path, world: &World, warfare: &Warfare,
-) -> NavalState {
+pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalState {
     use crate::military_data::{atom, block, layered_files};
-    let files = layered_files(&crate::military_data::data_layers(root),
-        "history/units", false, "txt");
+    let files = layered_files(
+        &crate::military_data::data_layers(root),
+        "history/units",
+        false,
+        "txt",
+    );
     let mut out = NavalState::default();
     for (tag, army) in &warfare.countries {
         for oob in &army.history_oobs {
-            let Some(path) = files.iter().find(|p|
-                p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str())) else { continue; };
-            let Ok(source) = std::fs::read_to_string(path) else { continue; };
+            let Some(path) = files
+                .iter()
+                .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str()))
+            else {
+                continue;
+            };
+            let Ok(source) = std::fs::read_to_string(path) else {
+                continue;
+            };
             let Ok(root) = crate::pdx::parse_pdx_compatible(&source) else {
-                out.diagnostics.push(format!("{tag}: unparseable naval OOB {oob}"));
+                out.diagnostics
+                    .push(format!("{tag}: unparseable naval OOB {oob}"));
                 continue;
             };
             for unit in root.entries.iter().filter(|e| e.key == "units") {
-                for fleet in unit.block().unwrap_or(&[]).iter().filter(|e| e.key == "fleet") {
+                for fleet in unit
+                    .block()
+                    .unwrap_or(&[])
+                    .iter()
+                    .filter(|e| e.key == "fleet")
+                {
                     let f = fleet.block().unwrap_or(&[]);
                     let fleet_base = atom(f, "naval_base").and_then(|v| v.parse::<u32>().ok());
                     for task in f.iter().filter(|e| e.key == "task_force") {
                         let t = task.block().unwrap_or(&[]);
-                        let base = atom(t, "location").and_then(|v| v.parse::<u32>().ok())
+                        let base = atom(t, "location")
+                            .and_then(|v| v.parse::<u32>().ok())
                             .or(fleet_base);
                         let Some(base) = base else {
-                            out.diagnostics.push(format!("{tag}: {oob}: naval task force missing base"));
+                            out.diagnostics
+                                .push(format!("{tag}: {oob}: naval task force missing base"));
                             continue;
                         };
                         let mut ships = Vec::new();
                         for record in t.iter().filter(|e| e.key == "ship") {
                             let b = record.block().unwrap_or(&[]);
-                            let Some(ship_data) = block(b, "equipment").and_then(|e| e.first()) else {
-                                out.diagnostics.push(format!("{tag}: ship missing equipment"));
+                            let Some(ship_data) = block(b, "equipment").and_then(|e| e.first())
+                            else {
+                                out.diagnostics
+                                    .push(format!("{tag}: ship missing equipment"));
                                 continue;
                             };
                             let model = ship_data.key.as_str();
                             let e = ship_data.block().unwrap_or(&[]);
-                            let amount = atom(e, "amount").and_then(|s| s.parse::<u32>().ok())
+                            let amount = atom(e, "amount")
+                                .and_then(|s| s.parse::<u32>().ok())
                                 .unwrap_or(1);
                             if amount != 1 {
-                                out.diagnostics.push(format!("{tag}: {model}: ship amount must be 1"));
+                                out.diagnostics
+                                    .push(format!("{tag}: {model}: ship amount must be 1"));
                                 continue;
                             }
                             if !is_ship_model(model, &warfare.catalogue) {
-                                out.diagnostics.push(format!("{tag}: unsupported ship model {model}"));
+                                out.diagnostics
+                                    .push(format!("{tag}: unsupported ship model {model}"));
                                 continue;
                             }
                             ships.push(NavalShip {
@@ -343,8 +473,12 @@ pub fn import_naval_oob(
                                 strength: 1.0,
                             });
                         }
-                        if ships.is_empty() { continue; }
-                        let name = atom(t, "name").or_else(|| atom(f, "name")).unwrap_or("Task Force");
+                        if ships.is_empty() {
+                            continue;
+                        }
+                        let name = atom(t, "name")
+                            .or_else(|| atom(f, "name"))
+                            .unwrap_or("Task Force");
                         if let Err(e) = out.add_historical(tag, name, base, ships, world, warfare) {
                             out.diagnostics.push(e);
                         }
@@ -362,21 +496,42 @@ mod tests {
     #[test]
     fn missions_cycle_through_actual_naval_commands() {
         let mut m = NavalMission::Hold;
-        for _ in 0..5 { m = m.next(); }
+        for _ in 0..5 {
+            m = m.next();
+        }
         assert_eq!(m, NavalMission::Hold);
     }
     #[test]
     fn naval_building_rejects_unresearched_hulls() {
         use crate::military_model::EquipmentDefinition;
         let mut cat = MilitaryCatalogue::default();
-        cat.equipment.insert("ship_hull_light_2".into(), EquipmentDefinition {
-            id: "ship_hull_light_2".into(), archetype: "ship_hull_light".into(), year: 1940,
-            active: false, buildable: true, stats: BTreeMap::new(), cost: 600.0,
-            modular: false, source: "test".into(),
-        });
+        cat.equipment.insert(
+            "ship_hull_light_2".into(),
+            EquipmentDefinition {
+                id: "ship_hull_light_2".into(),
+                archetype: "ship_hull_light".into(),
+                year: 1940,
+                active: false,
+                buildable: true,
+                stats: BTreeMap::new(),
+                cost: 600.0,
+                modular: false,
+                source: "test".into(),
+            },
+        );
         let mut modifiers = MilitaryModifiers::default();
-        assert!(!NavalState::can_build_ship(&cat, "ship_hull_light_2", &modifiers));
-        modifiers.unlocked_equipment.insert("ship_hull_light_2".into());
-        assert!(NavalState::can_build_ship(&cat, "ship_hull_light_2", &modifiers));
+        assert!(!NavalState::can_build_ship(
+            &cat,
+            "ship_hull_light_2",
+            &modifiers
+        ));
+        modifiers
+            .unlocked_equipment
+            .insert("ship_hull_light_2".into());
+        assert!(NavalState::can_build_ship(
+            &cat,
+            "ship_hull_light_2",
+            &modifiers
+        ));
     }
 }
