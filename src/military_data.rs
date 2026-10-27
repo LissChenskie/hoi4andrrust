@@ -649,6 +649,8 @@ pub fn load(root: &Path) -> MilitaryCatalogue {
         }
     }
     db.equipment = resolved;
+    db.naval_designer = crate::naval_designer::import_from_layers(root);
+    db.diagnostics.extend(db.naval_designer.diagnostics.iter().cloned());
     // Equipment inherits resource costs unless its own resources block overrides
     // them. Unknown or modular variant costs remain explicit unverified data.
     fn inherited_resources(
