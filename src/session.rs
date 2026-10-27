@@ -244,6 +244,20 @@ impl GameSession {
             &mut self.production,
             self.clock.date,
         );
+        // Naval OOBs use the same selected historical bookmarks as the land
+        // and air forces. Hull types are never manufactured as placeholders.
+        self.military.naval =
+            crate::naval_warfare::import_naval_oob(root, &self.world, &self.military);
+        if let Some(speed) = self
+            .military
+            .catalogue
+            .literal_defines
+            .get("NDefines.NProduction.BASE_FACTORY_SPEED_DOCKYARD")
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.0)
+        {
+            self.military.naval.rules.dockyard_output = speed;
+        }
         // Starting motorized hubs must claim vehicles from historical stockpiles.
         self.military.logistics.reserve_trucks(
             &mut self.production,
@@ -328,6 +342,24 @@ impl GameSession {
             .collect();
         self.resources
             .settle_with_transport(&mut self.world, &policies, &self.military);
+        // The fleet's abstract campaign-level convoy encounters run after
+        // routes are calculated and before the day's resources are consumed.
+        // Take the naval state out so route/war/country data stay read-only.
+        let mut navy = std::mem::take(&mut self.military.naval);
+        let mut losses = BTreeMap::new();
+        navy.process_trade(
+            &self.world,
+            &self.military,
+            &mut self.resources,
+            &mut losses,
+        );
+        self.military.naval = navy;
+        for (tag, sunk) in losses {
+            if let Some(country) = self.military.logistics.countries.get_mut(&tag) {
+                country.convoys = country.convoys.saturating_sub(sunk);
+                self.military.logistics.network_key = None;
+            }
+        }
         // The naval supply network uses the convoys not reserved for commerce.
         for tag in &tags {
             let committed = self
@@ -382,6 +414,18 @@ impl GameSession {
                     &self.military.catalogue.equipment_resources,
                     &mut pool,
                 );
+                // Dockyards spend the same daily resources as other lines;
+                // no mineral can be counted twice across industrial sectors.
+                let mut navy = std::mem::take(&mut self.military.naval);
+                navy.tick_shipbuilding(
+                    tag,
+                    economy.dockyards,
+                    &self.world,
+                    &self.military,
+                    &mut pool,
+                    effective.resource_lack_penalty,
+                );
+                self.military.naval = navy;
             }
         }
         self.military.replenish(&mut self.production);

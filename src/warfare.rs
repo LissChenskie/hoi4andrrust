@@ -25,6 +25,8 @@ pub struct ProvinceConditions {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
     #[serde(default)]
+    pub naval: crate::naval_warfare::NavalState,
+    #[serde(default)]
     pub logistics: crate::logistics::LogisticsState,
     #[serde(default)]
     pub air: crate::air_warfare::AirState,
@@ -68,6 +70,7 @@ impl Warfare {
     pub fn new(catalogue: MilitaryCatalogue) -> Self {
         let diagnostics = catalogue.diagnostics.clone();
         Self {
+            naval: Default::default(),
             logistics: Default::default(),
             air: Default::default(),
             command: Default::default(),
