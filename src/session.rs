@@ -248,6 +248,12 @@ impl GameSession {
         // and air forces. Hull types are never manufactured as placeholders.
         self.military.naval =
             crate::naval_warfare::import_naval_oob(root, &self.world, &self.military);
+        if let Some(speed) = self.military.catalogue.literal_defines
+            .get("NDefines.NProduction.BASE_FACTORY_SPEED_DOCKYARD")
+            .copied().filter(|v| v.is_finite() && *v > 0.0)
+        {
+            self.military.naval.rules.dockyard_output = speed;
+        }
         // Starting motorized hubs must claim vehicles from historical stockpiles.
         self.military.logistics.reserve_trucks(
             &mut self.production,
@@ -404,6 +410,14 @@ impl GameSession {
                     &self.military.catalogue.equipment_resources,
                     &mut pool,
                 );
+                // Dockyards spend the same daily resources as other lines;
+                // no mineral can be counted twice across industrial sectors.
+                let mut navy = std::mem::take(&mut self.military.naval);
+                navy.tick_shipbuilding(
+                    tag, economy.dockyards, &self.world,
+                    &self.military, &mut pool, effective.resource_lack_penalty,
+                );
+                self.military.naval = navy;
             }
         }
         self.military.replenish(&mut self.production);
