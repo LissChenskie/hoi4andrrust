@@ -1173,7 +1173,7 @@ pub fn draw_panel(
             r.bottom() - 8.0,
             &mut actions,
         ),
-        Panel::Trade => trade(h, world, tag, resources, x, y, width, r.bottom() - 8.0),
+        Panel::Trade => trade(h, world, tag, w, resources, x, y, width, r.bottom() - 8.0),
         Panel::Logistics => logistics(h, tag, w, prod, x, y, width, r.bottom() - 8.0),
         Panel::Focus => focus(h, x, y, width, r.bottom() - 8.0),
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
@@ -1495,6 +1495,7 @@ fn trade(
     h: &mut Hud,
     world: &World,
     tag: &str,
+    warfare: &Warfare,
     market: &mut ResourceEconomy,
     x: f32,
     y: f32,
@@ -1563,6 +1564,21 @@ fn trade(
         ui::GOLD,
     );
     yy += 27.0;
+    if yy + 29.0 > bottom {
+        return;
+    }
+    let total_convoys = warfare.logistics.countries.get(tag).map_or(0, |c| c.convoys);
+    let used_convoys = report.map_or(0, |r| r.trade_convoys_used);
+    let disrupted = market.last_shipments.iter()
+        .filter(|s| s.buyer == tag && s.delivered < s.contracted)
+        .count();
+    ui::label(
+        &format!("Торговые конвои: {used_convoys}/{total_convoys}   Неполные поставки: {disrupted}"),
+        Rect::new(x, yy + 2.0, width, 23.0),
+        12.0,
+        if disrupted > 0 { ui::GOLD } else { ui::TEXT },
+    );
+    yy += 29.0;
     if ui::small_button(
         &format!("Закон: {law_text}   [сменить]"),
         Rect::new(x, yy, width, 29.0),
