@@ -257,11 +257,22 @@ mod tests {
         let mut world = world();
         let mut market = ResourceEconomy::default();
         market.laws.insert("A".into(), TradeLaw::FreeTrade);
-        market.set_deal(&world, TradeDeal {
-            buyer: "B".into(), seller: "A".into(), resource: "steel".into(), factories: 1
-        }).unwrap();
-        market.settle_with_wars(&mut world, &BTreeMap::new(),
-            &std::collections::BTreeSet::from([("A".into(), "B".into())]));
+        market
+            .set_deal(
+                &world,
+                TradeDeal {
+                    buyer: "B".into(),
+                    seller: "A".into(),
+                    resource: "steel".into(),
+                    factories: 1,
+                },
+            )
+            .unwrap();
+        market.settle_with_wars(
+            &mut world,
+            &BTreeMap::new(),
+            &std::collections::BTreeSet::from([("A".into(), "B".into())]),
+        );
         assert_eq!(market.last["B"].factories_spent, 0);
         assert!(world.trade_factory_income.is_empty());
         market.settle(&mut world, &BTreeMap::new());
