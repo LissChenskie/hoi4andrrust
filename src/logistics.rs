@@ -85,6 +85,9 @@ pub struct CountryLogistics {
     /// the daily trade market. None retains legacy support-import profiles.
     pub oil_supply_daily: Option<f64>,
     pub convoys: u64,
+    /// Reserved by international trade. These hulls cannot simultaneously
+    /// serve overseas military supply.
+    pub trade_convoys_committed: u64,
     pub trucks: u64,
     pub truck_models: BTreeMap<String, u64>,
     pub fuel_used_last_hour: f64,
@@ -223,6 +226,15 @@ fn reachable(w: &Warfare, world: &World, tag: &str, start: u32, hops: u32) -> BT
     seen
 }
 impl LogisticsState {
+    /// Shared physical convoy pool; free hulls remain for supply shipping.
+    pub fn set_trade_convoys(&mut self, tag: &str, committed: u64) {
+        let c = self.countries.entry(tag.to_owned()).or_default();
+        let actual = committed.min(c.convoys);
+        if c.trade_convoys_committed != actual {
+            c.trade_convoys_committed = actual;
+            self.network_key = None;
+        }
+    }
     /// A motorized hub owns reserved trucks; production stocks cannot be reused
     /// for divisions while those vehicles are assigned to logistics.
     pub fn reserve_trucks(
@@ -455,7 +467,8 @@ impl LogisticsState {
                 flow.add(
                     a,
                     b,
-                    country.convoys as f64 * self.rules.supply_per_convoy / count,
+                    country.convoys.saturating_sub(country.trade_convoys_committed) as f64
+                        * self.rules.supply_per_convoy / count,
                 );
                 for &p in ps {
                     let cap =
