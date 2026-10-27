@@ -216,6 +216,9 @@ pub struct MilitaryCatalogue {
     pub localisation: BTreeMap<String, String>,
     pub units: BTreeMap<String, BattalionDefinition>,
     pub equipment: BTreeMap<String, EquipmentDefinition>,
+    /// Raw data-driven hull slots and replaceable equipment modules.
+    #[serde(default)]
+    pub naval_designer: crate::naval_designer::NavalDesignerCatalogue,
     /// Imported per-factory material demand for each concrete equipment model.
     #[serde(default)]
     pub equipment_resources: BTreeMap<String, BTreeMap<String, u32>>,
