@@ -335,6 +335,19 @@ impl GameSession {
             .collect();
         self.resources
             .settle_with_transport(&mut self.world, &policies, &self.military);
+        // The fleet's abstract campaign-level convoy encounters run after
+        // routes are calculated and before the day's resources are consumed.
+        // Take the naval state out so route/war/country data stay read-only.
+        let mut navy = std::mem::take(&mut self.military.naval);
+        let mut losses = BTreeMap::new();
+        navy.process_trade(&self.world, &self.military, &mut self.resources, &mut losses);
+        self.military.naval = navy;
+        for (tag, sunk) in losses {
+            if let Some(country) = self.military.logistics.countries.get_mut(&tag) {
+                country.convoys = country.convoys.saturating_sub(sunk);
+                self.military.logistics.network_key = None;
+            }
+        }
         // The naval supply network uses the convoys not reserved for commerce.
         for tag in &tags {
             let committed = self
