@@ -162,6 +162,9 @@ pub struct NavalState {
     /// On-deck squadrons, keyed by task force and ship index.
     #[serde(default, with = "save_pairs")]
     pub carrier_wings: BTreeMap<(u64, usize), Vec<crate::naval_carrier::CarrierAirGroup>>,
+    /// 2025 carrier offensive/defensive sortie allocation, per task force.
+    #[serde(default)]
+    pub carrier_stances: BTreeMap<u64, crate::naval_carrier::CarrierStance>,
     pub rules: NavalRules,
     /// Fractional expected losses carried forward to preserve determinism.
     #[serde(default, with = "save_pairs")]
