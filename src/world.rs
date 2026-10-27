@@ -58,6 +58,9 @@ impl PartialEq for StateControlCache {
 pub struct World {
     pub countries: BTreeMap<String, Country>,
     pub states: BTreeMap<u32, State>,
+    /// Non-stockpiled daily deposits, keyed by state then game-defined resource ID.
+    #[serde(default)]
+    pub resources_by_state: BTreeMap<u32, BTreeMap<String, u32>>,
     pub provinces: BTreeMap<u32, Province>,
     #[serde(skip)]
     pub geography: crate::map_graph::MapGraph,
