@@ -1992,6 +1992,7 @@ fn naval_carrier_view(
     }
     h.naval_carrier_index %= carriers.len();
     let (id, index, capacity) = carriers[h.naval_carrier_index];
+    let ship = &w.naval.task_forces[&id].ships[index];
     let arrow = 38.0_f32.min(width / 5.0);
     if ui::small_button("◀", Rect::new(x, y, arrow, 27.0), false) {
         h.naval_carrier_index = (h.naval_carrier_index + carriers.len() - 1) % carriers.len();
