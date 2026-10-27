@@ -248,9 +248,13 @@ impl GameSession {
         // and air forces. Hull types are never manufactured as placeholders.
         self.military.naval =
             crate::naval_warfare::import_naval_oob(root, &self.world, &self.military);
-        if let Some(speed) = self.military.catalogue.literal_defines
+        if let Some(speed) = self
+            .military
+            .catalogue
+            .literal_defines
             .get("NDefines.NProduction.BASE_FACTORY_SPEED_DOCKYARD")
-            .copied().filter(|v| v.is_finite() && *v > 0.0)
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.0)
         {
             self.military.naval.rules.dockyard_output = speed;
         }
@@ -414,8 +418,12 @@ impl GameSession {
                 // no mineral can be counted twice across industrial sectors.
                 let mut navy = std::mem::take(&mut self.military.naval);
                 navy.tick_shipbuilding(
-                    tag, economy.dockyards, &self.world,
-                    &self.military, &mut pool, effective.resource_lack_penalty,
+                    tag,
+                    economy.dockyards,
+                    &self.world,
+                    &self.military,
+                    &mut pool,
+                    effective.resource_lack_penalty,
                 );
                 self.military.naval = navy;
             }
