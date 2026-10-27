@@ -178,8 +178,12 @@ impl World {
             totals.rocket_sites += u32::from(state.economy.rocket_sites);
             totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
         }
-        totals.civilian_factories = totals.civilian_factories
-            .saturating_add(self.trade_factory_income.get(country_tag).copied().unwrap_or(0));
+        totals.civilian_factories = totals.civilian_factories.saturating_add(
+            self.trade_factory_income
+                .get(country_tag)
+                .copied()
+                .unwrap_or(0),
+        );
         Some(totals)
     }
 
