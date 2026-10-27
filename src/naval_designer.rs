@@ -214,7 +214,11 @@ impl NavalDesignerCatalogue {
                 *value = value.max(0.);
             }
         }
-        let cost = values.get("build_cost_ic").copied().unwrap_or(def.cost).max(0.1);
+        let cost = values
+            .get("build_cost_ic")
+            .copied()
+            .unwrap_or(def.cost)
+            .max(0.1);
         if !cost.is_finite() {
             return Err("Неверная стоимость проекта".into());
         }
@@ -506,14 +510,20 @@ mod tests {
                     ("reliability".into(), -1.),
                 ]),
                 slots: BTreeMap::from([
-                    ("fixed_engine".into(), NavalSlot {
-                        required: true,
-                        categories: BTreeSet::from(["engine".into()]),
-                    }),
-                    ("custom_engine".into(), NavalSlot {
-                        required: true,
-                        categories: BTreeSet::from(["engine".into()]),
-                    }),
+                    (
+                        "fixed_engine".into(),
+                        NavalSlot {
+                            required: true,
+                            categories: BTreeSet::from(["engine".into()]),
+                        },
+                    ),
+                    (
+                        "custom_engine".into(),
+                        NavalSlot {
+                            required: true,
+                            categories: BTreeSet::from(["engine".into()]),
+                        },
+                    ),
                 ]),
                 ..Default::default()
             },
@@ -540,14 +550,20 @@ mod tests {
             },
         );
         let mods = MilitaryModifiers::default();
-        let variant = data.construct(
-            "A", "average", "ship_hull_light_1",
-            &BTreeMap::from([
-                ("fixed_engine".into(), "a".into()),
-                ("custom_engine".into(), "b".into()),
-            ]),
-            &fixture_equipment(), &mods, None,
-        ).unwrap();
+        let variant = data
+            .construct(
+                "A",
+                "average",
+                "ship_hull_light_1",
+                &BTreeMap::from([
+                    ("fixed_engine".into(), "a".into()),
+                    ("custom_engine".into(), "b".into()),
+                ]),
+                &fixture_equipment(),
+                &mods,
+                None,
+            )
+            .unwrap();
         // (100 + 20) * (1 + 0.1 + 0.1) = 144, not compounded 145.2.
         assert!((variant.cost - 144.).abs() < 1e-8);
         // Declared zero counts towards the average.
@@ -563,61 +579,95 @@ mod tests {
             NavalHull {
                 base_stats: StatBlock::from([("build_cost_ic".into(), 100.)]),
                 slots: BTreeMap::from([
-                    ("engine".into(), NavalSlot {
-                        required: true, categories: BTreeSet::from(["engine".into()]),
-                    }),
-                    ("armor".into(), NavalSlot {
-                        required: true, categories: BTreeSet::from(["armor".into()]),
-                    }),
+                    (
+                        "engine".into(),
+                        NavalSlot {
+                            required: true,
+                            categories: BTreeSet::from(["engine".into()]),
+                        },
+                    ),
+                    (
+                        "armor".into(),
+                        NavalSlot {
+                            required: true,
+                            categories: BTreeSet::from(["armor".into()]),
+                        },
+                    ),
                 ]),
                 ..Default::default()
             },
         );
-        data.modules.insert("main_engine".into(), NavalModule {
-            category: "engine".into(),
-            active: true,
-            forbidden_categories: BTreeSet::from(["armor".into()]),
-            ..Default::default()
-        });
-        data.modules.insert("armor".into(), NavalModule {
-            category: "armor".into(),
-            active: true,
-            ..Default::default()
-        });
-        let error = data.construct(
-            "A", "forbidden", "ship_hull_light_1",
-            &BTreeMap::from([
-                ("engine".into(), "main_engine".into()),
-                ("armor".into(), "armor".into()),
-            ]),
-            &fixture_equipment(), &MilitaryModifiers::default(), None,
-        ).unwrap_err();
+        data.modules.insert(
+            "main_engine".into(),
+            NavalModule {
+                category: "engine".into(),
+                active: true,
+                forbidden_categories: BTreeSet::from(["armor".into()]),
+                ..Default::default()
+            },
+        );
+        data.modules.insert(
+            "armor".into(),
+            NavalModule {
+                category: "armor".into(),
+                active: true,
+                ..Default::default()
+            },
+        );
+        let error = data
+            .construct(
+                "A",
+                "forbidden",
+                "ship_hull_light_1",
+                &BTreeMap::from([
+                    ("engine".into(), "main_engine".into()),
+                    ("armor".into(), "armor".into()),
+                ]),
+                &fixture_equipment(),
+                &MilitaryModifiers::default(),
+                None,
+            )
+            .unwrap_err();
         assert!(error.contains("конфликтует"), "{error}");
     }
 
     #[test]
     fn slot_aliases_resolve_inherited_and_forward_references() {
         let mut data = NavalDesignerCatalogue::default();
-        data.hulls.insert("ship_hull_light".into(), NavalHull {
-            slots: BTreeMap::from([("parent_slot".into(), NavalSlot {
-                required: true,
-                categories: BTreeSet::from(["engine".into()]),
-            })]),
-            ..Default::default()
-        });
-        data.hulls.insert("ship_hull_light_1".into(), NavalHull {
-            parent: Some("ship_hull_light".into()),
-            slot_aliases: BTreeMap::from([
-                ("first".into(), "second".into()),
-                ("second".into(), "parent_slot".into()),
-            ]),
-            ..Default::default()
-        });
+        data.hulls.insert(
+            "ship_hull_light".into(),
+            NavalHull {
+                slots: BTreeMap::from([(
+                    "parent_slot".into(),
+                    NavalSlot {
+                        required: true,
+                        categories: BTreeSet::from(["engine".into()]),
+                    },
+                )]),
+                ..Default::default()
+            },
+        );
+        data.hulls.insert(
+            "ship_hull_light_1".into(),
+            NavalHull {
+                parent: Some("ship_hull_light".into()),
+                slot_aliases: BTreeMap::from([
+                    ("first".into(), "second".into()),
+                    ("second".into(), "parent_slot".into()),
+                ]),
+                ..Default::default()
+            },
+        );
         let resolved = data.hull("ship_hull_light_1").unwrap();
         assert!(resolved.slots["first"].required);
-        assert_eq!(resolved.slots["first"].categories,
-                   BTreeSet::from(["engine".to_owned()]));
-        data.hulls.get_mut("ship_hull_light_1").unwrap().slot_aliases
+        assert_eq!(
+            resolved.slots["first"].categories,
+            BTreeSet::from(["engine".to_owned()])
+        );
+        data.hulls
+            .get_mut("ship_hull_light_1")
+            .unwrap()
+            .slot_aliases
             .insert("second".into(), "unknown_slot".into());
         assert!(data.hull("ship_hull_light_1").is_err());
     }
