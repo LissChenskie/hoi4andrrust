@@ -332,7 +332,14 @@ mod tests {
     use crate::military_model::{CountryArmy, EquipmentDefinition, MilitaryCatalogue};
     use crate::naval_warfare::{NavalMission, NavalShip, NavalTaskForce};
     use crate::warfare::ProvinceConditions;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    fn test_world() -> World {
+        World::from_map_data(
+            &HashMap::from([(1, 1)]),
+            &HashMap::from([(1, "A".to_owned())]),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+        )
+    }
     fn fixture() -> (Warfare, NavalState) {
         let mut catalogue = MilitaryCatalogue::default();
         for (id, arch, stats) in [
@@ -375,6 +382,10 @@ mod tests {
                 },
             );
         }
+        // Explicit full-sortie fixture: separate tests check lower rates.
+        catalogue.literal_defines.insert(
+            "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 1.0,
+        );
         let mut w = Warfare::new(catalogue);
         w.countries.insert("A".into(), CountryArmy::default());
         w.countries.insert("B".into(), CountryArmy::default());
@@ -447,17 +458,71 @@ mod tests {
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
     }
     #[test]
+    fn imported_air_defines_override_the_old_nonexistent_names() {
+        let (mut w, mut navy) = fixture();
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines.insert(
+                "NDefines.NAir.CARRIER_HOURS_DELAY_AFTER_EACH_COMBAT".into(), 6.0,
+            );
+            cat.literal_defines.insert(
+                "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05,
+            );
+            cat.literal_defines.insert(
+                "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4,
+            );
+        }
+        let (delay, portion, damage) = carrier_air_parameters(&w);
+        assert_eq!(delay, 6);
+        assert_eq!(portion, 0.4);
+        assert_eq!(damage, 0.05);
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w).unwrap();
+        navy.carrier_wings.get_mut(&(1, 0)).unwrap()[0].planes = 10;
+        let strikes = navy.carrier_air_strike(1, 2, &w, 6);
+        assert_eq!(strikes[0].aircraft_launched, 4);
+        assert_eq!(navy.carrier_air_strike(1, 2, &w, 11).len(), 0);
+        assert_eq!(navy.carrier_air_strike(1, 2, &w, 12).len(), 1);
+    }
+
+    #[test]
+    fn occupied_port_cannot_refill_and_sunk_carrier_cannot_keep_aircraft() {
+        let (w, mut navy) = fixture();
+        let mut world = test_world();
+        navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 6, &w).unwrap();
+        let mut prod = ProductionState::default();
+        prod.country_mut("A").model_stockpile.insert("cv_nav_bomber_1".into(), 6);
+        assert!(world.set_province_controller(1, Some("B")));
+        navy.replenish_carriers(&world, &w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
+        assert_eq!(prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"], 6);
+        assert!(world.set_province_controller(1, Some("A")));
+        navy.replenish_carriers(&world, &w, &mut prod);
+        assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 6);
+        navy.task_forces.get_mut(&1).unwrap().ships[0].strength = 0.0;
+        navy.reconcile_sunk_carriers();
+        let group = &navy.carrier_wings[&(1, 0)][0];
+        assert_eq!(group.planes, 0);
+        assert_eq!(group.target, 0);
+        assert_eq!(group.losses, 6);
+        assert!(navy.carrier_air_strike(1, 2, &w, 12).is_empty());
+        let saved = serde_json::to_string(&navy).unwrap();
+        let loaded: NavalState = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.carrier_wings[&(1, 0)][0].losses, 6);
+    }
+
+    #[test]
     fn inventory_funded_airgroups_launch_only_when_present_and_respect_cooldowns() {
         let (w, mut navy) = fixture();
+        let world = test_world();
         navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 5, &w)
             .unwrap();
         let mut prod = ProductionState::default();
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 0);
         prod.country_mut("A")
             .model_stockpile
             .insert("cv_nav_bomber_1".into(), 3);
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
         assert_eq!(
             prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
@@ -473,7 +538,7 @@ mod tests {
         prod.country_mut("A")
             .model_stockpile
             .insert("cv_nav_bomber_1".into(), 10);
-        navy.replenish_carriers(&w, &mut prod);
+        navy.replenish_carriers(&world, &w, &mut prod);
         assert_eq!(navy.carrier_wings[&(1, 0)][0].planes, 3);
         assert_eq!(
             prod.country("A").unwrap().model_stockpile["cv_nav_bomber_1"],
