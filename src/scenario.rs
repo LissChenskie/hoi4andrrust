@@ -117,6 +117,7 @@ pub fn load_at(
         &membership.economy_by_state,
         &membership.shared_slots_by_state,
     );
+    world.resources_by_state = membership.resources_by_state.into_iter().collect();
     for &id in geography.provinces.keys() {
         world.provinces.entry(id).or_insert(Province {
             control_revision: 0,
