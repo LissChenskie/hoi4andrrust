@@ -56,9 +56,11 @@ pub struct CarrierAirSortie {
 /// NAIR defines. Defaults remain explicit approximations if game data is absent.
 fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
     let defs = &w.catalogue.literal_defines;
-    let get = |keys: &[&str], fallback: f64| {
+    let get = |keys: &[&str], fallback: f64, allow_zero: bool| {
         keys.iter()
-            .find_map(|k| defs.get(*k).copied().filter(|v| v.is_finite() && *v > 0.0))
+            .find_map(|k| defs.get(*k).copied().filter(|v| {
+                v.is_finite() && (*v > 0.0 || (allow_zero && *v == 0.0))
+            }))
             .unwrap_or(fallback)
     };
     let delay = get(
@@ -68,17 +70,19 @@ fn carrier_air_parameters(w: &Warfare) -> (u64, f64, f64) {
             "NDefines.NNavy.CARRIER_HOURS_DELAY",
         ],
         4.0,
+        false,
     )
     .ceil()
     .max(1.0) as u64;
     let sortie_fraction =
-        get(&["NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY"], 0.2).clamp(0.0, 1.0);
+        get(&["NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY"], 0.2, true).clamp(0.0, 1.0);
     let damage_scale = get(
         &[
             "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR",
             "NDefines.NNavy.NAVAL_STRIKE_DAMAGE_TO_STR",
         ],
         0.015,
+        true,
     );
     (delay, sortie_fraction, damage_scale)
 }
@@ -500,6 +504,28 @@ mod tests {
         assert_eq!(delay, 6);
         assert_eq!(portion, 0.4);
         assert_eq!(damage, 0.05);
+        // Zeroed values in a mod must disable sorties or damage rather than
+        // accidentally restoring fallback values.
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines.insert(
+                "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.0,
+            );
+            cat.literal_defines.insert(
+                "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.0,
+            );
+        }
+        assert_eq!(carrier_air_parameters(&w).1, 0.0);
+        assert_eq!(carrier_air_parameters(&w).2, 0.0);
+        {
+            let cat = std::sync::Arc::make_mut(&mut w.catalogue);
+            cat.literal_defines.insert(
+                "NDefines.NNavy.BASE_CARRIER_SORTIE_EFFICIENCY".into(), 0.4,
+            );
+            cat.literal_defines.insert(
+                "NDefines.NAir.NAVAL_STRIKE_DAMAGE_TO_STR".into(), 0.05,
+            );
+        }
         navy.assign_carrier_aircraft("A", 1, 0, "cv_nav_bomber_1", 10, &w)
             .unwrap();
         navy.carrier_wings.get_mut(&(1, 0)).unwrap()[0].planes = 10;
