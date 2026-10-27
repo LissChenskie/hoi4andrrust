@@ -2288,6 +2288,14 @@ fn handle_hud_action(
                 military.naval = navy;
             }
         }
+        Action::NavalSetCarrierStance(tf, stance) => {
+            if let Some(tag) = tag {
+                let mut navy = std::mem::take(&mut military.naval);
+                hud.notice = navy.set_carrier_stance(tag, tf, stance, military)
+                    .map_or_else(|e| e, |_| format!("Режим авианосцев: {}", stance.label()));
+                military.naval = navy;
+            }
+        }
         Action::Save => hud.save_requested = true,
         Action::Load => hud.load_requested = true,
         Action::MainMenu => {}
