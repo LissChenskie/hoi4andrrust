@@ -139,7 +139,6 @@ impl Panel {
                 | Self::Trade
                 | Self::Agency
                 | Self::Focus
-                | Self::Navy
         )
     }
 }
