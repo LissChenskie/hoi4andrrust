@@ -296,6 +296,11 @@ impl GameSession {
             self.clock.elapsed_hours,
             self.player_country.as_deref(),
         );
+        // Sea operations are hourly, not tied to the midnight production tick.
+        // Temporarily extract the naval state to avoid borrowing warfare twice.
+        let mut naval = std::mem::take(&mut self.military.naval);
+        naval.tick_naval_combat(&self.world, &mut self.military, self.clock.elapsed_hours);
+        self.military.naval = naval;
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();
         }
