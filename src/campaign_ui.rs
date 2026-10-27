@@ -161,6 +161,14 @@ pub struct Hud {
     pub trade_factories: u32,
     pub naval_region_index: usize,
     pub naval_hull_index: usize,
+    pub naval_page: u8,
+    pub naval_slot_index: usize,
+    pub naval_module_index: usize,
+    pub naval_design_index: usize,
+    pub naval_aircraft_index: usize,
+    pub naval_carrier_index: usize,
+    pub naval_target_planes: u32,
+    pub naval_draft: std::collections::BTreeMap<String,String>,
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -186,6 +194,14 @@ impl Default for Hud {
             trade_factories: 1,
             naval_region_index: 0,
             naval_hull_index: 0,
+            naval_page: 0,
+            naval_slot_index: 0,
+            naval_module_index: 0,
+            naval_design_index: 0,
+            naval_aircraft_index: 0,
+            naval_carrier_index: 0,
+            naval_target_planes: 10,
+            naval_draft: Default::default(),
         }
     }
 }
@@ -338,6 +354,9 @@ pub enum Action {
     NavalQueueShip(String, u32),
     NavalCancelShip(u64),
     NavalAssignAdmiral(u64, Option<String>),
+    NavalSaveDesign(String, String, std::collections::BTreeMap<String,String>),
+    NavalQueueDesign(String,u32),
+    NavalAssignCarrierWing(u64,usize,String,u32),
 }
 
 fn icon_button(icon: Icon, r: Rect, active: bool, title: &str, body: &str) -> bool {
@@ -1141,7 +1160,7 @@ pub fn draw_panel(
         return Vec::new();
     }
     let l = Layout::current();
-    let r = if panel == Panel::Focus {
+    let r = if panel == Panel::Focus || panel == Panel::Navy {
         l.wide()
     } else {
         l.primary()
@@ -1718,6 +1737,20 @@ fn navy(
     bottom: f32,
     actions: &mut Vec<Action>,
 ) {
+    let page_width=(width-8.0)/3.0;
+    for (i,title) in ["Соединения","Конструктор","Авианосцы"].into_iter().enumerate() {
+        if ui::small_button(title,Rect::new(x+i as f32*(page_width+4.0),y,page_width,28.0),
+            h.naval_page as usize==i) {h.naval_page=i as u8;h.scroll=0;}
+    }
+    let y=y+35.0;
+    if h.naval_page==1 {
+        naval_designer_view(h,world,tag,w,x,y,width,bottom,actions);
+        return;
+    }
+    if h.naval_page==2 {
+        naval_carrier_view(h,tag,w,x,y,width,bottom,actions);
+        return;
+    }
     let sea_regions: Vec<u32> = w
         .air
         .regions
