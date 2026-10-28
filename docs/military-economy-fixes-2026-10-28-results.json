@@ -1,0 +1,89 @@
+{
+  "base_commit": "e72584856cd07cc1b9273f2fdd5d2cf83d31e1b6",
+  "validated_code_commit": "c9345c7353bca793ab0294a5ed2fa7818fc28daf",
+  "validated_code_tree": "4bf39bc47cc9b9a8890794ea4a10e746e27eb560",
+  "target_game_version": "1.19.3",
+  "compiler": "rustc 1.99.1 (58cf8f9c3 2026-10-13)",
+  "cargo_lock_sha256": "1794e46e2a170bed76ef2ea249e90b6572f3e1a5be6d05c6bc58c019741a0983",
+  "commands": [
+    {
+      "command": "cargo fmt --all -- --check",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo check --all-targets --locked -j1",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo clippy --all-targets --locked -j1",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo test --all-targets --locked -j1",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo check --all-targets --locked --target aarch64-linux-android -j1",
+      "exit_code": 0
+    },
+    {
+      "command": "cargo build --release --locked --bin hoi4-mobile -j1",
+      "exit_code": 0
+    }
+  ],
+  "test_suites": [
+    {
+      "passed": 65,
+      "failed": 0
+    },
+    {
+      "passed": 0,
+      "failed": 0
+    },
+    {
+      "passed": 281,
+      "failed": 0
+    },
+    {
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "passed": 7,
+      "failed": 0
+    }
+  ],
+  "total_passed": 356,
+  "fixed_audit_findings": [
+    "D1",
+    "D2",
+    "D3",
+    "D4",
+    "D5",
+    "D6",
+    "D7",
+    "D8"
+  ],
+  "additional_fix": "Fully replacing actual combat losses restores HP through the inverse casualty conversion; no resources means no HP restoration.",
+  "integration_scenarios": [
+    "default law and dated core population -> available manpower",
+    "parameterized country/OOB scripted stock effects with conditional execution and recursion limits",
+    "research completes on campaign clock -> factory bonuses and unlocked equipment -> actual production -> stock -> automatic refit -> hourly combat trace",
+    "resource extraction research -> delivered steel -> production shortage removed",
+    "equipment reliability -> real attrition -> inventory and attack, without direct manpower/HP attrition",
+    "air equipment modifiers -> fuel consumption and ground attack on actual sorties",
+    "legacy save capacity/research digest migration -> restore without repeated starting resources"
+  ],
+  "logistics_profile": "mobile-logistics-v2-approximation",
+  "fuel_transport_weight_default": 1,
+  "original_engine_comparisons": 0,
+  "user_installation_start_balances_measured": false,
+  "native_ui_run": false,
+  "android_sdk_ndk_apk_device_run": false,
+  "ios_run": false,
+  "limitations": [
+    "No certified HOI4 numeric or event ordering parity; transport conversion and mixed-division strength policy remain approximation profiles.",
+    "Countries without supplied stock effects or resolvable equipment variants retain an explicitly diagnosed missing reserve; no invented historical stockpile.",
+    "Army XP generation, gradual mobilization, complete division/trait progression, physical replacement/ferry timing, full trains/rail damage and air missions/operational-country AI remain future stages."
+  ]
+}
