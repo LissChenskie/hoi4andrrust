@@ -987,6 +987,60 @@ pub(crate) mod tests {
         w.tick_hour(world, GameDate::START, (h % 24) as u8, h, Some("A"));
     }
     #[test]
+    fn autoplan_takes_an_empty_neighbor_before_rebalancing_its_front() {
+        let (world, mut w, front, plan) = configured(OrderType::Offensive);
+        let mut p = w.plans.plans.remove(&plan).unwrap();
+        p.distance = goal_distances(&w, &world, "A", &p.destination_line);
+        p.assigned_divisions = BTreeSet::from([1]);
+        // Previous policy chose the (friendly) assignment before even
+        // looking at the unguarded adjacent enemy province 9.
+        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(1, 2);
+        advance(&mut p, &mut w, &world);
+        assert!(matches!(&w.divisions[&1].order,
+            DivisionOrder::Move { path, .. } if path == &vec![9]));
+        assert_eq!(world.controller_of_province(9), Some("B"));
+    }
+    #[test]
+    fn empty_provinces_do_not_wait_for_battle_readiness_but_defended_ones_do() {
+        let (world, mut w, _, plan) = configured(OrderType::Offensive);
+        let mut p = w.plans.plans.remove(&plan).unwrap();
+        p.distance = goal_distances(&w, &world, "A", &p.destination_line);
+        p.assigned_divisions = BTreeSet::from([1]);
+        w.divisions.get_mut(&1).unwrap().organization = 1.;
+        w.divisions.get_mut(&1).unwrap().supply_fraction = 0.1;
+        advance(&mut p, &mut w, &world);
+        assert!(matches!(&w.divisions[&1].order,
+            DivisionOrder::Move { path, .. } if path == &vec![9]));
+        // A live defending formation restores the normal cautious policy.
+        w.divisions.get_mut(&1).unwrap().order = DivisionOrder::Hold;
+        w.divisions.insert(99, crate::military_model::tests::division(99, "B", 9));
+        advance(&mut p, &mut w, &world);
+        assert!(matches!(w.divisions[&1].order, DivisionOrder::Hold));
+        assert!(w.battles.is_empty());
+    }
+    #[test]
+    fn autoplan_closes_a_lateral_half_pocket_without_full_encirclement() {
+        let (mut world, mut w, front, plan) = configured(OrderType::Offensive);
+        // In this 8x3 grid, the enemy holds 12, 13, 19 and 20.
+        // Province 12 connects to the wider enemy region, and is at the
+        // SAME goal distance as the friendly 11: strict downhill and the old
+        // fully-enclosed special case would both refuse the closing move.
+        world.set_province_controller(11, Some("A"));
+        w.divisions.get_mut(&1).unwrap().province = 11;
+        w.divisions.insert(99, crate::military_model::tests::division(99, "B", 19));
+        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(1, 11);
+        let mut p = w.plans.plans.remove(&plan).unwrap();
+        p.distance = goal_distances(&w, &world, "A", &p.destination_line);
+        p.assigned_divisions = BTreeSet::from([1]);
+        assert_eq!(p.distance[&11], p.distance[&12]);
+        assert!(exposed_salient(&world, "A", 12));
+        assert!(!unopposed_target(&w, &world, "A", 19));
+        advance(&mut p, &mut w, &world);
+        assert!(matches!(&w.divisions[&1].order,
+            DivisionOrder::Move { path, .. } if path == &vec![12]),
+            "The plan must close the exposed salient without waiting for a complete ring");
+    }
+    #[test]
     fn offensive_orders_use_real_movement_and_reach_the_target_line() {
         let (mut world, mut w, front, plan) = configured(OrderType::Offensive);
         w.plans.activate("A", plan, true).unwrap();
