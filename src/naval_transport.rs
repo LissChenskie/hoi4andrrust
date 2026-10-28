@@ -249,9 +249,11 @@ impl NavalState {
             }
             // A convoy shortage suspends the voyage rather than silently
             // spawning missing transport hulls or a destination occupation.
-            let pool = w.logistics.countries.get(&v.country).map_or(0, |c| {
-                c.convoys.saturating_sub(c.trade_convoys_committed)
-            });
+            let pool = w
+                .logistics
+                .countries
+                .get(&v.country)
+                .map_or(0, |c| c.convoys.saturating_sub(c.trade_convoys_committed));
             let reserved = self.reserved_transport_convoys(&v.country);
             if pool < reserved {
                 continue;
