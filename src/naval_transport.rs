@@ -266,3 +266,133 @@ impl NavalState {
         self.sync_transport_convoys(&mut w.logistics);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        logistics::CountryLogistics,
+        map_graph::MapGraph,
+        military_model::tests::division,
+        warfare::ProvinceConditions,
+    };
+    use std::collections::HashMap;
+
+    fn scene(enemy_beach: bool) -> (World, Warfare, NavalState) {
+        let data = "1;1;0;0;land;true;plains;1\n2;2;0;0;sea;false;ocean;0\n3;3;0;0;sea;false;ocean;0\n4;4;0;0;land;true;plains;1";
+        let rgba: Vec<u8> = (1u8..=4).flat_map(|v| [v, 0, 0, 255]).collect();
+        let owner = if enemy_beach { "B" } else { "A" };
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1), (4, 4)]),
+            &HashMap::from([(1, "A".into()), (4, owner.into())]),
+            &HashMap::new(), &HashMap::new(), &HashMap::new(),
+        );
+        world.geography = MapGraph::from_rgba(4, 1, &rgba, data, false).unwrap();
+        let mut w = Warfare::default();
+        w.conditions.insert(1, ProvinceConditions {
+            naval_base: 3, ..Default::default()
+        });
+        w.conditions.insert(4, ProvinceConditions {
+            naval_base: 2, ..Default::default()
+        });
+        w.logistics.countries.insert("A".into(), CountryLogistics {
+            capital: Some(1), convoys: 10, ..Default::default()
+        });
+        w.divisions.insert(1, division(1, "A", 1));
+        w.divisions.insert(2, division(2, "A", 1));
+        (world, w, NavalState::default())
+    }
+
+    #[test]
+    fn transfer_reserves_real_hulls_and_arrives_after_hours_not_instantly() {
+        let (mut world, mut w, mut navy) = scene(false);
+        let voyage = navy.queue_voyage(
+            &mut w, &world, "A", &[1], 4, VoyageKind::Transfer
+        ).unwrap();
+        let reserved = navy.voyages[&voyage].convoys;
+        assert!(reserved > 0);
+        assert_eq!(w.logistics.countries["A"].transport_convoys_committed, reserved);
+        assert_eq!(w.divisions[&1].province, 1);
+        let hours = navy.voyages[&voyage].hours_remaining;
+        for _ in 0..hours {
+            navy.tick_voyages(&mut w, &mut world);
+            assert_eq!(w.divisions[&1].province, 1);
+        }
+        navy.tick_voyages(&mut w, &mut world);
+        assert_eq!(w.divisions[&1].province, 4);
+        assert!(navy.voyages.is_empty());
+        assert_eq!(w.logistics.countries["A"].transport_convoys_committed, 0);
+    }
+
+    #[test]
+    fn invasion_only_claims_an_empty_hostile_coast() {
+        let (mut world, mut w, mut navy) = scene(true);
+        w.wars.insert(("A".into(), "B".into()));
+        let id = navy.queue_voyage(
+            &mut w, &world, "A", &[1], 4, VoyageKind::UnopposedLanding
+        ).unwrap();
+        let hours = navy.voyages[&id].hours_remaining;
+        w.divisions.insert(99, division(99, "B", 4));
+        for _ in 0..=hours {
+            navy.tick_voyages(&mut w, &mut world);
+        }
+        assert_eq!(world.controller_of_province(4), Some("B"));
+        assert_eq!(w.divisions[&1].province, 1);
+        assert!(navy.voyages[&id].awaiting_clear_beach);
+        w.divisions.remove(&99);
+        navy.tick_voyages(&mut w, &mut world);
+        assert_eq!(world.controller_of_province(4), Some("A"));
+        assert_eq!(w.divisions[&1].province, 4);
+    }
+
+    #[test]
+    fn blocked_sea_captured_port_and_issued_land_orders_prevent_teleporting() {
+        let (mut world, mut w, mut navy) = scene(false);
+        w.logistics.blocked_sea.insert(2);
+        assert!(navy.queue_voyage(
+            &mut w, &world, "A", &[1], 4, VoyageKind::Transfer
+        ).is_err());
+        w.logistics.blocked_sea.clear();
+        let id = navy.queue_voyage(
+            &mut w, &world, "A", &[1], 4, VoyageKind::Transfer
+        ).unwrap();
+        let hours = navy.voyages[&id].hours_remaining;
+        w.logistics.blocked_sea.insert(3);
+        for _ in 0..=hours {
+            navy.tick_voyages(&mut w, &mut world);
+        }
+        assert_eq!(w.divisions[&1].province, 1);
+        assert!(navy.voyages.contains_key(&id));
+        w.logistics.blocked_sea.clear();
+        world.set_province_controller(1, Some("B"));
+        navy.tick_voyages(&mut w, &mut world);
+        assert!(navy.voyages.is_empty());
+        assert_eq!(w.divisions[&1].province, 1);
+    }
+
+    #[test]
+    fn convoy_budget_and_saved_voyages_do_not_duplicate_ships() {
+        let (mut world, mut w, mut navy) = scene(false);
+        w.logistics.countries.get_mut("A").unwrap().convoys = 1;
+        let first = navy.queue_voyage(
+            &mut w, &world, "A", &[1], 4, VoyageKind::Transfer
+        ).unwrap();
+        assert!(navy.queue_voyage(
+            &mut w, &world, "A", &[2], 4, VoyageKind::Transfer
+        ).is_err());
+        let restored: NavalState = serde_json::from_str(
+            &serde_json::to_string(&navy).unwrap()
+        ).unwrap();
+        assert_eq!(restored.voyages[&first].destination, 4);
+        w.logistics.countries.get_mut("A").unwrap().transport_convoys_committed = 0;
+        restored.sync_transport_convoys(&mut w.logistics);
+        assert_eq!(w.logistics.countries["A"].transport_convoys_committed, 1);
+        assert!(navy.cancel_voyage("A", first, &mut w.logistics));
+        assert_eq!(w.logistics.countries["A"].transport_convoys_committed, 0);
+        // The division may be reallocated after cancellation.
+        assert!(navy.queue_voyage(
+            &mut w, &world, "A", &[2], 4, VoyageKind::Transfer
+        ).is_ok());
+        let _ = &mut world;
+    }
+}
