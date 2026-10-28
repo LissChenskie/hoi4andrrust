@@ -221,7 +221,9 @@ impl Warfare {
         id: u64,
         world: &World,
     ) -> Result<u64, String> {
-        let job = self.recruitment.get(&id)
+        let job = self
+            .recruitment
+            .get(&id)
             .filter(|job| job.country == country)
             .ok_or("Нет своего набора")?;
         if job.training_hours / job.required_hours < 0.2
@@ -232,20 +234,20 @@ impl Warfare {
         self.finish_recruitment(id, world, true)
     }
 
-    fn finish_recruitment(
-        &mut self,
-        id: u64,
-        world: &World,
-        early: bool,
-    ) -> Result<u64, String> {
+    fn finish_recruitment(&mut self, id: u64, world: &World, early: bool) -> Result<u64, String> {
         let job = self.recruitment.get(&id).ok_or("Набор не найден")?.clone();
         self.validate_deployment(&job.country, job.province, world)?;
         // Snapshot the requested template before deployment. Edits to the
         // currently saved template must not steal reserved equipment or people.
-        let existing = self.countries[&job.country].templates
-            .get(&job.template.name).cloned();
-        self.countries.get_mut(&job.country).unwrap()
-            .templates.insert(job.template.name.clone(), job.template.clone());
+        let existing = self.countries[&job.country]
+            .templates
+            .get(&job.template.name)
+            .cloned();
+        self.countries
+            .get_mut(&job.country)
+            .unwrap()
+            .templates
+            .insert(job.template.name.clone(), job.template.clone());
         let result = self.spawn_history(
             &job.country,
             &job.template.name,
@@ -258,12 +260,18 @@ impl Warfare {
         );
         match existing {
             Some(t) => {
-                self.countries.get_mut(&job.country).unwrap()
-                    .templates.insert(t.name.clone(), t);
+                self.countries
+                    .get_mut(&job.country)
+                    .unwrap()
+                    .templates
+                    .insert(t.name.clone(), t);
             }
             None => {
-                self.countries.get_mut(&job.country).unwrap()
-                    .templates.remove(&job.template.name);
+                self.countries
+                    .get_mut(&job.country)
+                    .unwrap()
+                    .templates
+                    .remove(&job.template.name);
             }
         }
         let unit = result?;
@@ -277,25 +285,34 @@ impl Warfare {
         // The saved template may have been changed while the recruit trained.
         // Reaggregate using only its real carried equipment after deployment.
         let army = self.countries.get_mut(&job.country).unwrap();
-        let template = army.templates.entry(job.template.name.clone())
+        let template = army
+            .templates
+            .entry(job.template.name.clone())
             .or_insert(job.template);
-        if let Ok(stats) = self.catalogue.aggregate(
-            template, &army.modifiers, Some(&d.equipment)
-        ) {
+        if let Ok(stats) = self
+            .catalogue
+            .aggregate(template, &army.modifiers, Some(&d.equipment))
+        {
             d.derived = stats;
             d.organization = d.derived.stats.organization;
         }
         let fraction = self.equipment_fraction(&self.divisions[&unit]).min(
             f64::from(self.divisions[&unit].manpower)
-                / self.divisions[&unit].derived.stats.manpower.max(1.0)
+                / self.divisions[&unit].derived.stats.manpower.max(1.0),
         );
         self.divisions.get_mut(&unit).unwrap().hp =
             self.divisions[&unit].derived.stats.hp * fraction;
         self.recruitment.remove(&id);
         let name = &self.divisions[&unit].name;
         self.notices.push_back(format!(
-            "{}: {} дивизия {}", job.country,
-            if early { "досрочно развёрнута" } else { "подготовлена" }, name
+            "{}: {} дивизия {}",
+            job.country,
+            if early {
+                "досрочно развёрнута"
+            } else {
+                "подготовлена"
+            },
+            name
         ));
         Ok(unit)
     }
@@ -345,15 +362,27 @@ mod tests {
     #[test]
     fn partial_equipment_advances_training_proportionally_until_fully_equipped() {
         let (world, mut w, mut production, name) = setup();
-        let id = w.queue_recruitment("A", &name, 1, &world, &mut production).unwrap();
-        production.country_mut("A").model_stockpile.insert("rifle".into(), 50);
+        let id = w
+            .queue_recruitment("A", &name, 1, &world, &mut production)
+            .unwrap();
+        production
+            .country_mut("A")
+            .model_stockpile
+            .insert("rifle".into(), 50);
         w.supply_recruitment(&mut production);
-        for _ in 0..24 { w.tick_recruitment(&world); }
+        for _ in 0..24 {
+            w.tick_recruitment(&world);
+        }
         assert_eq!(w.recruitment[&id].training_hours, 12.);
         assert!(w.divisions.is_empty());
-        production.country_mut("A").model_stockpile.insert("rifle".into(), 50);
+        production
+            .country_mut("A")
+            .model_stockpile
+            .insert("rifle".into(), 50);
         w.supply_recruitment(&mut production);
-        for _ in 0..12 { w.tick_recruitment(&world); }
+        for _ in 0..12 {
+            w.tick_recruitment(&world);
+        }
         assert!(!w.recruitment.contains_key(&id));
         assert_eq!(w.divisions.values().next().unwrap().equipment["rifle"], 100);
     }
@@ -361,18 +390,28 @@ mod tests {
     fn early_deployment_requires_progress_and_preserves_reservations() {
         let (world, mut w, mut production, name) = setup();
         let initial = w.countries["A"].manpower_pool;
-        let job = w.queue_recruitment("A", &name, 1, &world, &mut production).unwrap();
-        production.country_mut("A").model_stockpile.insert("rifle".into(), 25);
+        let job = w
+            .queue_recruitment("A", &name, 1, &world, &mut production)
+            .unwrap();
+        production
+            .country_mut("A")
+            .model_stockpile
+            .insert("rifle".into(), 25);
         w.supply_recruitment(&mut production);
         assert!(w.deploy_recruitment_early("A", job, &world).is_err());
-        for _ in 0..20 { w.tick_recruitment(&world); }
+        for _ in 0..20 {
+            w.tick_recruitment(&world);
+        }
         let unit = w.deploy_recruitment_early("A", job, &world).unwrap();
         let d = &w.divisions[&unit];
         assert_eq!(d.experience, ExperienceLevel::Green);
         assert_eq!(d.equipment["rifle"], 25);
         assert!(d.hp < d.derived.stats.hp);
         assert!(w.recruitment.is_empty());
-        assert_eq!(w.countries["A"].manpower_pool + u64::from(d.manpower), initial);
+        assert_eq!(
+            w.countries["A"].manpower_pool + u64::from(d.manpower),
+            initial
+        );
         assert_eq!(production.country("A").unwrap().model_stockpile["rifle"], 0);
         assert!(w.deploy_recruitment_early("A", job, &world).is_err());
     }
