@@ -209,6 +209,10 @@ pub struct CountryProduction {
     pub last_day_resource_factors: BTreeMap<u64, f64>,
     #[serde(default)]
     pub starting_data_applied: bool,
+    #[serde(default)]
+    pub starting_stockpile_effects: u32,
+    #[serde(default)]
+    pub starting_import_errors: Vec<String>,
     next_id: u64,
 }
 

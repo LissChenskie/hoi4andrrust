@@ -691,7 +691,7 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
         units.sort_by(|a, b| {
             let score = |id: &u64| {
                 let d = &w.divisions[id];
-                d.derived.stats.breakthrough * d.strength() * (1.0 + d.planning)
+                d.derived.stats.breakthrough * d.combat_strength() * (1.0 + d.planning)
             };
             score(b).total_cmp(&score(a)).then(a.cmp(b))
         });
@@ -717,14 +717,16 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                 let d = &w.divisions[id];
                 let adjusted = d.derived.terrain.get(terrain).map_or(0.0, |v| v.attack);
                 (d.derived.stats.soft_attack + d.derived.stats.hard_attack)
-                    * d.strength()
+                    * d.combat_strength()
                     * (1.0 + d.planning)
                     * (1.0 + t.attack + adjusted).max(0.0)
             })
             .sum();
         let enemy: f64 = enemies
             .iter()
-            .map(|d| (d.derived.stats.soft_attack + d.derived.stats.hard_attack) * d.strength())
+            .map(|d| {
+                (d.derived.stats.soft_attack + d.derived.stats.hard_attack) * d.combat_strength()
+            })
             .sum();
         let forts = w.conditions.get(&target).map_or(0, |c| c.fort_level) as f64;
         if !enemies.is_empty()

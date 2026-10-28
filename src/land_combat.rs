@@ -167,6 +167,7 @@ pub fn evaluate_conditions(items: &[Entry], context: &TacticContext<'_>) -> Opti
             }),
             "tag" => atom.map(|v| context.country == v),
             "has_tech" | "has_technology" => atom.map(|v| context.modifiers.researched.contains(v)),
+            "has_idea" => atom.map(|v| context.modifiers.ideas.contains(v)),
             "has_country_flag" => atom.map(|v| context.modifiers.flags.contains(v)),
             "has_dlc" => atom.map(|v| context.modifiers.dlcs.contains(v)),
             "AND" | "and" => item.block().and_then(|v| evaluate_conditions(v, context)),
@@ -588,7 +589,7 @@ impl LandBattle {
                 1.0 + ability("combat_entrenchment"),
             );
         }
-        let strength = division.strength();
+        let strength = division.combat_strength();
         f.multiply("strength", strength, strength);
         f
     }

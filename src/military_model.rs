@@ -244,6 +244,8 @@ pub struct MilitaryModifiers {
     pub researched: BTreeSet<String>,
     pub flags: BTreeSet<String>,
     pub dlcs: BTreeSet<String>,
+    #[serde(default)]
+    pub ideas: BTreeSet<String>,
 }
 
 fn merge_stats(a: &mut StatBlock, b: &StatBlock) {
@@ -289,6 +291,9 @@ impl MilitaryModifiers {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DerivedTemplate {
+    /// Actual equipment stats already include per-archetype shortages. None is a designer preview.
+    #[serde(default)]
+    pub equipment_fill: Option<f64>,
     pub fuel_stats: Stats,
     pub stats: Stats,
     pub equipment: BTreeMap<String, f64>,
@@ -299,6 +304,26 @@ pub struct DerivedTemplate {
 }
 
 impl MilitaryCatalogue {
+    /// Shared equipment resolver for ground units, attrition and air missions.
+    pub fn effective_equipment_stat(&self, id: &str, key: &str, m: &MilitaryModifiers) -> f64 {
+        let Some(e) = self.equipment.get(id) else {
+            return 0.;
+        };
+        let adjustment = |id: &str| {
+            m.equipment
+                .get(id)
+                .and_then(|b| b.get(key))
+                .copied()
+                .unwrap_or(0.)
+        };
+        let bonus = adjustment(&e.id)
+            + if e.archetype != e.id {
+                adjustment(&e.archetype)
+            } else {
+                0.
+            };
+        e.stats.get(key).copied().unwrap_or(0.) * (1. + bonus).max(0.)
+    }
     pub fn label<'a>(&'a self, id: &'a str) -> &'a str {
         self.localisation.get(id).map_or(id, String::as_str)
     }
@@ -516,6 +541,39 @@ impl MilitaryCatalogue {
     ) -> Result<DerivedTemplate, String> {
         self.validate_template(t, m, false)?;
         let mut result = DerivedTemplate::default();
+        let mut requirements = BTreeMap::<String, f64>::new();
+        for slot in t
+            .line
+            .iter()
+            .map(|s| &s.unit)
+            .chain(t.support.iter().map(|s| &s.unit))
+        {
+            for (kind, n) in &self.units[slot].need {
+                *requirements.entry(kind.clone()).or_default() += n;
+            }
+        }
+        let fills: BTreeMap<_, _> = requirements
+            .iter()
+            .map(|(kind, need)| {
+                let actual = inventory.map_or(*need, |stock| {
+                    stock
+                        .iter()
+                        .filter_map(|(id, n)| {
+                            self.equipment
+                                .get(id)
+                                .filter(|e| &e.archetype == kind)
+                                .map(|_| f64::from(*n))
+                        })
+                        .sum()
+                });
+                (kind.clone(), (actual / need.max(1e-9)).clamp(0., 1.))
+            })
+            .collect();
+        if inventory.is_some() && !requirements.is_empty() {
+            result.equipment_fill = Some(fills.values().copied().fold(1., f64::min));
+        }
+        let mut reliability_sum = 0.;
+        let mut reliability_count = 0.;
         let mut armor = Vec::new();
         let mut piercing = Vec::new();
         let mut hardness = 0.0;
@@ -579,21 +637,16 @@ impl MilitaryCatalogue {
                     .sum();
                 equipment_speed = equipment_speed.max(archetype_speed);
                 for (e, weight) in selected {
+                    let reliability = self.effective_equipment_stat(&e.id, "reliability", m);
+                    reliability_sum += need * weight * reliability;
+                    reliability_count += need * weight;
                     result.equipment_cost += need * e.cost * weight;
                     *result.model_requirements.entry(e.id.clone()).or_default() += need * weight;
-                    for (k, v) in &e.stats {
-                        let bonus = m
-                            .equipment
-                            .get(&e.id)
-                            .and_then(|b| b.get(k))
-                            .copied()
-                            .unwrap_or(0.0)
-                            + m.equipment
-                                .get(&e.archetype)
-                                .and_then(|b| b.get(k))
-                                .copied()
-                                .unwrap_or(0.0);
-                        *eq.entry(k.clone()).or_default() += v * (1.0 + bonus) * weight;
+                    for k in e.stats.keys() {
+                        *eq.entry(k.clone()).or_default() += self
+                            .effective_equipment_stat(&e.id, k, m)
+                            * weight
+                            * fills.get(archetype).copied().unwrap_or(1.);
                     }
                 }
             }
@@ -611,8 +664,14 @@ impl MilitaryCatalogue {
                 s.armor = adjusted("armor_value");
                 s.piercing = adjusted("ap_attack");
                 s.air_attack = adjusted("air_attack");
-                s.hardness =
-                    (s.hardness + eq.get("hardness").copied().unwrap_or(0.0)).clamp(0.0, 1.0);
+                let equipped = u
+                    .need
+                    .keys()
+                    .filter_map(|kind| fills.get(kind))
+                    .copied()
+                    .fold(1., f64::min);
+                s.hardness = (s.hardness * equipped + eq.get("hardness").copied().unwrap_or(0.0))
+                    .clamp(0.0, 1.0);
                 if equipment_speed > 0.0 {
                     s.speed = if u.equipment_speed_multiplier {
                         equipment_speed
@@ -700,20 +759,10 @@ impl MilitaryCatalogue {
         };
         a.armor = combine(&armor, self.rules.armor_max_weight);
         a.piercing = combine(&piercing, self.rules.piercing_max_weight);
-        let total_equipment: f64 = result.model_requirements.values().sum();
-        a.reliability = if total_equipment > 0.0 {
-            result
-                .model_requirements
-                .iter()
-                .filter_map(|(id, n)| {
-                    self.equipment
-                        .get(id)
-                        .map(|e| n * e.stats.get("reliability").copied().unwrap_or(0.0))
-                })
-                .sum::<f64>()
-                / total_equipment
+        a.reliability = if reliability_count > 0. {
+            reliability_sum / reliability_count
         } else {
-            0.0
+            0.
         };
         a.speed = if speed.is_finite() { speed } else { 0.0 };
         a.supply *= (1.0 + supply_factor).max(0.0);
@@ -807,11 +856,32 @@ impl Division {
     pub fn fighting(&self) -> bool {
         !self.destroyed && self.hp > 1e-9 && self.organization > 1e-9
     }
-    pub fn strength(&self) -> f64 {
-        if self.derived.stats.hp > 0.0 {
-            (self.hp / self.derived.stats.hp).clamp(0.0, 1.0)
+    pub fn hitpoint_fraction(&self) -> f64 {
+        if self.derived.stats.hp > 0. {
+            (self.hp / self.derived.stats.hp).clamp(0., 1.)
         } else {
-            0.0
+            0.
+        }
+    }
+    pub fn strength(&self) -> f64 {
+        let hp = self.hitpoint_fraction();
+        match self.derived.equipment_fill {
+            Some(fill) => hp
+                .min(fill)
+                .min(f64::from(self.manpower) / self.derived.stats.manpower.max(1.)),
+            None => hp,
+        }
+    }
+    /// Do not apply the same material loss twice: actual component stats already
+    /// contain shortages; only a further personnel/HP bottleneck scales them.
+    pub fn combat_strength(&self) -> f64 {
+        match self.derived.equipment_fill {
+            Some(fill) => (self
+                .hitpoint_fraction()
+                .min(f64::from(self.manpower) / self.derived.stats.manpower.max(1.))
+                / fill.max(1e-9))
+            .clamp(0., 1.),
+            None => self.hitpoint_fraction(),
         }
     }
     pub fn apply_damage(&mut self, hp: f64, org: f64, rules: &CombatRules) -> (u32, u32) {
@@ -851,10 +921,18 @@ impl Division {
 pub struct CountryArmy {
     pub templates: BTreeMap<String, DivisionTemplate>,
     pub manpower_pool: u64,
+    #[serde(default)]
+    pub core_population: u64,
+    #[serde(default)]
+    pub recruitable_total: u64,
     pub army_xp: f64,
     pub command_power: Option<f64>,
     pub modifiers: MilitaryModifiers,
     pub base_modifiers: StatBlock,
+    /// The portion of base_modifiers contributed by starting ideas/laws.
+    /// Runtime research/script state may replace it without applying bonuses twice.
+    #[serde(default)]
+    pub idea_modifiers: StatBlock,
     pub history_expected: usize,
     pub history_imported: usize,
     pub history_source: Option<String>,

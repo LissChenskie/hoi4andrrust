@@ -277,9 +277,15 @@ pub struct ResearchCatalogue {
     pub scripts: crate::research_script::ResearchScripts,
     pub diagnostics: Vec<String>,
     pub fingerprint: String,
+    /// Accepted pre-law-index digests, computed only from this same source dataset.
+    #[serde(default)]
+    pub compatible_fingerprints: BTreeSet<String>,
 }
 
 impl ResearchCatalogue {
+    pub fn matches_fingerprint(&self, fingerprint: &str) -> bool {
+        self.fingerprint == fingerprint || self.compatible_fingerprints.contains(fingerprint)
+    }
     pub fn insert(&mut self, tech: Technology) -> Result<(), String> {
         if tech.id.is_empty() || !tech.research_cost.is_finite() || tech.research_cost < 0.0 {
             return Err(format!("Invalid research cost or ID for {}", tech.id));
@@ -672,6 +678,8 @@ pub struct ResearchSlot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryResearch {
+    #[serde(default)]
+    pub ideas_authoritative: bool,
     #[serde(default = "known_slots")]
     pub research_slots_known: bool,
     pub slots: Vec<ResearchSlot>,
@@ -705,6 +713,7 @@ impl CountryResearch {
     pub fn new(slot_count: usize, rules: &ResearchRules) -> Self {
         Self {
             research_slots_known: true,
+            ideas_authoritative: false,
             context: ResearchContext::default(),
             technology_levels: BTreeMap::new(),
             parked: BTreeMap::new(),

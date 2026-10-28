@@ -110,7 +110,7 @@ impl GameSession {
             serde_json::from_reader(BufReader::new(file)).map_err(|e| e.to_string())?;
         if data.schema != 1
             || data.map != self.world.geography.snapshot_fingerprint()
-            || data.research != cat.fingerprint
+            || !cat.matches_fingerprint(&data.research)
             || data.military != military_fingerprint(&self.military)?
         {
             return Err(
@@ -149,6 +149,30 @@ impl GameSession {
         if !s.military.air.enabled && self.military.air.enabled {
             s.military.air = self.military.air.clone();
         }
+        for (tag, country) in &mut s.military.logistics.countries {
+            if country.fuel_capacity_base.is_none() {
+                // Legacy totals may already include captured or lost silos.
+                // Recover the fixed term from the version-matched source profile,
+                // never reinterpret the old total as a second permanent bonus.
+                country.fuel_capacity_base = Some(
+                    self.military
+                        .logistics
+                        .countries
+                        .get(tag)
+                        .map(|c| c.fuel_capacity_base.unwrap_or(c.fuel_capacity))
+                        .unwrap_or(s.military.logistics.rules.base_fuel_capacity)
+                        .max(s.military.logistics.rules.base_fuel_capacity),
+                );
+            }
+        }
+        for (tag, army) in &mut s.military.countries {
+            if army.idea_modifiers.is_empty() {
+                if let Some(source) = self.military.countries.get(tag) {
+                    army.idea_modifiers = source.idea_modifiers.clone();
+                }
+            }
+        }
+        s.military.refresh_division_equipment();
         s.military.logistics.validate(&self.world)?;
         s.military.air.validate(&self.world, &s.military)?;
         s.military.air.reindex();
@@ -216,6 +240,85 @@ mod tests {
             s.clock.elapsed_hours,
             Some("A"),
         );
+    }
+    #[test]
+    fn source_matched_legacy_research_digest_restores_without_reapplying_starting_resources() {
+        let mut s = configured();
+        s.production
+            .country_mut("A")
+            .model_stockpile
+            .insert("fixture".into(), 19);
+        let mut old = ResearchCatalogue::default();
+        old.fingerprint = "same-data-before-law-index".into();
+        let path = file("legacy-research-digest");
+        s.save_game(&path, &old).unwrap();
+        let mut current = ResearchCatalogue::default();
+        current.fingerprint = "same-data-with-law-index".into();
+        current.compatible_fingerprints.insert(old.fingerprint);
+        s.restore_game(&path, &current).unwrap();
+        assert_eq!(
+            s.production.country("A").unwrap().model_stockpile["fixture"],
+            19
+        );
+        current.compatible_fingerprints.clear();
+        assert!(s.restore_game(&path, &current).is_err());
+        assert_eq!(
+            s.production.country("A").unwrap().model_stockpile["fixture"],
+            19
+        );
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn legacy_fuel_capacity_recovers_fixed_term_from_source_instead_of_counting_silos_twice() {
+        let mut original = configured();
+        original
+            .world
+            .states
+            .get_mut(&1)
+            .unwrap()
+            .economy
+            .fuel_silos = 1;
+        original.military.logistics.enabled = true;
+        original.military.logistics.rules.base_fuel_capacity = 1000.;
+        original.military.logistics.rules.silo_fuel_capacity = 1000.;
+        original.military.logistics.countries.insert(
+            "A".into(),
+            crate::logistics::CountryLogistics {
+                capital: Some(1),
+                fuel_capacity: 2000.,
+                fuel_capacity_base: Some(1000.),
+                ..Default::default()
+            },
+        );
+        let cat = ResearchCatalogue::default();
+        let path = file("legacy-fuel");
+        original.save_game(&path, &cat).unwrap();
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        json["session"]["military"]["logistics"]["countries"]["A"]
+            .as_object_mut()
+            .unwrap()
+            .remove("fuel_capacity_base");
+        std::fs::write(&path, serde_json::to_vec(&json).unwrap()).unwrap();
+        original.restore_game(&path, &cat).unwrap();
+        assert_eq!(
+            original.military.logistics.countries["A"].fuel_capacity_base,
+            Some(1000.)
+        );
+        tick(&mut original);
+        assert_eq!(
+            original.military.logistics.countries["A"].fuel_capacity,
+            2000.
+        );
+        for province in original.world.states[&1].province_ids.clone() {
+            original.world.set_province_controller(province, Some("B"));
+        }
+        tick(&mut original);
+        assert_eq!(
+            original.military.logistics.countries["A"].fuel_capacity,
+            1000.
+        );
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn restore_reattaches_source_definitions_without_resetting_commander_xp() {

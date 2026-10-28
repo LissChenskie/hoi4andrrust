@@ -27,6 +27,12 @@ pub struct ScriptSource {
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResearchScripts {
+    #[serde(default)]
+    pub laws_indexed: bool,
+    #[serde(default)]
+    pub default_laws: BTreeMap<String, String>,
+    #[serde(default)]
+    pub law_groups: BTreeMap<String, String>,
     pub triggers: BTreeMap<String, Vec<Entry>>,
     pub effects: BTreeMap<String, Vec<Entry>>,
     pub ideas: BTreeMap<String, Vec<Entry>>,
@@ -558,6 +564,11 @@ fn execute(
                     .unwrap_or_else(|| crate::pdx::names(nested).into_iter().collect());
                 for id in ids {
                     if e.key == "add_ideas" {
+                        if let Some(group) = cat.scripts.law_groups.get(&id) {
+                            c.context
+                                .ideas
+                                .retain(|old| cat.scripts.law_groups.get(old) != Some(group));
+                        }
                         c.context.ideas.insert(id);
                     } else {
                         c.context.ideas.remove(&id);
@@ -570,6 +581,11 @@ fn execute(
                     c.context.ideas.remove(id);
                 }
                 if let Some(id) = atom(nested, "add_idea") {
+                    if let Some(group) = cat.scripts.law_groups.get(id) {
+                        c.context
+                            .ideas
+                            .retain(|old| cat.scripts.law_groups.get(old) != Some(group));
+                    }
                     c.context.ideas.insert(id.into());
                 }
                 refresh_ideas(c, cat);

@@ -330,6 +330,19 @@ impl AirState {
             return;
         }
         self.results.clear();
+        let stat = |country: &str, model: &str, key: &str, default: f64| {
+            if !w
+                .catalogue
+                .equipment
+                .get(model)
+                .is_some_and(|e| e.stats.contains_key(key))
+            {
+                return default;
+            }
+            let empty = crate::military_model::MilitaryModifiers::default();
+            let modifiers = w.countries.get(country).map_or(&empty, |a| &a.modifiers);
+            w.catalogue.effective_equipment_stat(model, key, modifiers)
+        };
         if self.province_region.is_empty() {
             self.reindex();
         }
@@ -392,12 +405,7 @@ impl AirState {
                         .map_or(1., |v| (1. + v).clamp(0., 1.))
                 });
             let proposed = (f64::from(a.planes) * base_eff * weather).floor() as u32;
-            let per_plane = model
-                .stats
-                .get("fuel_consumption")
-                .copied()
-                .unwrap_or(0.)
-                .max(0.)
+            let per_plane = stat(&a.country, &a.model, "fuel_consumption", 0.).max(0.)
                 * self.rules.mission_interval as f64
                 / 24.;
             let country = w.logistics.countries.entry(a.country.clone()).or_default();
@@ -430,13 +438,7 @@ impl AirState {
         let mut damage = BTreeMap::<u64, f64>::new();
         for (&id, &count) in &launched {
             let a = &self.wings[&id];
-            let model = &w.catalogue.equipment[&a.model];
-            let reliability = model
-                .stats
-                .get("reliability")
-                .copied()
-                .unwrap_or(1.)
-                .clamp(0., 1.);
+            let reliability = stat(&a.country, &a.model, "reliability", 1.).clamp(0., 1.);
             *damage.entry(id).or_default() +=
                 f64::from(count) * (1. - reliability) * self.rules.accident_factor;
             if !matches!(
@@ -458,27 +460,16 @@ impl AirState {
             let total: f64 = enemies.iter().map(|(_, n)| f64::from(**n)).sum();
             for (&other, &n) in enemies {
                 let b = &self.wings[&other];
-                let target = &w.catalogue.equipment[&b.model];
-                let attack = model.stats.get("air_attack").copied().unwrap_or(0.).max(0.);
-                let defense = target
-                    .stats
-                    .get("air_defence")
-                    .or_else(|| target.stats.get("air_defense"))
-                    .copied()
-                    .unwrap_or(1.)
-                    .max(1.);
-                let agility = model
-                    .stats
-                    .get("air_agility")
-                    .copied()
-                    .unwrap_or(1.)
-                    .max(1.);
-                let enemy_agility = target
-                    .stats
-                    .get("air_agility")
-                    .copied()
-                    .unwrap_or(1.)
-                    .max(1.);
+                let attack = stat(&a.country, &a.model, "air_attack", 0.).max(0.);
+                let defense = stat(
+                    &b.country,
+                    &b.model,
+                    "air_defence",
+                    stat(&b.country, &b.model, "air_defense", 1.),
+                )
+                .max(1.);
+                let agility = stat(&a.country, &a.model, "air_agility", 1.).max(1.);
+                let enemy_agility = stat(&b.country, &b.model, "air_agility", 1.).max(1.);
                 let avoidance =
                     (1. - 0.45 * (enemy_agility / agility - 1.).max(0.)).clamp(0.55, 1.);
                 *damage.entry(other).or_default() += f64::from(count) * attack / defense
@@ -554,13 +545,8 @@ impl AirState {
                 .get_mut(&a.country)
                 .unwrap();
             r.cas += surviving;
-            r.ground_attack += f64::from(surviving)
-                * w.catalogue.equipment[&a.model]
-                    .stats
-                    .get("air_ground_attack")
-                    .copied()
-                    .unwrap_or(0.)
-                    .max(0.);
+            r.ground_attack +=
+                f64::from(surviving) * stat(&a.country, &a.model, "air_ground_attack", 0.).max(0.);
         }
     }
 }
