@@ -78,6 +78,9 @@ pub struct CombatRules {
     pub hp_damage: f64,
     pub org_damage: f64,
     pub casualty_factor: f64,
+    /// Experience tier modifier from imported game version (fallback: classic 0.25).
+    #[serde(default = "default_experience_combat_factor")]
+    pub experience_combat_factor: f64,
     pub minimum_hours: u32,
     pub tactic_hours: u32,
     pub reinforce_chance: f64,
@@ -138,6 +141,9 @@ pub struct CombatRules {
     pub diagnostics: Vec<String>,
 }
 
+fn default_experience_combat_factor() -> f64 {
+    0.25
+}
 impl Default for CombatRules {
     fn default() -> Self {
         Self {
@@ -151,6 +157,7 @@ impl Default for CombatRules {
             hp_damage: 0.06,
             org_damage: 0.053,
             casualty_factor: 0.7,
+            experience_combat_factor: default_experience_combat_factor(),
             minimum_hours: 4,
             tactic_hours: 12,
             reinforce_chance: 0.02,
@@ -389,6 +396,10 @@ impl CombatRules {
                 }
                 "LAND_COMBAT_STR_DAMAGE_MODIFIER" => {
                     self.hp_damage = v.max(0.0);
+                    true
+                }
+                "EXPERIENCE_COMBAT_FACTOR" => {
+                    self.experience_combat_factor = v.max(0.0);
                     true
                 }
                 "LAND_COMBAT_ORG_DAMAGE_MODIFIER" => {
