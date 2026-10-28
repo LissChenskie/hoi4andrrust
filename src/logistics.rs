@@ -501,32 +501,55 @@ impl LogisticsState {
                 if let Some(template) = army.templates.get(&d.template) {
                     if let Some(stock) = production.country(&d.country) {
                         for kind in d.derived.equipment.keys() {
-                            let preferred = template.equipment_preferences.get(kind).cloned()
-                                .or_else(|| w.catalogue.best_equipment(kind, &army.modifiers)
-                                    .map(|model| model.id.clone()));
-                            let Some(preferred) = preferred else { continue; };
+                            let preferred = template
+                                .equipment_preferences
+                                .get(kind)
+                                .cloned()
+                                .or_else(|| {
+                                    w.catalogue
+                                        .best_equipment(kind, &army.modifiers)
+                                        .map(|model| model.id.clone())
+                                });
+                            let Some(preferred) = preferred else {
+                                continue;
+                            };
                             if !w.catalogue.equipment_available(&preferred, &army.modifiers) {
                                 continue;
                             }
                             let Some(model) = w.catalogue.equipment.get(&preferred) else {
                                 continue;
                             };
-                            if model.archetype != *kind { continue; }
-                            let obsolete: u64 = d.equipment.iter().filter_map(|(id, &n)| {
-                                w.catalogue.equipment.get(id)
-                                    .filter(|old| old.archetype == *kind && old.id != preferred
-                                        && (template.equipment_preferences.contains_key(kind)
-                                            || old.year < model.year))
-                                    .map(|_| u64::from(n))
-                            }).sum();
-                            upgrades = upgrades.saturating_add(
-                                obsolete.min(stock.model_stockpile.get(&preferred).copied().unwrap_or(0))
-                            );
+                            if model.archetype != *kind {
+                                continue;
+                            }
+                            let obsolete: u64 = d
+                                .equipment
+                                .iter()
+                                .filter_map(|(id, &n)| {
+                                    w.catalogue
+                                        .equipment
+                                        .get(id)
+                                        .filter(|old| {
+                                            old.archetype == *kind
+                                                && old.id != preferred
+                                                && (template
+                                                    .equipment_preferences
+                                                    .contains_key(kind)
+                                                    || old.year < model.year)
+                                        })
+                                        .map(|_| u64::from(n))
+                                })
+                                .sum();
+                            upgrades =
+                                upgrades.saturating_add(obsolete.min(
+                                    stock.model_stockpile.get(&preferred).copied().unwrap_or(0),
+                                ));
                         }
                     }
                 }
             }
-            let cost = equipment.max(upgrades) as f64 * self.rules.equipment_transport_weight.max(0.)
+            let cost = equipment.max(upgrades) as f64
+                * self.rules.equipment_transport_weight.max(0.)
                 + people_needed.min(available_people) as f64
                     * self.rules.manpower_transport_weight.max(0.);
             let demand = cost.min(self.rules.max_reinforcement_daily.max(0.));
