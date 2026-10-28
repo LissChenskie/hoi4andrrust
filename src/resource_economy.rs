@@ -196,7 +196,9 @@ impl ResourceEconomy {
             for (tag, country) in &w.logistics.countries {
                 unassigned_convoys.insert(
                     tag.clone(),
-                    country.convoys.saturating_sub(country.transport_convoys_committed),
+                    country
+                        .convoys
+                        .saturating_sub(country.transport_convoys_committed),
                 );
             }
         }
