@@ -367,11 +367,17 @@ impl Warfare {
     /// Older saves and miniature test catalogues use the classic four levels.
     fn division_xp_thresholds(&self) -> [f64; 4] {
         let default = [0.1, 0.3, 0.75, 0.9];
-        let Some(levels) = self.catalogue.literal_arrays
-            .get("NDefines.NMilitary.UNIT_EXP_LEVELS") else {
-                return default;
-            };
-        if levels.len() != 4 || levels.iter().any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+        let Some(levels) = self
+            .catalogue
+            .literal_arrays
+            .get("NDefines.NMilitary.UNIT_EXP_LEVELS")
+        else {
+            return default;
+        };
+        if levels.len() != 4
+            || levels
+                .iter()
+                .any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
             || levels.windows(2).any(|v| v[0] >= v[1])
         {
             return default;
@@ -402,9 +408,16 @@ impl Warfare {
     }
     fn grant_division_xp(&mut self, id: DivisionId, gain: f64, training: bool) {
         let levels = self.division_xp_thresholds();
-        let Some(d) = self.divisions.get_mut(&id) else { return; };
-        if d.destroyed { return; }
-        let start = self.division_experience.get(&id).copied()
+        let Some(d) = self.divisions.get_mut(&id) else {
+            return;
+        };
+        if d.destroyed {
+            return;
+        }
+        let start = self
+            .division_experience
+            .get(&id)
+            .copied()
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
             .unwrap_or_else(|| Self::minimum_division_xp(d.experience, levels));
         let cap = if training { start.max(levels[1]) } else { 1. };
@@ -416,15 +429,28 @@ impl Warfare {
     /// the existing division experience once, when people actually arrive.
     /// Combat casualties alone never cause a second debit before replacements.
     fn incorporate_replacements(&mut self, id: DivisionId, old_manpower: u32, joined: u32) {
-        if joined == 0 { return; }
+        if joined == 0 {
+            return;
+        }
         let levels = self.division_xp_thresholds();
-        let Some(d) = self.divisions.get_mut(&id) else { return; };
-        if d.destroyed { return; }
-        let old_xp = self.division_experience.get(&id).copied()
+        let Some(d) = self.divisions.get_mut(&id) else {
+            return;
+        };
+        if d.destroyed {
+            return;
+        }
+        let old_xp = self
+            .division_experience
+            .get(&id)
+            .copied()
             .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
             .unwrap_or_else(|| Self::minimum_division_xp(d.experience, levels));
         let count = f64::from(old_manpower) + f64::from(joined);
-        let updated = if count > 0. { old_xp * f64::from(old_manpower) / count } else { 0. };
+        let updated = if count > 0. {
+            old_xp * f64::from(old_manpower) / count
+        } else {
+            0.
+        };
         self.division_experience.insert(id, updated);
         d.experience = Self::division_level(updated, levels);
     }
@@ -3224,11 +3250,14 @@ pub(crate) mod tests {
         d.manpower = 500;
         w.divisions.insert(1, d);
         w.division_experience.insert(1, 0.8);
-        w.countries.insert("A".into(), CountryArmy {
-            manpower_pool: 500,
-            templates: BTreeMap::from([("test".into(), template())]),
-            ..Default::default()
-        });
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                manpower_pool: 500,
+                templates: BTreeMap::from([("test".into(), template())]),
+                ..Default::default()
+            },
+        );
         let mut production = ProductionState::default();
         w.replenish(&mut production);
         assert_eq!(w.divisions[&1].manpower, 1000);
@@ -3251,11 +3280,16 @@ pub(crate) mod tests {
         );
         let world = world();
         let mut w = Warfare::new(c);
-        w.countries.insert("A".into(), CountryArmy {
-            templates: BTreeMap::from([("test".into(), template())]),
-            ..Default::default()
-        });
-        let id = w.spawn_history("A", "test", 1, "Historical", 1., 1., 0.39, &world).unwrap();
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                templates: BTreeMap::from([("test".into(), template())]),
+                ..Default::default()
+            },
+        );
+        let id = w
+            .spawn_history("A", "test", 1, "Historical", 1., 1., 0.39, &world)
+            .unwrap();
         assert!((w.division_experience[&id] - 0.39).abs() < 1e-9);
         assert_eq!(w.divisions[&id].experience, ExperienceLevel::Trained);
         w.grant_division_xp(id, 0.02, false);
@@ -3271,11 +3305,14 @@ pub(crate) mod tests {
         let survivors = d.manpower;
         w.divisions.insert(1, d);
         w.division_experience.insert(1, 0.8);
-        w.countries.insert("A".into(), CountryArmy {
-            manpower_pool: u64::from(lost),
-            templates: BTreeMap::from([("test".into(), template())]),
-            ..Default::default()
-        });
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                manpower_pool: u64::from(lost),
+                templates: BTreeMap::from([("test".into(), template())]),
+                ..Default::default()
+            },
+        );
         let mut p = ProductionState::default();
         // No new recruits yet: the survivors keep their own experience.
         assert!((w.division_experience[&1] - 0.8).abs() < 1e-9);
@@ -3312,11 +3349,14 @@ pub(crate) mod tests {
         d.manpower = 800;
         d.experience = ExperienceLevel::Seasoned;
         w.divisions.insert(1, d);
-        w.countries.insert("A".into(), CountryArmy {
-            manpower_pool: 200,
-            templates: BTreeMap::from([("test".into(), template())]),
-            ..Default::default()
-        });
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                manpower_pool: 200,
+                templates: BTreeMap::from([("test".into(), template())]),
+                ..Default::default()
+            },
+        );
         let mut production = ProductionState::default();
         w.replenish(&mut production);
         assert!((w.division_experience[&1] - 0.6).abs() < 1e-9);
