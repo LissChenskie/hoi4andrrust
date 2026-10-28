@@ -700,12 +700,19 @@ mod tests {
     fn experience_factor_uses_imported_versioned_define() {
         let mut rules = CombatRules::default();
         assert!((rules.experience_combat_factor - 0.25).abs() < 1e-9);
-        rules.import_defines("NDefines.NMilitary.EXPERIENCE_COMBAT_FACTOR = 0.15", "xp.lua");
+        rules.import_defines(
+            "NDefines.NMilitary.EXPERIENCE_COMBAT_FACTOR = 0.15",
+            "xp.lua",
+        );
         assert!((rules.experience_combat_factor - 0.15).abs() < 1e-9);
         assert_eq!(rules.provenance["EXPERIENCE_COMBAT_FACTOR"], "xp.lua");
-        assert!((crate::military_model::ExperienceLevel::Veteran.bonus_with_factor(
-            rules.experience_combat_factor,
-        ) - 0.45).abs() < 1e-9);
+        assert!(
+            (crate::military_model::ExperienceLevel::Veteran
+                .bonus_with_factor(rules.experience_combat_factor,)
+                - 0.45)
+                .abs()
+                < 1e-9
+        );
     }
     #[test]
     fn imports_namespaced_table_and_array_defines() {
