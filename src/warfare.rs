@@ -1120,7 +1120,11 @@ impl Warfare {
         let limited = self.logistics.enabled && self.logistics.last_hour.is_some();
         let unit_cost = self.logistics.rules.equipment_transport_weight.max(1e-9);
         let mut cargo = if limited {
-            self.logistics.reinforcement_credit.get(&id).copied().unwrap_or(0.)
+            self.logistics
+                .reinforcement_credit
+                .get(&id)
+                .copied()
+                .unwrap_or(0.)
         } else {
             f64::INFINITY
         };
@@ -1354,7 +1358,12 @@ impl Warfare {
             self.refit_preferred_equipment(id, production);
             // Model upgrades consume the same budget before unfilled models.
             if cargo_limited {
-                cargo = self.logistics.reinforcement_credit.get(&id).copied().unwrap_or(0.);
+                cargo = self
+                    .logistics
+                    .reinforcement_credit
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0.);
             }
             let Some(d) = self
                 .divisions
