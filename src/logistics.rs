@@ -439,8 +439,13 @@ impl LogisticsState {
     }
     fn dispatch_demand(&self, d: &crate::military_model::Division) -> f64 {
         let (supply, fuel) = self.dispatch_parts(d);
-        supply + fuel * self.rules.fuel_transport_weight
-            + self.reinforcement_requests.get(&d.id).copied().unwrap_or(0.)
+        supply
+            + fuel * self.rules.fuel_transport_weight
+            + self
+                .reinforcement_requests
+                .get(&d.id)
+                .copied()
+                .unwrap_or(0.)
     }
     /// Reserve throughput only for equipment or personnel that can really be dispatched.
     /// This is separate from the daily stockpile transaction: no goods are created here.
@@ -453,7 +458,11 @@ impl LogisticsState {
             return;
         }
         let mut requests = BTreeMap::new();
-        for d in w.divisions.values().filter(|d| !d.destroyed && d.battle.is_none()) {
+        for d in w
+            .divisions
+            .values()
+            .filter(|d| !d.destroyed && d.battle.is_none())
+        {
             let mut stock_by_kind = BTreeMap::<String, u64>::new();
             if let Some(stock) = production.country(&d.country) {
                 for (id, &quantity) in &stock.model_stockpile {
@@ -464,19 +473,26 @@ impl LogisticsState {
             }
             let mut equipment = 0_u64;
             for (kind, &needed) in &d.derived.equipment {
-                let carried: u64 = d.equipment.iter().filter_map(|(id, &n)| {
-                    w.catalogue.equipment.get(id)
-                        .filter(|model| model.archetype == *kind)
-                        .map(|_| u64::from(n))
-                }).sum();
+                let carried: u64 = d
+                    .equipment
+                    .iter()
+                    .filter_map(|(id, &n)| {
+                        w.catalogue
+                            .equipment
+                            .get(id)
+                            .filter(|model| model.archetype == *kind)
+                            .map(|_| u64::from(n))
+                    })
+                    .sum();
                 let deficit = (needed.ceil().max(0.) as u64).saturating_sub(carried);
-                equipment = equipment.saturating_add(
-                    deficit.min(stock_by_kind.get(kind).copied().unwrap_or(0))
-                );
+                equipment = equipment
+                    .saturating_add(deficit.min(stock_by_kind.get(kind).copied().unwrap_or(0)));
             }
             let people_needed = (d.derived.stats.manpower.ceil().max(0.) as u64)
                 .saturating_sub(u64::from(d.manpower));
-            let available_people = w.countries.get(&d.country)
+            let available_people = w
+                .countries
+                .get(&d.country)
                 .map_or(0, |country| country.manpower_pool);
             let cost = equipment as f64 * self.rules.equipment_transport_weight.max(0.)
                 + people_needed.min(available_people) as f64
@@ -840,9 +856,13 @@ impl LogisticsState {
         let mut dirty = Vec::new();
         for d in w.divisions.values_mut().filter(|d| !d.destroyed) {
             let (supply_request, fuel_request) = self.dispatch_parts(d);
-            let cargo_request = self.reinforcement_requests.get(&d.id).copied().unwrap_or(0.);
-            let total_request = supply_request + fuel_request * self.rules.fuel_transport_weight
-                + cargo_request;
+            let cargo_request = self
+                .reinforcement_requests
+                .get(&d.id)
+                .copied()
+                .unwrap_or(0.);
+            let total_request =
+                supply_request + fuel_request * self.rules.fuel_transport_weight + cargo_request;
             let delivered = if self.serviced.contains(&(d.country.clone(), d.province)) {
                 self.delivery
                     .get(&d.id)
