@@ -46,7 +46,7 @@ fn sea_path(world: &World, blocked: &BTreeSet<u32>, origin: u32, goal: u32) -> O
         .geography
         .connections_from(goal)
         .iter()
-        .filter(|e| e.kind != CrossingKind::Impassable && sea(e.to))
+        .filter(|e| e.kind == CrossingKind::Border && e.rule.is_none() && sea(e.to))
         .map(|e| e.to)
         .collect();
     if targets.is_empty() {
@@ -55,7 +55,7 @@ fn sea_path(world: &World, blocked: &BTreeSet<u32>, origin: u32, goal: u32) -> O
     let mut previous = BTreeMap::new();
     let mut queue = VecDeque::new();
     for edge in world.geography.connections_from(origin) {
-        if edge.kind != CrossingKind::Impassable && sea(edge.to) {
+        if edge.kind == CrossingKind::Border && edge.rule.is_none() && sea(edge.to) {
             previous.insert(edge.to, edge.to);
             queue.push_back(edge.to);
         }
@@ -72,7 +72,8 @@ fn sea_path(world: &World, blocked: &BTreeSet<u32>, origin: u32, goal: u32) -> O
             return Some(path);
         }
         for edge in world.geography.connections_from(sea_province) {
-            if edge.kind != CrossingKind::Impassable
+            if edge.kind == CrossingKind::Border
+                && edge.rule.is_none()
                 && sea(edge.to)
                 && !previous.contains_key(&edge.to)
             {
