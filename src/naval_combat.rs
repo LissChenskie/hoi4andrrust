@@ -258,6 +258,8 @@ impl NavalState {
     /// and snapshot-based simultaneous damage prevent side-order exploits.
     pub fn tick_naval_combat(&mut self, world: &World, warfare: &mut Warfare, hour: u64) {
         let rules = NavalCombatRules::from_defines(&warfare.catalogue.literal_defines);
+        self.operational_fuel_sampled = true;
+        self.operational_fuel.clear();
         self.hourly_repairs(world, warfare, rules);
         // Cached contacts are invalidated when an order changes, a force
         // disappears or neither opponent still operates in the same region.
@@ -302,6 +304,7 @@ impl NavalState {
             fuel_efficiency.insert(tf.id, fuel);
             if fuel > 0. || demand == 0. {
                 active.push(tf.id);
+                self.operational_fuel.insert(tf.id, fuel.clamp(0., 1.));
             }
         }
         let mut combat_events = Vec::new();
