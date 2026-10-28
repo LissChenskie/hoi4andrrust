@@ -197,92 +197,107 @@ impl Warfare {
     pub(crate) fn tick_recruitment(&mut self, world: &World) {
         let ids: Vec<_> = self.recruitment.keys().copied().collect();
         for id in ids {
-            // Conservative preparation policy: equipment gates training. Early
-            // deployment/HOI4's partial-training thresholds are not claimed here.
-            if self.recruitment_equipment_fraction(&self.recruitment[&id]) < 1.0 {
+            let equipped = self.recruitment_equipment_fraction(&self.recruitment[&id]);
+            // Partial equipment permits slower training, but empty training
+            // depots cannot accumulate progress out of nothing.
+            if equipped < 0.2 {
                 continue;
             }
             let job = self.recruitment.get_mut(&id).unwrap();
-            job.training_hours = (job.training_hours + 1.0).min(job.required_hours);
-            if job.training_hours < job.required_hours {
-                continue;
-            }
-            let job = job.clone();
-            if self
-                .validate_deployment(&job.country, job.province, world)
-                .is_err()
-            {
-                continue;
-            }
-            // The queued template is a snapshot; editing its source does not
-            // destroy reserved resources or silently change its training time.
-            let existing = self.countries[&job.country]
-                .templates
-                .get(&job.template.name)
-                .cloned();
-            self.countries
-                .get_mut(&job.country)
-                .unwrap()
-                .templates
-                .insert(job.template.name.clone(), job.template.clone());
-            let result = self.spawn_history(
-                &job.country,
-                &job.template.name,
-                job.province,
-                &format!("{}. {}", self.next_division_id, job.template.name),
-                0.0,
-                1.0,
-                0.1,
-                world,
-            );
-            match existing {
-                Some(t) => {
-                    self.countries
-                        .get_mut(&job.country)
-                        .unwrap()
-                        .templates
-                        .insert(t.name.clone(), t);
-                }
-                None => {
-                    self.countries
-                        .get_mut(&job.country)
-                        .unwrap()
-                        .templates
-                        .remove(&job.template.name);
-                }
-            }
-            if let Ok(unit) = result {
-                let d = self.divisions.get_mut(&unit).unwrap();
-                d.fuel_fraction = 0.;
-                d.equipment = job.equipment;
-                d.manpower = job.manpower;
-                // Adopt the current saved template only when it still exists;
-                // return_surplus/replenish then handle any changed requirements.
-                let a = self.countries.get_mut(&job.country).unwrap();
-                let t = a
-                    .templates
-                    .entry(job.template.name.clone())
-                    .or_insert(job.template);
-                if let Ok(stats) = self
-                    .catalogue
-                    .aggregate(t, &a.modifiers, Some(&d.equipment))
-                {
-                    d.derived = stats;
-                    d.hp = d.derived.stats.hp;
-                    d.organization = d.derived.stats.organization;
-                }
-                let name = d.name.clone();
-                let fraction = self.equipment_fraction(&self.divisions[&unit]).min(
-                    f64::from(self.divisions[&unit].manpower)
-                        / self.divisions[&unit].derived.stats.manpower.max(1.0),
-                );
-                self.divisions.get_mut(&unit).unwrap().hp =
-                    self.divisions[&unit].derived.stats.hp * fraction;
-                self.recruitment.remove(&id);
-                self.notices
-                    .push_back(format!("{}: подготовлена дивизия {}", job.country, name));
+            job.training_hours = (job.training_hours + equipped).min(job.required_hours);
+            // Auto-deployment needs both full training and full equipment.
+            // Early deployment is only initiated by an explicit player order.
+            if job.training_hours >= job.required_hours && equipped >= 1. - 1e-9 {
+                let _ = self.finish_recruitment(id, world, false);
             }
         }
+    }
+
+    /// HOI4-style early order: the player may deploy a green formation after
+    /// at least 20% training and 20% equipment, conserving the queued resources.
+    pub fn deploy_recruitment_early(
+        &mut self,
+        country: &str,
+        id: u64,
+        world: &World,
+    ) -> Result<u64, String> {
+        let job = self.recruitment.get(&id)
+            .filter(|job| job.country == country)
+            .ok_or("Нет своего набора")?;
+        if job.training_hours / job.required_hours < 0.2
+            || self.recruitment_equipment_fraction(job) < 0.2
+        {
+            return Err("Для раннего развёртывания необходимо 20% обучения и 20% техники".into());
+        }
+        self.finish_recruitment(id, world, true)
+    }
+
+    fn finish_recruitment(
+        &mut self,
+        id: u64,
+        world: &World,
+        early: bool,
+    ) -> Result<u64, String> {
+        let job = self.recruitment.get(&id).ok_or("Набор не найден")?.clone();
+        self.validate_deployment(&job.country, job.province, world)?;
+        // Snapshot the requested template before deployment. Edits to the
+        // currently saved template must not steal reserved equipment or people.
+        let existing = self.countries[&job.country].templates
+            .get(&job.template.name).cloned();
+        self.countries.get_mut(&job.country).unwrap()
+            .templates.insert(job.template.name.clone(), job.template.clone());
+        let result = self.spawn_history(
+            &job.country,
+            &job.template.name,
+            job.province,
+            &format!("{}. {}", self.next_division_id, job.template.name),
+            0.0,
+            1.0,
+            if early { 0.0 } else { 0.1 },
+            world,
+        );
+        match existing {
+            Some(t) => {
+                self.countries.get_mut(&job.country).unwrap()
+                    .templates.insert(t.name.clone(), t);
+            }
+            None => {
+                self.countries.get_mut(&job.country).unwrap()
+                    .templates.remove(&job.template.name);
+            }
+        }
+        let unit = result?;
+        let d = self.divisions.get_mut(&unit).unwrap();
+        d.fuel_fraction = 0.;
+        d.equipment = job.equipment;
+        d.manpower = job.manpower;
+        if early {
+            d.experience = ExperienceLevel::Green;
+        }
+        // The saved template may have been changed while the recruit trained.
+        // Reaggregate using only its real carried equipment after deployment.
+        let army = self.countries.get_mut(&job.country).unwrap();
+        let template = army.templates.entry(job.template.name.clone())
+            .or_insert(job.template);
+        if let Ok(stats) = self.catalogue.aggregate(
+            template, &army.modifiers, Some(&d.equipment)
+        ) {
+            d.derived = stats;
+            d.organization = d.derived.stats.organization;
+        }
+        let fraction = self.equipment_fraction(&self.divisions[&unit]).min(
+            f64::from(self.divisions[&unit].manpower)
+                / self.divisions[&unit].derived.stats.manpower.max(1.0)
+        );
+        self.divisions.get_mut(&unit).unwrap().hp =
+            self.divisions[&unit].derived.stats.hp * fraction;
+        self.recruitment.remove(&id);
+        let name = &self.divisions[&unit].name;
+        self.notices.push_back(format!(
+            "{}: {} дивизия {}", job.country,
+            if early { "досрочно развёрнута" } else { "подготовлена" }, name
+        ));
+        Ok(unit)
     }
 }
 
