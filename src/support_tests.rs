@@ -73,6 +73,25 @@ fn tick(w: &mut Warfare, world: &World, h: u64) {
     s.tick(w, world, h);
     w.logistics = s;
 }
+#[test]
+fn reinforcement_cargo_and_regular_supply_share_the_same_rail_bottleneck() {
+    let (world, mut plain) = setup();
+    plain.logistics.rules.capital_capacity = 12.;
+    plain.logistics.rules.hub_capacity = 12.;
+    plain.logistics.rules.network_interval = 1;
+    let mut cargo = Warfare::new((*plain.catalogue).clone());
+    cargo.divisions = plain.divisions.clone();
+    cargo.conditions = plain.conditions.clone();
+    cargo.logistics = plain.logistics.clone();
+    cargo.logistics.reinforcement_requests.insert(1, 24.);
+    tick(&mut plain, &world, 1);
+    tick(&mut cargo, &world, 1);
+    let regular = plain.logistics.divisions[&1].received;
+    let with_cargo = cargo.logistics.divisions[&1].received;
+    assert!(regular > with_cargo, "cargo must use network capacity rather than free bandwidth");
+    assert!(cargo.logistics.reinforcement_credit.get(&1).copied().unwrap_or(0.) > 0.);
+    assert!(cargo.logistics.delivery[&1] <= 12. + 1e-6);
+}
 fn air_tick(w: &mut Warfare, world: &World, h: u64) {
     let mut s = std::mem::take(&mut w.air);
     s.tick(w, world, h);
