@@ -688,7 +688,7 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
             // One division occupies it while the others retain their front slots.
             .filter(|e| {
                 let empty = unopposed_target(w, world, &p.country, e.to);
-                (battle_ready || empty)
+                (battle_ready || (p.mode != ExecutionMode::Cautious && empty))
                     && (!empty || planned_targets.get(&e.to).copied().unwrap_or(0) == 0)
             })
             .collect();
