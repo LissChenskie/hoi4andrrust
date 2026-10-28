@@ -3159,6 +3159,48 @@ pub(crate) mod tests {
         );
     }
     #[test]
+    fn mobilization_uses_daily_quota_and_releases_only_free_reserve() {
+        let mut w = army();
+        w.mobilization_daily_rate = 0.01;
+        w.countries.insert("A".into(), CountryArmy {
+            core_population: 10000,
+            recruitable_total: 1000,
+            mobilization_target: Some(2000),
+            manpower_pool: 500,
+            ..Default::default()
+        });
+        w.tick_mobilization_day();
+        assert_eq!(w.countries["A"].manpower_pool, 600);
+        assert_eq!(w.countries["A"].recruitable_total, 1100);
+        for _ in 0..9 { w.tick_mobilization_day(); }
+        assert_eq!(w.countries["A"].recruitable_total, 2000);
+        w.countries.get_mut("A").unwrap().mobilization_target = Some(800);
+        w.countries.get_mut("A").unwrap().manpower_pool = 50;
+        w.tick_mobilization_day();
+        assert_eq!(w.countries["A"].manpower_pool, 0);
+        assert_eq!(w.countries["A"].recruitable_total, 1950);
+    }
+    #[test]
+    fn army_xp_grows_during_exercises_and_division_experience_drops_with_losses() {
+        let mut world = world();
+        let mut w = army();
+        w.countries.entry("A".into()).or_default()
+            .templates.insert("test".into(), template());
+        let mut d = division(1, "A", 1);
+        d.order = DivisionOrder::Train { hours: 0. };
+        w.divisions.insert(1, d);
+        w.tick_hour(&mut world, GameDate::START, 1, 1, Some("A"));
+        assert!(w.countries["A"].army_xp > 0.);
+        assert!(w.division_experience[&1] > 0.1);
+        w.grant_division_xp(1, 0.2, 0., false);
+        let xp = w.division_experience[&1];
+        w.grant_division_xp(1, 0., 0.5, false);
+        assert!(w.division_experience[&1] < xp);
+        let saved = serde_json::to_string(&w).unwrap();
+        let loaded: Warfare = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.division_experience[&1], w.division_experience[&1]);
+    }
+    #[test]
     fn adding_a_battalion_spends_xp_without_creating_people_equipment_or_hp() {
         let mut w = army();
         let mut a = CountryArmy {
