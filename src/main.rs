@@ -19,6 +19,7 @@ mod naval_carrier;
 mod naval_combat;
 mod naval_designer;
 mod naval_refit;
+mod naval_transport;
 mod naval_warfare;
 mod support_import;
 #[cfg(test)]
