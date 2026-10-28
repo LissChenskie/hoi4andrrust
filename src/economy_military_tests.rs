@@ -160,9 +160,12 @@ fn default_law_scripted_stock_research_production_refit_and_combat_share_one_cam
         "authored law change",
     );
     s.military.refresh_modifiers(&s.research);
-    assert_eq!(s.military.countries["AAA"].manpower_pool, 19000);
+    assert_eq!(s.military.countries["AAA"].mobilization_target, Some(20000));
+    assert_eq!(s.military.countries["AAA"].manpower_pool, 9000);
+    s.military.tick_mobilization_day();
+    assert_eq!(s.military.countries["AAA"].manpower_pool, 10000);
     s.military.refresh_modifiers(&s.research);
-    assert_eq!(s.military.countries["AAA"].manpower_pool, 19000);
+    assert_eq!(s.military.countries["AAA"].manpower_pool, 10000);
     let b = crate::military_model::tests::division(999, "BBB", 2);
     s.military.divisions.insert(999, b);
     s.military.conditions.entry(2).or_default().night_override = Some(false);
