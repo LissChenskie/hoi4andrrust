@@ -58,10 +58,16 @@ pub struct Warfare {
     pub next_division_id: u64,
     pub next_battle_id: u64,
     pub simulated_hours: u64,
+    /// Mobile approximation until versioned mobilization timing fixtures are imported.
+    #[serde(default = "default_mobilization_daily_rate")]
+    pub mobilization_daily_rate: f64,
     pub ai_enabled: bool,
 }
 fn first_recruitment_id() -> u64 {
     1
+}
+fn default_mobilization_daily_rate() -> f64 {
+    0.01
 }
 impl Default for Warfare {
     fn default() -> Self {
@@ -98,6 +104,7 @@ impl Warfare {
             next_division_id: 1,
             next_battle_id: 1,
             simulated_hours: 0,
+            mobilization_daily_rate: default_mobilization_daily_rate(),
             ai_enabled: true,
         }
     }
@@ -341,6 +348,41 @@ impl Warfare {
         }
         self.refresh_modifiers(research);
     }
+    /// Once per completed campaign day. Conscription laws establish the target,
+    /// while enlistment gradually transfers people into the spendable pool.
+    /// Already serving soldiers and people reserved in training are not removed
+    /// when a law is lowered. This is an explicit approximation, not Clausewitz parity.
+    pub fn tick_mobilization_day(&mut self) {
+        for country in self.countries.values_mut() {
+            let Some(target) = country.mobilization_target else { continue; };
+            if target == country.recruitable_total || country.core_population == 0 {
+                continue;
+            }
+            let modifier = (1. + country.modifiers.value("mobilization_speed")).max(0.);
+            let rate = self.mobilization_daily_rate.max(0.) * modifier;
+            let allowance = country.core_population as f64 * rate
+                + country.mobilization_carry;
+            if !allowance.is_finite() || allowance <= 0. {
+                continue;
+            }
+            let quota = allowance.floor().min(u64::MAX as f64) as u64;
+            country.mobilization_carry = (allowance - quota as f64).clamp(0., 1.);
+            if target > country.recruitable_total {
+                let mobilized = (target - country.recruitable_total).min(quota);
+                country.recruitable_total += mobilized;
+                country.manpower_pool = country.manpower_pool.saturating_add(mobilized);
+            } else {
+                // Do not silently confiscate personnel deployed or reserved in
+                // a recruitment job: only free manpower can demobilize.
+                let released = (country.recruitable_total - target)
+                    .min(quota)
+                    .min(country.manpower_pool);
+                country.manpower_pool -= released;
+                country.recruitable_total -= released;
+            }
+        }
+    }
+
     pub fn refresh_modifiers(&mut self, research: &ResearchWorld) {
         for (tag, country) in &mut self.countries {
             let known = research
@@ -426,16 +468,21 @@ impl Warfare {
                     * (1. + m.value("conscription_factor")).max(0.))
                 .clamp(0., 1.);
                 let total = (country.core_population as f64 * rate) as u64;
-                if total >= country.recruitable_total {
-                    country.manpower_pool = country
-                        .manpower_pool
-                        .saturating_add(total - country.recruitable_total);
-                } else {
-                    country.manpower_pool = country
-                        .manpower_pool
-                        .saturating_sub(country.recruitable_total - total);
+                // Starting army histories and old saves have their effective pool
+                // already available. Later law changes set a target, not free men.
+                if country.mobilization_target.is_none() {
+                    if total >= country.recruitable_total {
+                        country.manpower_pool = country
+                            .manpower_pool
+                            .saturating_add(total - country.recruitable_total);
+                    } else {
+                        country.manpower_pool = country
+                            .manpower_pool
+                            .saturating_sub(country.recruitable_total - total);
+                    }
+                    country.recruitable_total = total;
                 }
-                country.recruitable_total = total;
+                country.mobilization_target = Some(total);
             }
             country.modifiers = m;
         }
