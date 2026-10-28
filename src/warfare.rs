@@ -1314,7 +1314,11 @@ impl Warfare {
             // established behavior. Real hourly campaigns consume allocated cargo.
             let cargo_limited = self.logistics.enabled && self.logistics.last_hour.is_some();
             let mut cargo = if cargo_limited {
-                self.logistics.reinforcement_credit.get(&id).copied().unwrap_or(0.)
+                self.logistics
+                    .reinforcement_credit
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0.)
             } else {
                 f64::INFINITY
             };
@@ -1378,7 +1382,9 @@ impl Warfare {
                     } else {
                         u64::from(u32::MAX)
                     };
-                    let taken = deficit.min(*available).min(transport_limit)
+                    let taken = deficit
+                        .min(*available)
+                        .min(transport_limit)
                         .min(u64::from(u32::MAX));
                     *available -= taken;
                     if cargo_limited {
