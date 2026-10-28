@@ -356,7 +356,8 @@ impl Warfare {
     /// Imported defines are used where available; unverified defaults remain
     /// explicitly labelled approximations rather than HOI4 engine parity.
     fn military_define(&self, key: &str, fallback: f64) -> f64 {
-        self.catalogue.literal_defines
+        self.catalogue
+            .literal_defines
             .get(&format!("NDefines.NMilitary.{key}"))
             .copied()
             .filter(|v| v.is_finite() && *v >= 0.)
@@ -372,9 +373,16 @@ impl Warfare {
         }
     }
     fn grant_division_xp(&mut self, id: DivisionId, gain: f64, manpower_loss: f64, training: bool) {
-        let Some(d) = self.divisions.get_mut(&id) else { return; };
-        if d.destroyed { return; }
-        let start = self.division_experience.get(&id).copied()
+        let Some(d) = self.divisions.get_mut(&id) else {
+            return;
+        };
+        if d.destroyed {
+            return;
+        }
+        let start = self
+            .division_experience
+            .get(&id)
+            .copied()
             .unwrap_or_else(|| Self::minimum_division_xp(d.experience));
         let retained = start * (1. - manpower_loss.clamp(0., 1.)).max(0.);
         let cap = if training { 0.3 } else { 1. };
@@ -406,14 +414,15 @@ impl Warfare {
     /// when a law is lowered. This is an explicit approximation, not Clausewitz parity.
     pub fn tick_mobilization_day(&mut self) {
         for country in self.countries.values_mut() {
-            let Some(target) = country.mobilization_target else { continue; };
+            let Some(target) = country.mobilization_target else {
+                continue;
+            };
             if target == country.recruitable_total || country.core_population == 0 {
                 continue;
             }
             let modifier = (1. + country.modifiers.value("mobilization_speed")).max(0.);
             let rate = self.mobilization_daily_rate.max(0.) * modifier;
-            let allowance = country.core_population as f64 * rate
-                + country.mobilization_carry;
+            let allowance = country.core_population as f64 * rate + country.mobilization_carry;
             if !allowance.is_finite() || allowance <= 0. {
                 continue;
             }
@@ -2917,7 +2926,8 @@ impl Warfare {
                 .collect();
             self.command.gain_combat_xp(&active);
             self.command.advance_levels(&mut self.rng);
-            let before_manpower: BTreeMap<_, _> = active.iter()
+            let before_manpower: BTreeMap<_, _> = active
+                .iter()
                 .filter_map(|id| self.divisions.get(id).map(|d| (*id, d.manpower)))
                 .collect();
             let env = self.environment(&battle, world, hour);
@@ -2947,11 +2957,12 @@ impl Warfare {
                     let tag = d.country.clone();
                     let strength = d.strength();
                     let old = before_manpower.get(unit).copied().unwrap_or(0);
-                    let attrition = if old == 0 { 0. } else {
+                    let attrition = if old == 0 {
+                        0.
+                    } else {
                         f64::from(old.saturating_sub(d.manpower)) / f64::from(old)
                     };
-                    *country_combat_xp.entry(tag).or_default() +=
-                        strength * combat_country_rate;
+                    *country_combat_xp.entry(tag).or_default() += strength * combat_country_rate;
                     self.grant_division_xp(*unit, combat_unit_rate * strength, attrition, false);
                 }
             }
@@ -3162,17 +3173,22 @@ pub(crate) mod tests {
     fn mobilization_uses_daily_quota_and_releases_only_free_reserve() {
         let mut w = army();
         w.mobilization_daily_rate = 0.01;
-        w.countries.insert("A".into(), CountryArmy {
-            core_population: 10000,
-            recruitable_total: 1000,
-            mobilization_target: Some(2000),
-            manpower_pool: 500,
-            ..Default::default()
-        });
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                core_population: 10000,
+                recruitable_total: 1000,
+                mobilization_target: Some(2000),
+                manpower_pool: 500,
+                ..Default::default()
+            },
+        );
         w.tick_mobilization_day();
         assert_eq!(w.countries["A"].manpower_pool, 600);
         assert_eq!(w.countries["A"].recruitable_total, 1100);
-        for _ in 0..9 { w.tick_mobilization_day(); }
+        for _ in 0..9 {
+            w.tick_mobilization_day();
+        }
         assert_eq!(w.countries["A"].recruitable_total, 2000);
         w.countries.get_mut("A").unwrap().mobilization_target = Some(800);
         w.countries.get_mut("A").unwrap().manpower_pool = 50;
@@ -3184,8 +3200,11 @@ pub(crate) mod tests {
     fn army_xp_grows_during_exercises_and_division_experience_drops_with_losses() {
         let mut world = world();
         let mut w = army();
-        w.countries.entry("A".into()).or_default()
-            .templates.insert("test".into(), template());
+        w.countries
+            .entry("A".into())
+            .or_default()
+            .templates
+            .insert("test".into(), template());
         let mut d = division(1, "A", 1);
         d.order = DivisionOrder::Train { hours: 0. };
         w.divisions.insert(1, d);
