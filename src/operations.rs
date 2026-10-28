@@ -1031,14 +1031,31 @@ pub(crate) mod tests {
         let mut p = w.plans.plans.remove(&plan).unwrap();
         p.distance = goal_distances(&w, &world, "A", &p.destination_line);
         p.assigned_divisions = BTreeSet::from([1, 2, 3]);
-        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(1, 1);
-        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(2, 4);
-        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(3, 6);
+        w.fronts
+            .fronts
+            .get_mut(&front)
+            .unwrap()
+            .assignments
+            .insert(1, 1);
+        w.fronts
+            .fronts
+            .get_mut(&front)
+            .unwrap()
+            .assignments
+            .insert(2, 4);
+        w.fronts
+            .fronts
+            .get_mut(&front)
+            .unwrap()
+            .assignments
+            .insert(3, 6);
         advance(&mut p, &mut w, &world);
-        let occupying = (1..=3).filter(|id| {
-            matches!(&w.divisions[id].order, DivisionOrder::Move { path, .. }
+        let occupying = (1..=3)
+            .filter(|id| {
+                matches!(&w.divisions[id].order, DivisionOrder::Move { path, .. }
                 if path == &vec![9])
-        }).count();
+            })
+            .count();
         assert_eq!(occupying, 1);
         assert!(matches!(w.divisions[&2].order, DivisionOrder::Move { .. }));
         assert!(matches!(w.divisions[&3].order, DivisionOrder::Move { .. }));
