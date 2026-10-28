@@ -363,42 +363,70 @@ impl Warfare {
             .filter(|v| v.is_finite() && *v >= 0.)
             .unwrap_or(fallback)
     }
-    fn minimum_division_xp(level: ExperienceLevel) -> f64 {
+    /// Thresholds are read from the installed version's NMilitary defines.
+    /// Older saves and miniature test catalogues use the classic four levels.
+    fn division_xp_thresholds(&self) -> [f64; 4] {
+        let default = [0.1, 0.3, 0.75, 0.9];
+        let Some(levels) = self.catalogue.literal_arrays
+            .get("NDefines.NMilitary.UNIT_EXP_LEVELS") else {
+                return default;
+            };
+        if levels.len() != 4 || levels.iter().any(|x| !x.is_finite() || !(0.0..=1.0).contains(x))
+            || levels.windows(2).any(|v| v[0] >= v[1])
+        {
+            return default;
+        }
+        [levels[0], levels[1], levels[2], levels[3]]
+    }
+    fn minimum_division_xp(level: ExperienceLevel, levels: [f64; 4]) -> f64 {
         match level {
             ExperienceLevel::Green => 0.,
-            ExperienceLevel::Trained => 0.1,
-            ExperienceLevel::Regular => 0.3,
-            ExperienceLevel::Seasoned => 0.75,
-            ExperienceLevel::Veteran => 0.9,
+            ExperienceLevel::Trained => levels[0],
+            ExperienceLevel::Regular => levels[1],
+            ExperienceLevel::Seasoned => levels[2],
+            ExperienceLevel::Veteran => levels[3],
         }
     }
-    fn grant_division_xp(&mut self, id: DivisionId, gain: f64, manpower_loss: f64, training: bool) {
-        let Some(d) = self.divisions.get_mut(&id) else {
-            return;
-        };
-        if d.destroyed {
-            return;
-        }
-        let start = self
-            .division_experience
-            .get(&id)
-            .copied()
-            .unwrap_or_else(|| Self::minimum_division_xp(d.experience));
-        let retained = start * (1. - manpower_loss.clamp(0., 1.)).max(0.);
-        let cap = if training { start.max(0.3) } else { 1. };
-        let xp = (retained + gain.max(0.)).clamp(0., cap);
-        self.division_experience.insert(id, xp);
-        d.experience = if xp >= 0.9 {
+    fn division_level(xp: f64, levels: [f64; 4]) -> ExperienceLevel {
+        if xp >= levels[3] {
             ExperienceLevel::Veteran
-        } else if xp >= 0.75 {
+        } else if xp >= levels[2] {
             ExperienceLevel::Seasoned
-        } else if xp >= 0.3 {
+        } else if xp >= levels[1] {
             ExperienceLevel::Regular
-        } else if xp >= 0.1 {
+        } else if xp >= levels[0] {
             ExperienceLevel::Trained
         } else {
             ExperienceLevel::Green
-        };
+        }
+    }
+    fn grant_division_xp(&mut self, id: DivisionId, gain: f64, training: bool) {
+        let levels = self.division_xp_thresholds();
+        let Some(d) = self.divisions.get_mut(&id) else { return; };
+        if d.destroyed { return; }
+        let start = self.division_experience.get(&id).copied()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .unwrap_or_else(|| Self::minimum_division_xp(d.experience, levels));
+        let cap = if training { start.max(levels[1]) } else { 1. };
+        let xp = (start + gain.max(0.)).clamp(0., cap);
+        self.division_experience.insert(id, xp);
+        d.experience = Self::division_level(xp, levels);
+    }
+    /// Every newly arrived recruit has the green training baseline. Dilute
+    /// the existing division experience once, when people actually arrive.
+    /// Combat casualties alone never cause a second debit before replacements.
+    fn incorporate_replacements(&mut self, id: DivisionId, old_manpower: u32, joined: u32) {
+        if joined == 0 { return; }
+        let levels = self.division_xp_thresholds();
+        let Some(d) = self.divisions.get_mut(&id) else { return; };
+        if d.destroyed { return; }
+        let old_xp = self.division_experience.get(&id).copied()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .unwrap_or_else(|| Self::minimum_division_xp(d.experience, levels));
+        let count = f64::from(old_manpower) + f64::from(joined);
+        let updated = if count > 0. { old_xp * f64::from(old_manpower) / count } else { 0. };
+        self.division_experience.insert(id, updated);
+        d.experience = Self::division_level(updated, levels);
     }
     fn grant_army_xp(&mut self, country: &str, amount: f64) {
         if amount.is_finite() && amount > 0. {
@@ -636,17 +664,8 @@ impl Warfare {
         let manpower = (derived.stats.manpower * manpower_factor.clamp(0.0, 1.0)).floor() as u32;
         let id = self.next_division_id;
         self.next_division_id += 1;
-        let experience = if experience >= 0.9 {
-            ExperienceLevel::Veteran
-        } else if experience >= 0.75 {
-            ExperienceLevel::Seasoned
-        } else if experience >= 0.3 {
-            ExperienceLevel::Regular
-        } else if experience >= 0.1 {
-            ExperienceLevel::Trained
-        } else {
-            ExperienceLevel::Green
-        };
+        let initial_experience = experience.clamp(0., 1.);
+        let experience = Self::division_level(initial_experience, self.division_xp_thresholds());
         let fraction = manpower_factor
             .min(if derived.equipment.is_empty() {
                 1.0
@@ -689,6 +708,7 @@ impl Warfare {
                 recent_losses: 0,
             },
         );
+        self.division_experience.insert(id, initial_experience);
         if !missing.is_empty() {
             self.diagnostics.push(format!(
                 "{country} / {name}: retained without unresolved equipment: {}",
@@ -1487,6 +1507,7 @@ impl Warfare {
             let needs = d.derived.equipment.clone();
             let old_equipment = d.equipment.clone();
             let max_manpower = d.derived.stats.manpower.ceil() as u32;
+            let old_manpower = d.manpower;
             let stock = &mut production.country_mut(&tag).model_stockpile;
             let d = self.divisions.get_mut(&id).unwrap();
             for (archetype, needed) in needs {
@@ -1572,6 +1593,7 @@ impl Warfare {
                     }
                 }
             }
+            self.incorporate_replacements(id, old_manpower, men as u32);
         }
         self.supply_recruitment(production);
     }
@@ -2803,6 +2825,7 @@ impl Warfare {
             .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
         let training_xp_rate = self.military_define("UNIT_EXPERIENCE_PER_TRAINING_DAY", 0.0015);
         let mut training_gains = Vec::new();
+        let mut completed_training = Vec::new();
         let mut country_exercise = BTreeMap::<String, f64>::new();
         for d in self.divisions.values_mut().filter(|d| !d.destroyed) {
             d.attack_delay = d.attack_delay.saturating_sub(1);
@@ -2845,9 +2868,7 @@ impl Warfare {
                     }
                     if *hours >= d.derived.stats.training * 24.0 {
                         d.order = DivisionOrder::Hold;
-                        if d.experience == ExperienceLevel::Green {
-                            d.experience = ExperienceLevel::Trained;
-                        }
+                        completed_training.push(d.id);
                     }
                 }
             }
@@ -2893,7 +2914,16 @@ impl Warfare {
             self.grant_army_xp(&country, xp.min(0.08 / 24.));
         }
         for (id, gain) in training_gains {
-            self.grant_division_xp(id, gain, 0., true);
+            self.grant_division_xp(id, gain, true);
+        }
+        // The completed instruction has a guaranteed trained baseline,
+        // including when a division has finished quicker than the XP curve.
+        let trained = self.division_xp_thresholds()[0];
+        for id in completed_training {
+            let current = self.division_experience.get(&id).copied().unwrap_or(0.);
+            if current < trained {
+                self.grant_division_xp(id, trained - current, false);
+            }
         }
         self.automatic_order = true;
         self.movement_step(world);
@@ -2926,10 +2956,6 @@ impl Warfare {
                 .collect();
             self.command.gain_combat_xp(&active);
             self.command.advance_levels(&mut self.rng);
-            let before_manpower: BTreeMap<_, _> = active
-                .iter()
-                .filter_map(|id| self.divisions.get(id).map(|d| (*id, d.manpower)))
-                .collect();
             let env = self.environment(&battle, world, hour);
             if let Some(trace) = battle.step(
                 &mut self.divisions,
@@ -2950,20 +2976,14 @@ impl Warfare {
                     }
                 }
             }
-            // Country XP and unit experience are different ledgers. Casualties
-            // dilute unit experience through new inexperienced replacements.
+            // Country XP and unit experience are different ledgers.
+            // Survivors retain experience; fresh manpower dilutes it on arrival.
             for unit in &active {
                 if let Some(d) = self.divisions.get(unit) {
                     let tag = d.country.clone();
                     let strength = d.strength();
-                    let old = before_manpower.get(unit).copied().unwrap_or(0);
-                    let attrition = if old == 0 {
-                        0.
-                    } else {
-                        f64::from(old.saturating_sub(d.manpower)) / f64::from(old)
-                    };
                     *country_combat_xp.entry(tag).or_default() += strength * combat_country_rate;
-                    self.grant_division_xp(*unit, combat_unit_rate * strength, attrition, false);
+                    self.grant_division_xp(*unit, combat_unit_rate * strength, false);
                 }
             }
             // Recalculate only actual participants whose inventories may have
