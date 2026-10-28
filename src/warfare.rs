@@ -1399,6 +1399,7 @@ impl Warfare {
             return Err("Нет пути для возвращения людей и техники на национальный склад".into());
         }
         let d = self.divisions.remove(&id).unwrap();
+        self.division_experience.remove(&id);
         let army = self.countries.get_mut(country).unwrap();
         army.manpower_pool += u64::from(d.manpower);
         let stock = &mut production.country_mut(country).model_stockpile;
@@ -3217,6 +3218,68 @@ pub(crate) mod tests {
         assert_eq!(w.countries["A"].recruitable_total, 1950);
     }
     #[test]
+    fn reinforcements_dilute_xp_only_when_new_personnel_arrive() {
+        let mut w = army();
+        let mut d = division(1, "A", 1);
+        d.manpower = 500;
+        w.divisions.insert(1, d);
+        w.division_experience.insert(1, 0.8);
+        w.countries.insert("A".into(), CountryArmy {
+            manpower_pool: 500,
+            templates: BTreeMap::from([("test".into(), template())]),
+            ..Default::default()
+        });
+        let mut production = ProductionState::default();
+        w.replenish(&mut production);
+        assert_eq!(w.divisions[&1].manpower, 1000);
+        assert!((w.division_experience[&1] - 0.4).abs() < 1e-9);
+        assert_eq!(w.divisions[&1].experience, ExperienceLevel::Regular);
+        assert_eq!(w.countries["A"].manpower_pool, 0);
+        // Repeated daily resupply with no new people must never drain XP again.
+        w.replenish(&mut production);
+        assert!((w.division_experience[&1] - 0.4).abs() < 1e-9);
+        let saved = serde_json::to_string(&w).unwrap();
+        let loaded: Warfare = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.division_experience[&1], 0.4);
+    }
+    #[test]
+    fn imported_xp_is_not_rounded_to_a_rank_and_imported_thresholds_apply() {
+        let mut c = catalogue();
+        c.literal_arrays.insert(
+            "NDefines.NMilitary.UNIT_EXP_LEVELS".into(),
+            vec![0.2, 0.4, 0.7, 0.95],
+        );
+        let world = world();
+        let mut w = Warfare::new(c);
+        w.countries.insert("A".into(), CountryArmy {
+            templates: BTreeMap::from([("test".into(), template())]),
+            ..Default::default()
+        });
+        let id = w.spawn_history("A", "test", 1, "Historical", 1., 1., 0.39, &world).unwrap();
+        assert!((w.division_experience[&id] - 0.39).abs() < 1e-9);
+        assert_eq!(w.divisions[&id].experience, ExperienceLevel::Trained);
+        w.grant_division_xp(id, 0.02, false);
+        assert_eq!(w.divisions[&id].experience, ExperienceLevel::Regular);
+        assert!((w.division_experience[&id] - 0.41).abs() < 1e-9);
+    }
+    #[test]
+    fn missing_legacy_xp_recovers_from_existing_rank_on_reinforcement() {
+        let mut w = army();
+        let mut d = division(1, "A", 1);
+        d.manpower = 800;
+        d.experience = ExperienceLevel::Seasoned;
+        w.divisions.insert(1, d);
+        w.countries.insert("A".into(), CountryArmy {
+            manpower_pool: 200,
+            templates: BTreeMap::from([("test".into(), template())]),
+            ..Default::default()
+        });
+        let mut production = ProductionState::default();
+        w.replenish(&mut production);
+        assert!((w.division_experience[&1] - 0.6).abs() < 1e-9);
+        assert_eq!(w.divisions[&1].experience, ExperienceLevel::Regular);
+    }
+    #[test]
     fn army_xp_grows_during_exercises_and_division_experience_drops_with_losses() {
         let mut world = world();
         let mut w = army();
@@ -3231,9 +3294,9 @@ pub(crate) mod tests {
         w.tick_hour(&mut world, GameDate::START, 1, 1, Some("A"));
         assert!(w.countries["A"].army_xp > 0.);
         assert!(w.division_experience[&1] > 0.1);
-        w.grant_division_xp(1, 0.2, 0., false);
+        w.grant_division_xp(1, 0.2, false);
         let xp = w.division_experience[&1];
-        w.grant_division_xp(1, 0., 0.5, false);
+        w.incorporate_replacements(1, 500, 500);
         assert!(w.division_experience[&1] < xp);
         let saved = serde_json::to_string(&w).unwrap();
         let loaded: Warfare = serde_json::from_str(&saved).unwrap();
