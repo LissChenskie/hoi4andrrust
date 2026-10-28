@@ -925,6 +925,12 @@ pub struct CountryArmy {
     pub core_population: u64,
     #[serde(default)]
     pub recruitable_total: u64,
+    /// Target from current conscription law; None only on initial import / legacy save.
+    #[serde(default)]
+    pub mobilization_target: Option<u64>,
+    /// Fractional mobilization carried between daily ticks for small nations.
+    #[serde(default)]
+    pub mobilization_carry: f64,
     pub army_xp: f64,
     pub command_power: Option<f64>,
     pub modifiers: MilitaryModifiers,

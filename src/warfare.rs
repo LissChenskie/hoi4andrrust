@@ -58,10 +58,20 @@ pub struct Warfare {
     pub next_division_id: u64,
     pub next_battle_id: u64,
     pub simulated_hours: u64,
+    /// Serializable per-division experience progress for threshold transitions.
+    /// Absent keys in legacy saves are initialized from the saved level.
+    #[serde(default)]
+    pub division_experience: BTreeMap<DivisionId, f64>,
+    /// Mobile approximation until versioned mobilization timing fixtures are imported.
+    #[serde(default = "default_mobilization_daily_rate")]
+    pub mobilization_daily_rate: f64,
     pub ai_enabled: bool,
 }
 fn first_recruitment_id() -> u64 {
     1
+}
+fn default_mobilization_daily_rate() -> f64 {
+    0.01
 }
 impl Default for Warfare {
     fn default() -> Self {
@@ -98,6 +108,8 @@ impl Warfare {
             next_division_id: 1,
             next_battle_id: 1,
             simulated_hours: 0,
+            division_experience: BTreeMap::new(),
+            mobilization_daily_rate: default_mobilization_daily_rate(),
             ai_enabled: true,
         }
     }
@@ -341,6 +353,97 @@ impl Warfare {
         }
         self.refresh_modifiers(research);
     }
+    /// Imported defines are used where available; unverified defaults remain
+    /// explicitly labelled approximations rather than HOI4 engine parity.
+    fn military_define(&self, key: &str, fallback: f64) -> f64 {
+        self.catalogue
+            .literal_defines
+            .get(&format!("NDefines.NMilitary.{key}"))
+            .copied()
+            .filter(|v| v.is_finite() && *v >= 0.)
+            .unwrap_or(fallback)
+    }
+    fn minimum_division_xp(level: ExperienceLevel) -> f64 {
+        match level {
+            ExperienceLevel::Green => 0.,
+            ExperienceLevel::Trained => 0.1,
+            ExperienceLevel::Regular => 0.3,
+            ExperienceLevel::Seasoned => 0.75,
+            ExperienceLevel::Veteran => 0.9,
+        }
+    }
+    fn grant_division_xp(&mut self, id: DivisionId, gain: f64, manpower_loss: f64, training: bool) {
+        let Some(d) = self.divisions.get_mut(&id) else {
+            return;
+        };
+        if d.destroyed {
+            return;
+        }
+        let start = self
+            .division_experience
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| Self::minimum_division_xp(d.experience));
+        let retained = start * (1. - manpower_loss.clamp(0., 1.)).max(0.);
+        let cap = if training { start.max(0.3) } else { 1. };
+        let xp = (retained + gain.max(0.)).clamp(0., cap);
+        self.division_experience.insert(id, xp);
+        d.experience = if xp >= 0.9 {
+            ExperienceLevel::Veteran
+        } else if xp >= 0.75 {
+            ExperienceLevel::Seasoned
+        } else if xp >= 0.3 {
+            ExperienceLevel::Regular
+        } else if xp >= 0.1 {
+            ExperienceLevel::Trained
+        } else {
+            ExperienceLevel::Green
+        };
+    }
+    fn grant_army_xp(&mut self, country: &str, amount: f64) {
+        if amount.is_finite() && amount > 0. {
+            if let Some(army) = self.countries.get_mut(country) {
+                army.army_xp = (army.army_xp + amount).min(500.);
+            }
+        }
+    }
+
+    /// Once per completed campaign day. Conscription laws establish the target,
+    /// while enlistment gradually transfers people into the spendable pool.
+    /// Already serving soldiers and people reserved in training are not removed
+    /// when a law is lowered. This is an explicit approximation, not Clausewitz parity.
+    pub fn tick_mobilization_day(&mut self) {
+        for country in self.countries.values_mut() {
+            let Some(target) = country.mobilization_target else {
+                continue;
+            };
+            if target == country.recruitable_total || country.core_population == 0 {
+                continue;
+            }
+            let modifier = (1. + country.modifiers.value("mobilization_speed")).max(0.);
+            let rate = self.mobilization_daily_rate.max(0.) * modifier;
+            let allowance = country.core_population as f64 * rate + country.mobilization_carry;
+            if !allowance.is_finite() || allowance <= 0. {
+                continue;
+            }
+            let quota = allowance.floor().min(u64::MAX as f64) as u64;
+            country.mobilization_carry = (allowance - quota as f64).clamp(0., 1.);
+            if target > country.recruitable_total {
+                let mobilized = (target - country.recruitable_total).min(quota);
+                country.recruitable_total += mobilized;
+                country.manpower_pool = country.manpower_pool.saturating_add(mobilized);
+            } else {
+                // Do not silently confiscate personnel deployed or reserved in
+                // a recruitment job: only free manpower can demobilize.
+                let released = (country.recruitable_total - target)
+                    .min(quota)
+                    .min(country.manpower_pool);
+                country.manpower_pool -= released;
+                country.recruitable_total -= released;
+            }
+        }
+    }
+
     pub fn refresh_modifiers(&mut self, research: &ResearchWorld) {
         for (tag, country) in &mut self.countries {
             let known = research
@@ -426,16 +529,21 @@ impl Warfare {
                     * (1. + m.value("conscription_factor")).max(0.))
                 .clamp(0., 1.);
                 let total = (country.core_population as f64 * rate) as u64;
-                if total >= country.recruitable_total {
-                    country.manpower_pool = country
-                        .manpower_pool
-                        .saturating_add(total - country.recruitable_total);
-                } else {
-                    country.manpower_pool = country
-                        .manpower_pool
-                        .saturating_sub(country.recruitable_total - total);
+                // Starting army histories and old saves have their effective pool
+                // already available. Later law changes set a target, not free men.
+                if country.mobilization_target.is_none() {
+                    if total >= country.recruitable_total {
+                        country.manpower_pool = country
+                            .manpower_pool
+                            .saturating_add(total - country.recruitable_total);
+                    } else {
+                        country.manpower_pool = country
+                            .manpower_pool
+                            .saturating_sub(country.recruitable_total - total);
+                    }
+                    country.recruitable_total = total;
                 }
-                country.recruitable_total = total;
+                country.mobilization_target = Some(total);
             }
             country.modifiers = m;
         }
@@ -2691,6 +2799,11 @@ impl Warfare {
         if self.divisions.is_empty() {
             return;
         }
+        self.division_experience
+            .retain(|id, _| self.divisions.get(id).is_some_and(|d| !d.destroyed));
+        let training_xp_rate = self.military_define("UNIT_EXPERIENCE_PER_TRAINING_DAY", 0.0015);
+        let mut training_gains = Vec::new();
+        let mut country_exercise = BTreeMap::<String, f64>::new();
         for d in self.divisions.values_mut().filter(|d| !d.destroyed) {
             d.attack_delay = d.attack_delay.saturating_sub(1);
             if d.battle.is_none() {
@@ -2725,9 +2838,16 @@ impl Warfare {
                 let strength = d.strength();
                 if let DivisionOrder::Train { hours } = &mut d.order {
                     *hours += strength;
+                    if strength > 0. {
+                        training_gains.push((d.id, training_xp_rate * strength / 24.));
+                        *country_exercise.entry(d.country.clone()).or_default() +=
+                            0.08 * strength / 24.;
+                    }
                     if *hours >= d.derived.stats.training * 24.0 {
                         d.order = DivisionOrder::Hold;
-                        d.experience = ExperienceLevel::Trained;
+                        if d.experience == ExperienceLevel::Green {
+                            d.experience = ExperienceLevel::Trained;
+                        }
                     }
                 }
             }
@@ -2767,6 +2887,14 @@ impl Warfare {
                 d.planning = (d.planning - decay / 24.0).max(0.0);
             }
         }
+        // Cap country XP from exercises independently of the number of units.
+        // The default 0.08/day is provisional, not a verified 1.19.3 define.
+        for (country, xp) in country_exercise {
+            self.grant_army_xp(&country, xp.min(0.08 / 24.));
+        }
+        for (id, gain) in training_gains {
+            self.grant_division_xp(id, gain, 0., true);
+        }
         self.automatic_order = true;
         self.movement_step(world);
         self.automatic_order = false;
@@ -2782,6 +2910,11 @@ impl Warfare {
             .map(|(tag, a)| (tag.clone(), a.modifiers.clone()))
             .collect();
         self.hourly_air = self.hourly_air_allocations();
+        let mut country_combat_xp = BTreeMap::<String, f64>::new();
+        let combat_unit_rate = self.military_define("UNIT_EXPERIENCE_PER_COMBAT_HOUR", 0.0001);
+        let combat_country_rate = self.military_define("FIELD_EXPERIENCE_SCALE", 0.002);
+        let combat_country_hour_cap =
+            self.military_define("FIELD_EXPERIENCE_MAX_PER_DAY", 3.) / 24.;
         for id in battle_ids {
             let mut battle = self.battles.remove(&id).unwrap();
             let active: Vec<_> = battle
@@ -2793,6 +2926,10 @@ impl Warfare {
                 .collect();
             self.command.gain_combat_xp(&active);
             self.command.advance_levels(&mut self.rng);
+            let before_manpower: BTreeMap<_, _> = active
+                .iter()
+                .filter_map(|id| self.divisions.get(id).map(|d| (*id, d.manpower)))
+                .collect();
             let env = self.environment(&battle, world, hour);
             if let Some(trace) = battle.step(
                 &mut self.divisions,
@@ -2811,6 +2948,22 @@ impl Warfare {
                         d.waypoints.clear();
                         d.attack_delay = self.catalogue.rules.attack_delay;
                     }
+                }
+            }
+            // Country XP and unit experience are different ledgers. Casualties
+            // dilute unit experience through new inexperienced replacements.
+            for unit in &active {
+                if let Some(d) = self.divisions.get(unit) {
+                    let tag = d.country.clone();
+                    let strength = d.strength();
+                    let old = before_manpower.get(unit).copied().unwrap_or(0);
+                    let attrition = if old == 0 {
+                        0.
+                    } else {
+                        f64::from(old.saturating_sub(d.manpower)) / f64::from(old)
+                    };
+                    *country_combat_xp.entry(tag).or_default() += strength * combat_country_rate;
+                    self.grant_division_xp(*unit, combat_unit_rate * strength, attrition, false);
                 }
             }
             // Recalculate only actual participants whose inventories may have
@@ -2833,6 +2986,9 @@ impl Warfare {
                 self.finish_battle(&battle, world);
             }
             self.battles.insert(id, battle);
+        }
+        for (country, xp) in country_combat_xp {
+            self.grant_army_xp(&country, xp.min(combat_country_hour_cap));
         }
         // Bounded completed battle archive. Active battle state is never discarded.
         let completed: Vec<_> = self
@@ -3012,6 +3168,56 @@ pub(crate) mod tests {
                 .iter()
                 .any(|s| s.contains("unknown_equipment"))
         );
+    }
+    #[test]
+    fn mobilization_uses_daily_quota_and_releases_only_free_reserve() {
+        let mut w = army();
+        w.mobilization_daily_rate = 0.01;
+        w.countries.insert(
+            "A".into(),
+            CountryArmy {
+                core_population: 10000,
+                recruitable_total: 1000,
+                mobilization_target: Some(2000),
+                manpower_pool: 500,
+                ..Default::default()
+            },
+        );
+        w.tick_mobilization_day();
+        assert_eq!(w.countries["A"].manpower_pool, 600);
+        assert_eq!(w.countries["A"].recruitable_total, 1100);
+        for _ in 0..9 {
+            w.tick_mobilization_day();
+        }
+        assert_eq!(w.countries["A"].recruitable_total, 2000);
+        w.countries.get_mut("A").unwrap().mobilization_target = Some(800);
+        w.countries.get_mut("A").unwrap().manpower_pool = 50;
+        w.tick_mobilization_day();
+        assert_eq!(w.countries["A"].manpower_pool, 0);
+        assert_eq!(w.countries["A"].recruitable_total, 1950);
+    }
+    #[test]
+    fn army_xp_grows_during_exercises_and_division_experience_drops_with_losses() {
+        let mut world = world();
+        let mut w = army();
+        w.countries
+            .entry("A".into())
+            .or_default()
+            .templates
+            .insert("test".into(), template());
+        let mut d = division(1, "A", 1);
+        d.order = DivisionOrder::Train { hours: 0. };
+        w.divisions.insert(1, d);
+        w.tick_hour(&mut world, GameDate::START, 1, 1, Some("A"));
+        assert!(w.countries["A"].army_xp > 0.);
+        assert!(w.division_experience[&1] > 0.1);
+        w.grant_division_xp(1, 0.2, 0., false);
+        let xp = w.division_experience[&1];
+        w.grant_division_xp(1, 0., 0.5, false);
+        assert!(w.division_experience[&1] < xp);
+        let saved = serde_json::to_string(&w).unwrap();
+        let loaded: Warfare = serde_json::from_str(&saved).unwrap();
+        assert_eq!(loaded.division_experience[&1], w.division_experience[&1]);
     }
     #[test]
     fn adding_a_battalion_spends_xp_without_creating_people_equipment_or_hp() {

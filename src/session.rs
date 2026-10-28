@@ -335,6 +335,7 @@ impl GameSession {
         self.refresh_research_contexts();
         self.refresh_research_building_slots();
         self.military.refresh_modifiers(&self.research);
+        self.military.tick_mobilization_day();
         // Every country's production sees factories present at day start.
         // Newly completed MIL participates only in the next daily production.
         let costs = self
