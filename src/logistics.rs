@@ -100,6 +100,9 @@ pub struct CountryLogistics {
     /// Reserved by international trade. These hulls cannot simultaneously
     /// serve overseas military supply.
     pub trade_convoys_committed: u64,
+    /// Hulls occupied by active troop transfers. Excluded from trade and supply.
+    #[serde(default)]
+    pub transport_convoys_committed: u64,
     pub trucks: u64,
     pub truck_models: BTreeMap<String, u64>,
     pub fuel_used_last_hour: f64,
@@ -660,7 +663,7 @@ impl LogisticsState {
                     b,
                     country
                         .convoys
-                        .saturating_sub(country.trade_convoys_committed) as f64
+                        .saturating_sub(country.trade_convoys_committed.saturating_add(country.transport_convoys_committed)) as f64
                         * self.rules.supply_per_convoy
                         / count,
                 );
