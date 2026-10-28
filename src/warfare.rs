@@ -385,7 +385,7 @@ impl Warfare {
             .copied()
             .unwrap_or_else(|| Self::minimum_division_xp(d.experience));
         let retained = start * (1. - manpower_loss.clamp(0., 1.)).max(0.);
-        let cap = if training { 0.3 } else { 1. };
+        let cap = if training { start.max(0.3) } else { 1. };
         let xp = (retained + gain.max(0.)).clamp(0., cap);
         self.division_experience.insert(id, xp);
         d.experience = if xp >= 0.9 {
