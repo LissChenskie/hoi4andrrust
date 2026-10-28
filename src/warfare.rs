@@ -3263,6 +3263,49 @@ pub(crate) mod tests {
         assert!((w.division_experience[&id] - 0.41).abs() < 1e-9);
     }
     #[test]
+    fn combat_casualties_and_later_replacements_reduce_experience_once() {
+        let mut w = army();
+        let mut d = division(1, "A", 1);
+        let (lost, _) = d.apply_damage(5., 0., &w.catalogue.rules);
+        assert!(lost > 0);
+        let survivors = d.manpower;
+        w.divisions.insert(1, d);
+        w.division_experience.insert(1, 0.8);
+        w.countries.insert("A".into(), CountryArmy {
+            manpower_pool: u64::from(lost),
+            templates: BTreeMap::from([("test".into(), template())]),
+            ..Default::default()
+        });
+        let mut p = ProductionState::default();
+        // No new recruits yet: the survivors keep their own experience.
+        assert!((w.division_experience[&1] - 0.8).abs() < 1e-9);
+        w.replenish(&mut p);
+        let expected = 0.8 * f64::from(survivors) / 1000.;
+        assert!((w.division_experience[&1] - expected).abs() < 1e-9);
+        assert_eq!(w.divisions[&1].manpower, 1000);
+        w.replenish(&mut p);
+        assert!((w.division_experience[&1] - expected).abs() < 1e-9);
+    }
+    #[test]
+    fn completed_training_establishes_trained_experience_without_resetting_veterans() {
+        let mut world = world();
+        let mut w = army();
+        let mut d = division(1, "A", 1);
+        d.experience = ExperienceLevel::Green;
+        d.order = DivisionOrder::Train { hours: 0. };
+        d.derived.stats.training = 0.01;
+        w.divisions.insert(1, d);
+        w.tick_hour(&mut world, GameDate::START, 1, 1, Some("A"));
+        assert_eq!(w.divisions[&1].experience, ExperienceLevel::Trained);
+        assert!(w.division_experience[&1] >= 0.1);
+        w.division_experience.insert(1, 0.95);
+        w.divisions.get_mut(&1).unwrap().experience = ExperienceLevel::Veteran;
+        w.divisions.get_mut(&1).unwrap().order = DivisionOrder::Train { hours: 0. };
+        w.tick_hour(&mut world, GameDate::START, 2, 2, Some("A"));
+        assert_eq!(w.divisions[&1].experience, ExperienceLevel::Veteran);
+        assert!(w.division_experience[&1] >= 0.95);
+    }
+    #[test]
     fn missing_legacy_xp_recovers_from_existing_rank_on_reinforcement() {
         let mut w = army();
         let mut d = division(1, "A", 1);
