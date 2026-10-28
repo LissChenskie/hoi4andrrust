@@ -179,6 +179,14 @@ pub struct NavalState {
     #[serde(default, with = "save_pairs")]
     pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
     pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
+    /// Transient result of the immediately preceding hourly naval fuel tick.
+    /// Trade is settled after that tick, never directly from assigned orders.
+    #[serde(skip)]
+    pub operational_fuel: BTreeMap<u64, f64>,
+    /// Distinguishes an actual no-active-ship result from old direct-call tests
+    /// and older saves with no hourly snapshot.
+    #[serde(skip)]
+    pub operational_fuel_sampled: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConvoyEvent {
@@ -624,10 +632,21 @@ impl NavalState {
         self.task_forces
             .values()
             .filter(|f| {
-                f.country == ship_country && f.mission == mission && f.regions.contains(&region)
+                f.country == ship_country
+                    && f.mission == mission
+                    && f.regions.contains(&region)
+                    && (!self.operational_fuel_sampled
+                        || self.operational_fuel.get(&f.id).is_some_and(|v| *v > 0.))
             })
-            .flat_map(|f| f.ships.iter())
-            .filter_map(|s| {
+            .flat_map(|f| {
+                let fuel_fraction = if self.operational_fuel_sampled {
+                    self.operational_fuel.get(&f.id).copied().unwrap_or(0.)
+                } else {
+                    1.
+                };
+                f.ships.iter().map(move |ship| (ship, fuel_fraction))
+            })
+            .filter_map(|(s, fuel_fraction)| {
                 let e = self.ship_stats(s, w)?;
                 let stat = match mission {
                     NavalMission::ConvoyRaiding => {
@@ -643,7 +662,7 @@ impl NavalState {
                     }
                     NavalMission::Hold => 0.0,
                 };
-                Some(stat.max(0.0) * s.strength.clamp(0.0, 1.0))
+                Some(stat.max(0.0) * s.strength.clamp(0.0, 1.0) * fuel_fraction)
             })
             .sum()
     }
@@ -1058,6 +1077,144 @@ mod tests {
         naval.process_trade(&world, &warfare, &mut shipping, &mut losses);
         assert!(losses.is_empty());
         assert_eq!(shipping.last["A"].imported["steel"], 16);
+    }
+
+    #[test]
+    fn raiding_needs_fuel_and_usable_base_on_the_current_hour() {
+        use crate::map_graph::MapGraph;
+        use crate::military_model::{CountryArmy, EquipmentDefinition};
+        use crate::resource_economy::{CountryResources, ResourceEconomy, TradeShipment};
+        use crate::trade_routes::TradeRoute;
+        use crate::warfare::ProvinceConditions;
+        use std::collections::HashMap;
+
+        let definition =
+            "1;1;0;0;land;true;plains;1\n2;2;0;0;sea;false;ocean;0\n3;3;0;0;land;true;plains;1";
+        let rgba: Vec<_> = [1_u8, 2, 3]
+            .into_iter()
+            .flat_map(|n| [n, 0, 0, 255])
+            .collect();
+        let mut world = World::from_map_data(
+            &HashMap::from([(1, 1), (3, 3)]),
+            &HashMap::from([(1, "A".into()), (3, "R".into())]),
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        world.geography = MapGraph::from_rgba(3, 1, &rgba, definition, false).unwrap();
+        let mut db = MilitaryCatalogue::default();
+        db.equipment.insert(
+            "ship_hull_submarine_1".into(),
+            EquipmentDefinition {
+                id: "ship_hull_submarine_1".into(),
+                archetype: "ship_hull_submarine_1".into(),
+                year: 1936,
+                active: true,
+                buildable: true,
+                stats: BTreeMap::from([
+                    ("torpedo_attack".into(), 8.),
+                    ("fuel_consumption".into(), 24.),
+                ]),
+                cost: 100.,
+                modular: false,
+                source: "test".into(),
+            },
+        );
+        let mut w = Warfare::new(db);
+        for tag in ["A", "B", "R"] {
+            w.countries.insert(tag.into(), CountryArmy::default());
+        }
+        w.wars.insert(("A".into(), "R".into()));
+        w.air.regions.insert(10, BTreeSet::from([2]));
+        w.logistics.countries.entry("A".into()).or_default().convoys = 2;
+        w.conditions.insert(
+            3,
+            ProvinceConditions {
+                naval_base: 2,
+                ..Default::default()
+            },
+        );
+        let mut navy = NavalState::default();
+        navy.task_forces.insert(
+            1,
+            NavalTaskForce {
+                id: 1,
+                country: "R".into(),
+                name: "U-boats".into(),
+                base: 3,
+                mission: NavalMission::ConvoyRaiding,
+                regions: BTreeSet::from([10]),
+                ships: vec![NavalShip {
+                    name: "Sub".into(),
+                    model: "ship_hull_submarine_1".into(),
+                    definition: String::new(),
+                    variant: None,
+                    strength: 1.,
+                }],
+            },
+        );
+        let shipment = || {
+            let mut shipping = ResourceEconomy::default();
+            shipping.last.insert(
+                "A".into(),
+                CountryResources {
+                    imported: BTreeMap::from([("steel".into(), 16)]),
+                    available: BTreeMap::from([("steel".into(), 16)]),
+                    trade_convoys_used: 2,
+                    ..Default::default()
+                },
+            );
+            shipping.last_shipments.push(TradeShipment {
+                buyer: "A".into(),
+                seller: "B".into(),
+                resource: "steel".into(),
+                factories: 2,
+                contracted: 16,
+                delivered: 16,
+                required_convoys: 2,
+                assigned_convoys: 2,
+                route: TradeRoute::Sea {
+                    origin_port: 1,
+                    destination_port: 3,
+                    sea_provinces: vec![2],
+                },
+            });
+            shipping
+        };
+        let mut losses = BTreeMap::new();
+        // Zero fuel must mean zero actual raiding, even though the standing
+        // mission and the submarine's torpedo stat are unchanged.
+        navy.tick_naval_combat(&world, &mut w, 1);
+        assert!(navy.operational_fuel_sampled);
+        assert!(navy.operational_fuel.is_empty());
+        let mut shipping = shipment();
+        navy.process_trade(&world, &w, &mut shipping, &mut losses);
+        assert!(losses.is_empty());
+        assert_eq!(shipping.last["A"].imported["steel"], 16);
+        // Fueling the same force makes it eligible without changing mission.
+        w.logistics.countries.entry("R".into()).or_default().fuel = 10.;
+        navy.tick_naval_combat(&world, &mut w, 2);
+        assert_eq!(navy.operational_fuel[&1], 1.);
+        navy.loss_progress
+            .insert(("A".into(), "B".into(), "steel".into()), 0.5);
+        shipping = shipment();
+        navy.process_trade(&world, &w, &mut shipping, &mut losses);
+        assert_eq!(losses.get("A"), Some(&1));
+        assert_eq!(shipping.last["A"].imported["steel"], 8);
+        // Capturing the raider's home port must instantly stop further raids.
+        world.set_province_controller(3, Some("A"));
+        navy.tick_naval_combat(&world, &mut w, 3);
+        assert!(navy.operational_fuel.is_empty());
+        losses.clear();
+        shipping = shipment();
+        navy.process_trade(&world, &w, &mut shipping, &mut losses);
+        assert!(losses.is_empty());
+        assert_eq!(shipping.last["A"].imported["steel"], 16);
+        // Hourly activity is computed afresh and never faked by a loaded save.
+        let restored: NavalState =
+            serde_json::from_str(&serde_json::to_string(&navy).unwrap()).unwrap();
+        assert!(!restored.operational_fuel_sampled);
+        assert!(restored.operational_fuel.is_empty());
     }
 
     #[test]
