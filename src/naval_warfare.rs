@@ -179,6 +179,14 @@ pub struct NavalState {
     #[serde(default, with = "save_pairs")]
     pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
     pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
+    /// Transient result of the immediately preceding hourly naval fuel tick.
+    /// Trade is settled after that tick, never directly from assigned orders.
+    #[serde(skip)]
+    pub operational_fuel: BTreeMap<u64, f64>,
+    /// Distinguishes an actual no-active-ship result from old direct-call tests
+    /// and older saves with no hourly snapshot.
+    #[serde(skip)]
+    pub operational_fuel_sampled: bool,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConvoyEvent {
@@ -624,10 +632,21 @@ impl NavalState {
         self.task_forces
             .values()
             .filter(|f| {
-                f.country == ship_country && f.mission == mission && f.regions.contains(&region)
+                f.country == ship_country
+                    && f.mission == mission
+                    && f.regions.contains(&region)
+                    && (!self.operational_fuel_sampled
+                        || self.operational_fuel.get(&f.id).is_some_and(|v| *v > 0.))
             })
-            .flat_map(|f| f.ships.iter())
-            .filter_map(|s| {
+            .flat_map(|f| {
+                let fuel_fraction = if self.operational_fuel_sampled {
+                    self.operational_fuel.get(&f.id).copied().unwrap_or(0.)
+                } else {
+                    1.
+                };
+                f.ships.iter().map(move |ship| (ship, fuel_fraction))
+            })
+            .filter_map(|(s, fuel_fraction)| {
                 let e = self.ship_stats(s, w)?;
                 let stat = match mission {
                     NavalMission::ConvoyRaiding => {
@@ -643,7 +662,7 @@ impl NavalState {
                     }
                     NavalMission::Hold => 0.0,
                 };
-                Some(stat.max(0.0) * s.strength.clamp(0.0, 1.0))
+                Some(stat.max(0.0) * s.strength.clamp(0.0, 1.0) * fuel_fraction)
             })
             .sum()
     }
