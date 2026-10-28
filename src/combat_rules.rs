@@ -697,6 +697,17 @@ mod tests {
         assert_eq!(r.stacking(9, 2), 0.02);
     }
     #[test]
+    fn experience_factor_uses_imported_versioned_define() {
+        let mut rules = CombatRules::default();
+        assert!((rules.experience_combat_factor - 0.25).abs() < 1e-9);
+        rules.import_defines("NDefines.NMilitary.EXPERIENCE_COMBAT_FACTOR = 0.15", "xp.lua");
+        assert!((rules.experience_combat_factor - 0.15).abs() < 1e-9);
+        assert_eq!(rules.provenance["EXPERIENCE_COMBAT_FACTOR"], "xp.lua");
+        assert!((crate::military_model::ExperienceLevel::Veteran.bonus_with_factor(
+            rules.experience_combat_factor,
+        ) - 0.45).abs() < 1e-9);
+    }
+    #[test]
     fn imports_namespaced_table_and_array_defines() {
         let mut r = CombatRules::default();
         r.import_defines("NDefines.NMilitary.TACTIC_SWAP_FREQUENCEY = 8 -- hi\nBASE_CHANCE_TO_AVOID_HIT=80,\nPIERCING_THRESHOLDS={1,0.5,\n0}\nPIERCING_THRESHOLD_DAMAGE_VALUES={1,0.7,0.4}\nMAP_SCALE_PIXEL_TO_KM = 7.1", "test.lua");
