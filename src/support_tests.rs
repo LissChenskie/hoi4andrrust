@@ -156,6 +156,8 @@ fn air_setup() -> (World, Warfare) {
 #[test]
 fn severed_railway_drains_carried_supply_and_restoration_recovers_it() {
     let (mut world, mut w) = setup();
+    // Ample transport for both supply and fuel, including reserve refill.
+    w.logistics.rules.rail_capacity_per_level = 30.;
     tick(&mut w, &world, 0);
     assert_eq!(w.divisions[&1].supply_fraction, 1.);
     world.set_province_controller(3, Some("B"));
@@ -185,7 +187,14 @@ fn one_rail_bottleneck_is_shared_and_does_not_multiply_per_division() {
         .values()
         .map(|s| s.received)
         .sum::<f64>();
-    assert!((total - 5.).abs() < 1e-8);
+    // Supply and fuel now spend the same finite rail capacity.
+    let fuel_cargo: f64 = w
+        .logistics
+        .divisions
+        .values()
+        .map(|s| s.fuel_received * 24. * w.logistics.rules.fuel_transport_weight)
+        .sum();
+    assert!(total > 0. && total + fuel_cargo <= 5. + 1e-8);
     assert!(w.logistics.divisions.values().all(|s| s.received > 0.));
 }
 #[test]
@@ -227,7 +236,8 @@ fn fuel_is_conserved_and_an_isolated_motorized_division_runs_out() {
     tick(&mut w, &world, 0);
     let country = &w.logistics.countries["A"];
     let unit = &w.logistics.divisions[&1];
-    assert!((1000. - country.fuel - unit.fuel - 1.).abs() < 1e-8);
+    let consumed = w.divisions[&1].fuel_fraction; // demand is one fuel unit/hour
+    assert!((1000. - country.fuel - unit.fuel - consumed).abs() < 1e-8);
     world.set_province_controller(3, Some("B"));
     for h in 1..=26 {
         tick(&mut w, &world, h);
@@ -480,8 +490,16 @@ fn a_hundred_divisions_share_a_single_rail_bottleneck_without_id_starvation() {
     tick(&mut w, &world, 0);
     let delivered: Vec<_> = w.logistics.divisions.values().map(|s| s.received).collect();
     let total = delivered.iter().sum::<f64>();
-    assert!((total - 5.).abs() < 1e-8);
-    assert!(delivered.iter().all(|&n| n > 0.049));
+    // Supply and fuel now spend the same finite rail capacity.
+    let fuel_cargo: f64 = w
+        .logistics
+        .divisions
+        .values()
+        .map(|s| s.fuel_received * 24. * w.logistics.rules.fuel_transport_weight)
+        .sum();
+    assert!(total > 0. && total + fuel_cargo <= 5. + 1e-8);
+    let mean = total / 100.;
+    assert!(delivered.iter().all(|&n| n >= mean * 0.95));
     eprintln!("100-division shared bottleneck: {:?}", start.elapsed());
 }
 
@@ -526,3 +544,5 @@ fn save_between_network_pulses_keeps_dispatch_and_does_not_supply_a_moved_unit_o
         serde_json::to_value(&loaded.logistics).unwrap()
     );
 }
+
+include!("support_regressions.rs");

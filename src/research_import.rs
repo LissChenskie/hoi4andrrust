@@ -416,7 +416,11 @@ impl ResearchDataset {
         let cache = root.join("cache/research-registry-v6.bin");
         if use_cache {
             if let Ok(mut cached) = Self::read_compiled(&cache) {
-                if cached.cache_version == CACHE_VERSION && cached.files == inputs {
+                if cached.cache_version == CACHE_VERSION
+                    && cached.files == inputs
+                    && cached.registry.scripts.laws_indexed
+                    && !cached.registry.compatible_fingerprints.is_empty()
+                {
                     cached.from_cache = true;
                     return Ok(cached);
                 }
@@ -549,6 +553,16 @@ impl ResearchDataset {
                 for group in block(b, "ideas").unwrap_or(&[]) {
                     for idea in group.block().unwrap_or(&[]) {
                         if let Some(raw) = idea.block() {
+                            if atom(group.block().unwrap_or(&[]), "law") == Some("yes") {
+                                scripts
+                                    .law_groups
+                                    .insert(idea.key.clone(), group.key.clone());
+                                if atom(raw, "default") == Some("yes") {
+                                    scripts
+                                        .default_laws
+                                        .insert(group.key.clone(), idea.key.clone());
+                                }
+                            }
                             scripts.ideas.insert(idea.key.clone(), raw.to_vec());
                         }
                     }
@@ -756,7 +770,39 @@ impl ResearchDataset {
                     .push(format!("{}: частичная поддержка поля {field}", t.source));
             }
         }
+        data.registry.scripts.laws_indexed = true;
         data.diagnostics.extend(data.registry.diagnostics.clone());
+        // Preserve saves made before derived law indexes were added. Keep the
+        // exact old struct field order; serializing through a JSON object would
+        // sort keys and produce a different digest for the same source data.
+        #[derive(Serialize)]
+        struct LegacyScripts<'a> {
+            triggers: &'a BTreeMap<String, Vec<Entry>>,
+            effects: &'a BTreeMap<String, Vec<Entry>>,
+            ideas: &'a BTreeMap<String, Vec<Entry>>,
+            sharing: &'a BTreeMap<String, crate::research_script::SharingGroup>,
+            sources: &'a BTreeMap<String, crate::research_script::ScriptSource>,
+        }
+        let scripts = &data.registry.scripts;
+        let legacy = LegacyScripts {
+            triggers: &scripts.triggers,
+            effects: &scripts.effects,
+            ideas: &scripts.ideas,
+            sharing: &scripts.sharing,
+            sources: &scripts.sources,
+        };
+        let legacy_digest = fingerprint(
+            &serde_json::to_vec(&(
+                &data.registry.technologies,
+                legacy,
+                &data.installation,
+                &data.rules,
+                &data.histories,
+                &data.registry.folder_definitions,
+            ))
+            .map_err(|e| e.to_string())?,
+        );
+        data.registry.compatible_fingerprints.insert(legacy_digest);
         data.registry.fingerprint = fingerprint(
             &serde_json::to_vec(&(
                 &data.registry.technologies,
@@ -1094,6 +1140,11 @@ pub fn initialize_country(
     c.context.tag = tag.into();
     c.context.original_tag = tag.into();
     c.context.date = Some(date);
+    c.ideas_authoritative = true;
+    c.context
+        .ideas
+        .extend(cat.scripts.default_laws.values().cloned());
+    research_script::refresh_ideas(&mut c, cat);
     fn run(
         c: &mut CountryResearch,
         b: &[Entry],
@@ -1180,7 +1231,7 @@ pub fn load_snapshot(
 ) -> Result<(ResearchWorld, GameDate, u8), String> {
     let s: ResearchSnapshot = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    if s.schema != CACHE_VERSION || s.fingerprint != cat.fingerprint {
+    if s.schema != CACHE_VERSION || !cat.matches_fingerprint(&s.fingerprint) {
         return Err("Снимок исследований относится к другому набору игровых данных".into());
     }
     if s.hour >= 24 || research_script::parse_date(&s.date.display()).is_none() {

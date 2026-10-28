@@ -483,6 +483,15 @@ pub fn draw_chrome(
     let army = tag.and_then(|t| w.countries.get(t));
     let factories = economy.civilian_factories + economy.military_factories + economy.dockyards;
     let manpower = number(army.map_or(0, |a| a.manpower_pool));
+    let manpower_body = army.map_or("Военные данные страны не загружены".into(), |a| {
+        let serving: u64 = w.divisions.values().filter(|d| !d.destroyed && Some(d.country.as_str()) == tag)
+            .map(|d| u64::from(d.manpower)).sum();
+        format!("Свободно: {}; в дивизиях: {}. Население своих основных территорий: {}; призывной фонд: {}. Источник: {}.{}",
+            a.manpower_pool, serving, a.core_population, a.recruitable_total,
+            a.history_source.as_deref().unwrap_or("история не импортирована"),
+            if a.core_population == 0 { " Не импортировано население / основные территории." }
+            else if a.recruitable_total == 0 { " Проверьте импорт призывного закона в common/ideas." } else { "" })
+    });
     let xp = army.map_or("—".into(), |a| format!("{:.0}", a.army_xp));
     let support = tag.and_then(|t| w.logistics.countries.get(t));
     let fuel_body=support.map_or("Нет исходных топливных данных".into(),|c|format!("Запас {:.0} / {:.0}; расход за час {:.1}. Дивизии и авиация расходуют один национальный запас. Нажмите для управления.",c.fuel,c.fuel_capacity,c.fuel_used_last_hour));
@@ -528,7 +537,7 @@ pub fn draw_chrome(
             Icon::Manpower,
             manpower,
             "Людские ресурсы",
-            "Доступный резерв из состояния армии. Люди расходуются при пополнении частей.",
+            manpower_body.as_str(),
             true,
         ),
         (
@@ -2479,19 +2488,21 @@ fn logistics(
     width: f32,
     bottom: f32,
 ) {
-    status(
-        "Запасы и потребность частей · реальные данные кампании",
-        x,
-        y,
-        width,
-    );
+    let stock_status = prod.country(tag).map_or("Нет производственных данных страны".into(), |c| {
+        if !c.starting_import_errors.is_empty() {
+            format!("Ошибка стартового импорта: {}", c.starting_import_errors[0])
+        } else if c.starting_data_applied && c.starting_stockpile_effects == 0 {
+            "В исходных данных нет прямых записей национального запаса. Оснащение частей показано отдельно.".into()
+        } else { "Склад, техника в частях и нехватка · единое оснащение кампании".into() }
+    });
+    status(&stock_status, x, y, width);
     ui::section(
-        "СНАРЯЖЕНИЕ                     СКЛАД          ПОТРЕБНО",
+        "СНАРЯЖЕНИЕ           СКЛАД       В ЧАСТЯХ      НЕХВАТКА",
         x,
         y + 29.0,
         width,
     );
-    let mut rows = std::collections::BTreeMap::<String, (u64, u64)>::new();
+    let mut rows = std::collections::BTreeMap::<String, (u64, u64, u64)>::new();
     if let Some(c) = prod.country(tag) {
         for (model, n) in &c.model_stockpile {
             let key = w
@@ -2520,7 +2531,9 @@ fn logistics(
                 })
                 .map(|(_, n)| u64::from(*n))
                 .sum();
-            *need.entry(arch.clone()).or_default() += (*quantity as u64).saturating_sub(actual);
+            rows.entry(arch.clone()).or_default().2 += actual;
+            *need.entry(arch.clone()).or_default() +=
+                (quantity.ceil() as u64).saturating_sub(actual);
         }
     }
     for (arch, n) in need {
@@ -2532,18 +2545,20 @@ fn logistics(
     let max = rows.len().saturating_sub(count.max(1));
     h.scroll = h.scroll.min(max);
     scroll(h, Rect::new(x, y + 59.0, width, bottom - y - 59.0), max);
-    for (i, (name, (stock, deficit))) in rows.iter().skip(h.scroll).take(count).enumerate() {
+    for (i, (name, (stock, deficit, deployed))) in
+        rows.iter().skip(h.scroll).take(count).enumerate()
+    {
         let yy = y + 59.0 + i as f32 * 42.0;
         ui::row_bg(Rect::new(x, yy, width, 38.0), false, i % 2 == 1);
         ui::label(
             name,
-            Rect::new(x + 7.0, yy + 10.0, width * 0.6, 20.0),
+            Rect::new(x + 7.0, yy + 10.0, width * 0.42, 20.0),
             12.0,
             ui::TEXT,
         );
         ui::label(
-            &format!("{stock}          {deficit}"),
-            Rect::new(x + width * 0.64, yy + 10.0, width * 0.34, 20.0),
+            &format!("{stock}     {deployed}     {deficit}"),
+            Rect::new(x + width * 0.45, yy + 10.0, width * 0.53, 20.0),
             12.0,
             if *deficit > 0 {
                 Color::from_rgba(209, 122, 103, 255)
@@ -2560,9 +2575,15 @@ fn logistics(
             ui::MUTED,
         );
     }
-    ui::placeholder(
+    ui::label(
+        if w.logistics.enabled {
+            "Доставка: действующая сеть хабов, ж/д и портов; изолированные части не получают складское пополнение."
+        } else {
+            "Сетевая доставка отключена для этого набора данных."
+        },
         Rect::new(x, bottom - 35.0, width, 28.0),
-        "Сеть снабжения, поезда и конвои · ЗАГЛУШКА",
+        11.0,
+        ui::MUTED,
     );
 }
 fn focus(h: &mut Hud, x: f32, y: f32, width: f32, bottom: f32) {

@@ -150,7 +150,7 @@ impl ResourceEconomy {
         policies: &BTreeMap<String, CountryConstructionPolicy>,
         wars: &std::collections::BTreeSet<(String, String)>,
     ) {
-        self.settle_internal(world, policies, wars, None);
+        self.settle_internal(world, policies, wars, None, None);
     }
 
     /// Real campaign settlement: require an actual land or port-to-port sea
@@ -161,7 +161,23 @@ impl ResourceEconomy {
         policies: &BTreeMap<String, CountryConstructionPolicy>,
         warfare: &Warfare,
     ) {
-        self.settle_internal(world, policies, &warfare.wars, Some(warfare));
+        self.settle_internal(world, policies, &warfare.wars, Some(warfare), None);
+    }
+
+    pub fn settle_campaign(
+        &mut self,
+        world: &mut World,
+        policies: &BTreeMap<String, CountryConstructionPolicy>,
+        warfare: &Warfare,
+        research: &crate::research::ResearchWorld,
+    ) {
+        self.settle_internal(
+            world,
+            policies,
+            &warfare.wars,
+            Some(warfare),
+            Some(research),
+        );
     }
 
     fn settle_internal(
@@ -170,6 +186,7 @@ impl ResourceEconomy {
         policies: &BTreeMap<String, CountryConstructionPolicy>,
         wars: &std::collections::BTreeSet<(String, String)>,
         warfare: Option<&Warfare>,
+        research: Option<&crate::research::ResearchWorld>,
     ) {
         self.last_shipments.clear();
         world.trade_factory_income.clear();
@@ -200,8 +217,14 @@ impl ResourceEconomy {
             for (resource, &base) in deposits {
                 // +20% resource extraction per infrastructure level; fractional
                 // output is floored per state, not accumulated across states.
-                let extracted = (u64::from(base) * (5 + u64::from(infrastructure)) / 5)
-                    .min(u64::from(u32::MAX)) as u32;
+                let gain = research
+                    .and_then(|r| r.country(tag))
+                    .map_or(0., |c| c.modifier("resource_gain_efficiency"));
+                let extracted = (f64::from(base)
+                    * (1. + f64::from(infrastructure) * 0.2)
+                    * (1. + gain).max(0.))
+                .floor()
+                .clamp(0., f64::from(u32::MAX)) as u32;
                 let total = report.extracted.entry(resource.clone()).or_default();
                 *total = total.saturating_add(extracted);
             }

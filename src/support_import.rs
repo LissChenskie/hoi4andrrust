@@ -294,6 +294,10 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
                 .push(format!("military_support.json rejected: {e}")),
         }
     }
+    for c in w.logistics.countries.values_mut() {
+        c.fuel_capacity_base
+            .get_or_insert(c.fuel_capacity.max(w.logistics.rules.base_fuel_capacity));
+    }
     w.logistics.enabled = !world.geography.provinces.is_empty();
     w.air.enabled = true;
     w.air.reindex();

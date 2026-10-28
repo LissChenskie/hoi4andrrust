@@ -4,7 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::game::GameDate;
-use crate::military_data::{atom, block, layered_files, number, parse_oob_for_country, stats};
+use crate::military_data::{atom, block, layered_files, number, stats};
 use crate::military_model::{CountryArmy, StatBlock};
 use crate::production::{Equipment, ProductionRules, ProductionState, StartingProduction};
 use crate::research::ResearchWorld;
@@ -184,6 +184,47 @@ fn production_effect(
     Ok(())
 }
 
+/// Expand country-scoped scripted effects structurally before condition/date
+/// evaluation. No events, country switches or arbitrary script code are executed.
+fn expand_start_call(
+    e: &Entry,
+    scripts: &BTreeMap<String, Vec<Entry>>,
+) -> Result<Option<Vec<Entry>>, String> {
+    let Some(body) = scripts.get(&e.key) else {
+        return Ok(None);
+    };
+    if e.atom() == Some("no") {
+        return Ok(Some(Vec::new()));
+    }
+    if e.atom() != Some("yes") && e.block().is_none() {
+        return Err(format!(
+            "{}:{}: unsupported call {}",
+            e.span.line, e.span.column, e.key
+        ));
+    }
+    fn substitute(entries: &[Entry], params: &[Entry]) -> Vec<Entry> {
+        let replace = |raw: &str| {
+            params.iter().fold(raw.to_owned(), |s, p| {
+                p.atom()
+                    .map_or(s.clone(), |v| s.replace(&format!("${}$", p.key), v))
+            })
+        };
+        entries
+            .iter()
+            .map(|e| {
+                let mut out = e.clone();
+                out.key = replace(&e.key);
+                out.value = e.value.as_ref().map(|v| match v {
+                    crate::pdx::Value::Atom(a) => crate::pdx::Value::Atom(replace(a)),
+                    crate::pdx::Value::Block(b) => crate::pdx::Value::Block(substitute(b, params)),
+                });
+                out
+            })
+            .collect()
+    }
+    Ok(Some(substitute(body, e.block().unwrap_or(&[]))))
+}
+
 fn effects(
     entries: &[Entry],
     tag: &str,
@@ -194,9 +235,13 @@ fn effects(
     today: GameDate,
     rules: &ProductionRules,
     source: &str,
+    scripts: &BTreeMap<String, Vec<Entry>>,
 ) -> bool {
     let initial = warfare.countries[tag].modifiers.clone();
-    let (resolved, diagnostics) = crate::history_conditions::resolve(entries, tag, &initial, today);
+    let (resolved, diagnostics) =
+        crate::history_conditions::resolve_expanding(entries, tag, &initial, today, &|e| {
+            expand_start_call(e, scripts)
+        });
     let resolved_all = diagnostics.is_empty();
     warfare
         .countries
@@ -204,7 +249,13 @@ fn effects(
         .unwrap()
         .history_errors
         .extend(diagnostics.iter().cloned());
+    let expansion_failed = diagnostics
+        .iter()
+        .any(|d| d.starts_with("History expansion:"));
     warfare.diagnostics.extend(diagnostics);
+    if expansion_failed {
+        return false;
+    }
     for entry in &resolved {
         let army = warfare.countries.get_mut(tag).unwrap();
         match entry.key.as_str() {
@@ -290,6 +341,16 @@ fn effects(
                     ideas.insert(id.key.clone());
                 }
             }
+            "swap_ideas" => {
+                if let Some(b) = entry.block() {
+                    if let Some(id) = atom(b, "remove_idea") {
+                        ideas.remove(id);
+                    }
+                    if let Some(id) = atom(b, "add_idea") {
+                        ideas.insert(id.into());
+                    }
+                }
+            }
             "remove_ideas" => {
                 if let Some(id) = entry.atom() {
                     ideas.remove(id);
@@ -330,7 +391,16 @@ fn effects(
                                 production_effect(b, tag, source, warfare, production, rules)
                             }
                         });
+                    if result.is_ok() && entry.key == "add_equipment_to_stockpile" {
+                        let country = production.country_mut(tag);
+                        country.starting_stockpile_effects =
+                            country.starting_stockpile_effects.saturating_add(1);
+                    }
                     if let Err(error) = result {
+                        production
+                            .country_mut(tag)
+                            .starting_import_errors
+                            .push(format!("{source}: {error}"));
                         warfare
                             .diagnostics
                             .push(format!("{tag}: {source}: {error}"));
@@ -390,14 +460,45 @@ pub fn initialize(
     for army in warfare.countries.values_mut() {
         army.modifiers.dlcs = dlcs.clone();
     }
+    let mut scripts = BTreeMap::<String, Vec<Entry>>::new();
+    for path in layered_files(&layers, "common/scripted_effects", false, "txt") {
+        match fs::read_to_string(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|s| crate::pdx::parse_pdx_compatible(&s).map(|d| d.entries))
+        {
+            Ok(entries) => {
+                let entries = hoi4_mobile::script_constants::resolve(&entries, &Default::default());
+                for e in entries {
+                    if let Some(b) = e.block() {
+                        scripts.insert(e.key.clone(), b.to_vec());
+                    }
+                }
+            }
+            Err(error) => warfare
+                .diagnostics
+                .push(format!("{}: {error}", path.display())),
+        }
+    }
+    let mut default_laws = BTreeMap::<String, String>::new();
+    let mut law_groups = BTreeMap::<String, String>::new();
     let mut idea_modifiers = BTreeMap::<String, StatBlock>::new();
     for path in layered_files(&layers, "common/ideas", false, "txt") {
         if let Some(entries) = fs::read_to_string(path)
             .ok()
-            .and_then(|s| parse_pdx(&s).ok())
+            .and_then(|s| crate::pdx::parse_pdx_compatible(&s).ok().map(|d| d.entries))
         {
+            let entries = hoi4_mobile::script_constants::resolve(&entries, &Default::default());
             for group in block(&entries, "ideas").unwrap_or(&[]) {
                 for idea in group.block().unwrap_or(&[]) {
+                    if atom(group.block().unwrap_or(&[]), "law") == Some("yes") {
+                        law_groups.insert(idea.key.clone(), group.key.clone());
+                        if idea
+                            .block()
+                            .is_some_and(|b| atom(b, "default") == Some("yes"))
+                        {
+                            default_laws.insert(group.key.clone(), idea.key.clone());
+                        }
+                    }
                     if let Some(b) = idea.block().and_then(|b| block(b, "modifier")) {
                         idea_modifiers.insert(idea.key.clone(), stats(b, &BTreeMap::new()));
                     }
@@ -415,15 +516,42 @@ pub fn initialize(
             .and_then(|s| parse_pdx(&s).ok())
         {
             let state = block(&entries, "state").unwrap_or(&[]);
-            let h = block(state, "history").unwrap_or(&[]);
-            if let Some(owner) = atom(h, "owner") {
-                let core = h
-                    .iter()
-                    .any(|e| e.key == "add_core_of" && e.atom() == Some(owner));
-                if core {
-                    *populations.entry(owner.into()).or_default() +=
-                        number(state, "manpower", 0.0).max(0.0) as u64;
+            let history = block(state, "history").unwrap_or(&[]);
+            let (h, diagnostics) = crate::history_conditions::resolve(
+                history,
+                "",
+                &crate::military_model::MilitaryModifiers {
+                    dlcs: dlcs.clone(),
+                    ..Default::default()
+                },
+                today,
+            );
+            warfare.diagnostics.extend(diagnostics);
+            let mut cores = BTreeSet::new();
+            for e in &h {
+                if let Some(tag) = e.atom() {
+                    if e.key == "add_core_of" {
+                        cores.insert(tag.to_owned());
+                    }
+                    if e.key == "remove_core_of" {
+                        cores.remove(tag);
+                    }
                 }
+            }
+            let id = number(state, "id", 0.) as u32;
+            let owner = world
+                .states
+                .get(&id)
+                .and_then(|s| s.owner.as_deref())
+                .or_else(|| {
+                    h.iter()
+                        .rev()
+                        .find(|e| e.key == "owner")
+                        .and_then(Entry::atom)
+                });
+            if let Some(owner) = owner.filter(|owner| cores.contains(*owner)) {
+                *populations.entry(owner.into()).or_default() +=
+                    number(state, "manpower", 0.).max(0.) as u64;
             }
             for vp in h
                 .iter()
@@ -438,7 +566,7 @@ pub fn initialize(
                     }
                 }
             }
-            for province in block(h, "buildings").unwrap_or(&[]) {
+            for province in block(&h, "buildings").unwrap_or(&[]) {
                 if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
                     let c = warfare.conditions.entry(id).or_default();
                     c.fort_level = number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
@@ -487,6 +615,7 @@ pub fn initialize(
                         today,
                         &production_rules,
                         &path.display().to_string(),
+                        &scripts,
                     );
                 }
                 Err(e) => {
@@ -502,6 +631,16 @@ pub fn initialize(
                 }
             }
         }
+        let selected_groups: BTreeSet<_> = ideas
+            .iter()
+            .filter_map(|id| law_groups.get(id))
+            .cloned()
+            .collect();
+        for (group, id) in &default_laws {
+            if !selected_groups.contains(group) {
+                ideas.insert(id.clone());
+            }
+        }
         for id in ideas {
             if let Some(values) = idea_modifiers.get(&id) {
                 for (k, v) in values {
@@ -510,6 +649,13 @@ pub fn initialize(
                         .get_mut(&tag)
                         .unwrap()
                         .base_modifiers
+                        .entry(k.clone())
+                        .or_default() += v;
+                    *warfare
+                        .countries
+                        .get_mut(&tag)
+                        .unwrap()
+                        .idea_modifiers
                         .entry(k.clone())
                         .or_default() += v;
                 }
@@ -542,7 +688,13 @@ pub fn initialize(
                 .ok_or_else(|| format!("{tag}: missing OOB {oob}"))
                 .and_then(|p| fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display())))
                 .and_then(|s| {
-                    parse_oob_for_country(&s, &tag, &warfare.countries[&tag].modifiers, today)
+                    crate::military_data::parse_oob_expanding(
+                        &s,
+                        &tag,
+                        &warfare.countries[&tag].modifiers,
+                        today,
+                        &|e| expand_start_call(e, &scripts),
+                    )
                 })
                 .map_err(|e| format!("{tag}: history/units/{oob}.txt: {e}"));
             let oob_id = oob;
@@ -558,6 +710,7 @@ pub fn initialize(
                         today,
                         &production_rules,
                         &format!("history/units/{oob_name}.txt", oob_name = oob_id),
+                        &scripts,
                     );
                     let army = warfare.countries.get_mut(&tag).unwrap();
                     army.history_expected += oob.declared_divisions;
@@ -610,11 +763,19 @@ pub fn initialize(
             }
         }
         let army = warfare.countries.get_mut(&tag).unwrap();
-        let rate = army
-            .base_modifiers
-            .get("conscription")
-            .copied()
-            .unwrap_or(0.0);
+        let rate = (army.modifiers.value("conscription")
+            * (1. + army.modifiers.value("conscription_factor")).max(0.))
+        .clamp(0., 1.);
+        army.core_population = populations.get(&tag).copied().unwrap_or(0);
+        army.recruitable_total = (army.core_population as f64 * rate) as u64;
+        if army.core_population == 0 {
+            warfare.diagnostics.push(format!(
+                "{tag}: no owned core population imported; manpower was not invented"
+            ));
+        }
+        if rate == 0. {
+            warfare.diagnostics.push(format!("{tag}: no nonzero conscription rule imported; inspect common/ideas and country laws"));
+        }
         let serving: u64 = warfare
             .divisions
             .values()
@@ -623,10 +784,14 @@ pub fn initialize(
             .sum();
         army.manpower_pool = army
             .manpower_pool
-            .saturating_add(
-                (populations.get(&tag).copied().unwrap_or(0) as f64 * rate.clamp(0.0, 1.0)) as u64,
-            )
+            .saturating_add(army.recruitable_total)
             .saturating_sub(serving);
+        if production
+            .country(&tag)
+            .is_none_or(|p| p.model_stockpile.values().all(|n| *n == 0))
+        {
+            warfare.diagnostics.push(format!("{tag}: starting national equipment reserve is empty; deployed equipment is separate; no reserve was generated without source data"));
+        }
         production.country_mut(&tag).starting_data_applied = true;
         if army.templates.is_empty() {
             warfare
@@ -779,6 +944,10 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
                 tag,
                 serde_json::json!({
                     "history_source": army.history_source,
+                    "core_population": army.core_population,
+                    "recruitable_total": army.recruitable_total,
+                    "available_manpower": army.manpower_pool,
+                    "conscription": army.modifiers.value("conscription"),
                     "selected_oobs": army.history_oobs,
                     "declared_divisions": army.history_expected,
                     "imported_divisions": army.history_imported,
@@ -1053,6 +1222,7 @@ mod tests {
             GameDate::START,
             &ProductionRules::default(),
             "fixture",
+            &Default::default(),
         );
         assert!(o.is_empty());
     }
@@ -1074,6 +1244,7 @@ mod tests {
             GameDate::START,
             &ProductionRules::default(),
             "fixture",
+            &Default::default(),
         );
         assert_eq!(o, vec!["A_1936"]);
         assert_eq!(w.countries["A"].manpower_pool, 12);
@@ -1171,5 +1342,63 @@ mod starting_economy_regressions {
         assert!((p.country("A").unwrap().lines[0].last_day_ic - 2.7).abs() < 1e-12);
         assert!(p.country("A").unwrap().stockpile.is_empty());
         fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod starting_script_regressions {
+    use super::*;
+    #[test]
+    fn scripts_expand_only_selected_branches_and_recursive_errors_are_atomic() {
+        let scripts = BTreeMap::from([
+            ("stock".into(), parse_pdx("add_equipment_to_stockpile={type=$kind$ amount=$amount$} set_country_flag=given").unwrap()),
+            ("loop".into(), parse_pdx("add_manpower=100 loop=yes").unwrap()),
+        ]);
+        let mut w = Warfare::default();
+        w.countries.insert("A".into(), CountryArmy::default());
+        let mut prod = ProductionState::default();
+        let body =
+            parse_pdx("if={limit={always=no} loop=yes} if={limit={always=yes} add_manpower=12}")
+                .unwrap();
+        assert!(effects(
+            &body,
+            "A",
+            &mut w,
+            &mut prod,
+            &mut Vec::new(),
+            &mut BTreeSet::new(),
+            GameDate::START,
+            &ProductionRules::default(),
+            "authored",
+            &scripts
+        ));
+        assert_eq!(w.countries["A"].manpower_pool, 12);
+        assert!(!effects(
+            &parse_pdx("loop=yes").unwrap(),
+            "A",
+            &mut w,
+            &mut prod,
+            &mut Vec::new(),
+            &mut BTreeSet::new(),
+            GameDate::START,
+            &ProductionRules::default(),
+            "authored",
+            &scripts
+        ));
+        assert_eq!(w.countries["A"].manpower_pool, 12);
+        let (expanded, diagnostics) = crate::history_conditions::resolve_expanding(
+            &parse_pdx(
+                "stock={kind=rifle amount=11} if={limit={has_country_flag=given} add_manpower=3}",
+            )
+            .unwrap(),
+            "A",
+            &Default::default(),
+            GameDate::START,
+            &|e| expand_start_call(e, &scripts),
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(atom(expanded[0].block().unwrap(), "type"), Some("rifle"));
+        assert_eq!(atom(expanded[0].block().unwrap(), "amount"), Some("11"));
+        assert_eq!(expanded.last().unwrap().key, "add_manpower");
     }
 }

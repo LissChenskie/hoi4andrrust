@@ -267,6 +267,11 @@ impl GameSession {
             &self.world,
             &self.military.catalogue,
         );
+        let mut logistics = std::mem::take(&mut self.military.logistics);
+        if logistics.enabled {
+            logistics.refresh_network(&self.military, &self.world);
+        }
+        self.military.logistics = logistics;
     }
 
     /// One simulation boundary for movement and combat. Simulation
@@ -349,7 +354,7 @@ impl GameSession {
             })
             .collect();
         self.resources
-            .settle_with_transport(&mut self.world, &policies, &self.military);
+            .settle_campaign(&mut self.world, &policies, &self.military, &self.research);
         // The fleet's abstract campaign-level convoy encounters run after
         // routes are calculated and before the day's resources are consumed.
         // Take the naval state out so route/war/country data stay read-only.
@@ -871,3 +876,7 @@ mod research_integration_tests {
         assert_eq!(br.for_research(Some(&c), &cat).max_state_level(b), 2);
     }
 }
+
+#[cfg(test)]
+#[path = "economy_military_tests.rs"]
+mod economy_military_tests;

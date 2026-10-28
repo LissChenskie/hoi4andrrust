@@ -38,12 +38,15 @@ pub struct LogisticsRules {
     pub oil_fuel_per_day: f64,
     pub base_fuel_capacity: f64,
     pub silo_fuel_capacity: f64,
+    /// Fuel units occupy this many supply-equivalent transport units. This is
+    /// an explicit mobile profile coefficient, not a recovered engine define.
+    pub fuel_transport_weight: f64,
     pub network_interval: u64,
 }
 impl Default for LogisticsRules {
     fn default() -> Self {
         Self {
-            profile: "mobile-logistics-v1-approximation".into(),
+            profile: "mobile-logistics-v2-approximation".into(),
             capital_capacity: 30.,
             rail_capacity_per_level: 5.,
             hub_capacity: 20.,
@@ -65,6 +68,7 @@ impl Default for LogisticsRules {
             oil_fuel_per_day: 48.,
             base_fuel_capacity: 100_000.,
             silo_fuel_capacity: 100_000.,
+            fuel_transport_weight: 1.,
             network_interval: 6,
         }
     }
@@ -107,10 +111,16 @@ pub struct DivisionLogistics {
     pub demand: f64,
     pub reason: String,
     pub equipment_lost: u64,
+    #[serde(default)]
+    pub fuel_received: f64,
+    #[serde(default)]
+    pub transport_received: f64,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LogisticsState {
+    /// Version of persisted dispatch allocations (v1 carried only supply).
+    pub dispatch_schema: u32,
     pub enabled: bool,
     pub rules: LogisticsRules,
     pub countries: BTreeMap<String, CountryLogistics>,
@@ -282,6 +292,9 @@ impl LogisticsState {
         }
     }
     pub fn validate(&self, world: &World) -> Result<(), String> {
+        if self.dispatch_schema > 2 {
+            return Err("Unsupported logistics dispatch version".into());
+        }
         let r = &self.rules;
         let values = [
             r.capital_capacity,
@@ -302,8 +315,10 @@ impl LogisticsState {
             r.oil_fuel_per_day,
             r.base_fuel_capacity,
             r.silo_fuel_capacity,
+            r.fuel_transport_weight,
         ];
         if values.iter().any(|v| !v.is_finite() || *v < 0.)
+            || r.fuel_transport_weight == 0.
             || r.supply_reserve_hours == 0.
             || r.fuel_reserve_hours == 0.
             || r.minimum_supply_speed > 1.
@@ -371,6 +386,48 @@ impl LogisticsState {
             }
         }
         Ok(())
+    }
+    pub fn can_deliver(&self, country: &str, province: u32) -> bool {
+        !self.enabled || self.serviced.contains(&(country.to_owned(), province))
+    }
+    /// Refresh reachability without consuming resources or advancing time.
+    pub fn refresh_network(&mut self, w: &Warfare, world: &World) {
+        self.rebuild(w, world);
+        self.dispatch_schema = 2;
+        self.network_key = None;
+    }
+    fn dispatch_parts(&self, d: &crate::military_model::Division) -> (f64, f64) {
+        let demand = supply_demand(d);
+        let supply_cap = demand / 24. * self.rules.supply_reserve_hours;
+        let fuel_cap = d.derived.stats.fuel.max(0.) / 24. * self.rules.fuel_reserve_hours;
+        let state = self.divisions.get(&d.id);
+        let supply = state.map_or(supply_cap * d.supply_fraction.clamp(0., 1.), |s| s.supply);
+        let fuel = state.map_or(fuel_cap * d.fuel_fraction.clamp(0., 1.), |s| s.fuel);
+        let active = d.battle.is_some()
+            || d.destination.is_some()
+            || matches!(d.order, DivisionOrder::Train { .. });
+        let burn = d.derived.stats.fuel.max(0.)
+            * if active {
+                1.
+            } else {
+                self.rules.idle_fuel_factor
+            };
+        (
+            demand + (supply_cap - supply).max(0.) * 24. / self.rules.supply_reserve_hours.max(1.),
+            if self
+                .countries
+                .get(&d.country)
+                .is_some_and(|c| c.fuel > 1e-9)
+            {
+                burn + (fuel_cap - fuel).max(0.) * 24. / self.rules.fuel_reserve_hours.max(1.)
+            } else {
+                0.
+            },
+        )
+    }
+    fn dispatch_demand(&self, d: &crate::military_model::Division) -> f64 {
+        let (supply, fuel) = self.dispatch_parts(d);
+        supply + fuel * self.rules.fuel_transport_weight
     }
     fn rebuild(&mut self, w: &Warfare, world: &World) {
         self.delivery.clear();
@@ -483,7 +540,7 @@ impl LogisticsState {
             let mut sinks = Vec::new();
             for d in &units {
                 let n = flow.node();
-                let demand = supply_demand(d);
+                let demand = self.dispatch_demand(d);
                 let edge = flow.add(n, sink, demand);
                 sinks.push((d.id, n, edge, demand));
             }
@@ -519,7 +576,11 @@ impl LogisticsState {
                             .map_or(0, |s| s.economy.infrastructure);
                         let efficiency =
                             (1. + f64::from(infra) * 0.1) / (1. + f64::from(distance) * 0.25);
-                        flow.add(hub, sinks[i].1, supply_demand(d) * efficiency.min(1.));
+                        flow.add(
+                            hub,
+                            sinks[i].1,
+                            self.dispatch_demand(d) * efficiency.min(1.),
+                        );
                     }
                 }
             }
@@ -615,6 +676,13 @@ impl LogisticsState {
             return;
         }
         self.last_hour = Some(hour);
+        if self.dispatch_schema < 2 {
+            self.network_key = None;
+            self.dispatch_schema = 2;
+            if self.rules.profile == "mobile-logistics-v1-approximation" {
+                self.rules.profile = "mobile-logistics-v2-approximation".into();
+            }
+        }
         let key = (
             world.control_revision,
             hour / self.rules.network_interval.max(1),
@@ -676,10 +744,17 @@ impl LogisticsState {
                         * d.fuel_fraction.clamp(0., 1.),
                     ..Default::default()
                 });
+            let carried_fuel = state.fuel;
             let cap = d.derived.stats.fuel.max(0.) / 24. * self.rules.fuel_reserve_hours;
             if self.serviced.contains(&(d.country.clone(), d.province)) {
-                *fuel_requests.entry(d.country.clone()).or_default() +=
-                    (cap - state.fuel + consumption).max(0.);
+                let (supply, fuel) = self.dispatch_parts(d);
+                let fraction = (self.delivery.get(&d.id).copied().unwrap_or(0.)
+                    / (supply + fuel * self.rules.fuel_transport_weight).max(1e-9))
+                .clamp(0., 1.);
+                *fuel_requests.entry(d.country.clone()).or_default() += (cap - carried_fuel
+                    + consumption)
+                    .max(0.)
+                    .min(fuel / 24. * fraction);
             }
         }
         let shares: BTreeMap<_, _> = fuel_requests
@@ -699,7 +774,21 @@ impl LogisticsState {
         }
         let mut dirty = Vec::new();
         for d in w.divisions.values_mut().filter(|d| !d.destroyed) {
+            let (supply_request, fuel_request) = self.dispatch_parts(d);
+            let total_request = supply_request + fuel_request * self.rules.fuel_transport_weight;
+            let delivered = if self.serviced.contains(&(d.country.clone(), d.province)) {
+                self.delivery
+                    .get(&d.id)
+                    .copied()
+                    .unwrap_or(0.)
+                    .min(total_request)
+            } else {
+                0.
+            };
+            let transport_fraction = (delivered / total_request.max(1e-9)).clamp(0., 1.);
             let s = self.divisions.get_mut(&d.id).unwrap();
+            s.transport_received = delivered;
+            s.fuel_received = 0.;
             let demand = supply_demand(d);
             s.demand = demand;
             let local = world
@@ -719,12 +808,9 @@ impl LogisticsState {
                 });
             // Local output shared by co-located divisions, not replicated per unit.
             let here = self.local_counts.get(&d.province).copied().unwrap_or(1) as f64;
-            let received = if self.serviced.contains(&(d.country.clone(), d.province)) {
-                self.delivery.get(&d.id).copied().unwrap_or(0.)
-            } else {
-                0.
-            } + local / here;
-            s.received = received.min(demand);
+            let received = supply_request * transport_fraction + local / here;
+            // Include delivery into reserves, not just this hour's consumption.
+            s.received = received.min(demand * 2.);
             let required = demand / 24.;
             let cap = required * self.rules.supply_reserve_hours;
             s.supply = (s.supply + s.received / 24. - required).clamp(0., cap);
@@ -752,13 +838,16 @@ impl LogisticsState {
                 };
             let fuel_cap = d.derived.stats.fuel.max(0.) / 24. * self.rules.fuel_reserve_hours;
             if self.serviced.contains(&(d.country.clone(), d.province)) {
-                let take = (fuel_cap - s.fuel + use_fuel).max(0.)
+                let take = (fuel_cap - s.fuel + use_fuel)
+                    .max(0.)
+                    .min(fuel_request / 24. * transport_fraction)
                     * shares.get(&d.country).copied().unwrap_or(0.);
                 if let Some(c) = self.countries.get_mut(&d.country) {
                     let take = take.min(c.fuel);
                     c.fuel -= take;
                     c.fuel_used_last_hour += take;
                     s.fuel += take;
+                    s.fuel_received = take;
                 }
             }
             let consumed = use_fuel.min(s.fuel);
@@ -794,12 +883,20 @@ impl LogisticsState {
             let mut lost = 0u64;
             for (model, n) in &mut d.equipment {
                 let reliability = w
-                    .catalogue
-                    .equipment
-                    .get(model)
-                    .and_then(|e| e.stats.get("reliability"))
-                    .copied()
-                    .unwrap_or(d.derived.stats.reliability)
+                    .countries
+                    .get(&d.country)
+                    .map(|a| {
+                        w.catalogue
+                            .effective_equipment_stat(model, "reliability", &a.modifiers)
+                    })
+                    .unwrap_or_else(|| {
+                        w.catalogue
+                            .equipment
+                            .get(model)
+                            .and_then(|e| e.stats.get("reliability"))
+                            .copied()
+                            .unwrap_or(d.derived.stats.reliability)
+                    })
                     .clamp(0., 1.);
                 let expected = f64::from(*n)
                     * attrition

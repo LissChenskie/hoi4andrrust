@@ -855,11 +855,31 @@ pub fn parse_oob_for_country(
     modifiers: &MilitaryModifiers,
     today: crate::game::GameDate,
 ) -> Result<OrderOfBattle, String> {
+    parse_oob_expanding(source, tag, modifiers, today, &|_| Ok(None))
+}
+pub fn parse_oob_expanding(
+    source: &str,
+    tag: &str,
+    modifiers: &MilitaryModifiers,
+    today: crate::game::GameDate,
+    expand: &dyn Fn(&Entry) -> Result<Option<Vec<Entry>>, String>,
+) -> Result<OrderOfBattle, String> {
     let parsed = crate::pdx::parse_pdx_compatible(source)?;
     let source_entries =
         hoi4_mobile::script_constants::resolve(&parsed.entries, &Default::default());
-    let (root, diagnostics) =
-        crate::history_conditions::resolve(&source_entries, tag, modifiers, today);
+    let (root, diagnostics) = crate::history_conditions::resolve_expanding(
+        &source_entries,
+        tag,
+        modifiers,
+        today,
+        expand,
+    );
+    if diagnostics
+        .iter()
+        .any(|d| d.starts_with("History expansion:"))
+    {
+        return Err(diagnostics.join("; "));
+    }
     let warnings = parsed
         .eof_terminated_blocks
         .into_iter()

@@ -147,6 +147,9 @@ impl Warfare {
     }
     pub(crate) fn supply_recruitment(&mut self, production: &mut ProductionState) {
         for job in self.recruitment.values_mut() {
+            if !self.logistics.can_deliver(&job.country, job.province) {
+                continue;
+            }
             let Some(a) = self.countries.get(&job.country) else {
                 continue;
             };
@@ -250,6 +253,7 @@ impl Warfare {
             }
             if let Ok(unit) = result {
                 let d = self.divisions.get_mut(&unit).unwrap();
+                d.fuel_fraction = 0.;
                 d.equipment = job.equipment;
                 d.manpower = job.manpower;
                 // Adopt the current saved template only when it still exists;

@@ -37,6 +37,8 @@ pub struct Warfare {
     #[serde(skip)]
     pub automatic_order: bool,
     #[serde(skip)]
+    pub hourly_air: BTreeMap<(u64, bool), AirSupport>,
+    #[serde(skip)]
     pub catalogue: Arc<MilitaryCatalogue>,
     pub countries: BTreeMap<String, CountryArmy>,
     pub divisions: BTreeMap<DivisionId, Division>,
@@ -78,6 +80,7 @@ impl Warfare {
             fronts: Default::default(),
             plans: Default::default(),
             automatic_order: false,
+            hourly_air: BTreeMap::new(),
             catalogue: Arc::new(catalogue),
             countries: BTreeMap::new(),
             divisions: BTreeMap::new(),
@@ -348,6 +351,27 @@ impl Warfare {
             for (k, v) in &country.base_modifiers {
                 *m.country.entry(k.clone()).or_default() += v;
             }
+            if let Some(c) = research.country(tag).filter(|c| c.ideas_authoritative) {
+                for (key, value) in &country.idea_modifiers {
+                    *m.country.entry(key.clone()).or_default() -= value;
+                }
+                for (_, modifiers) in c
+                    .source_modifiers
+                    .iter()
+                    .filter(|(source, _)| source.starts_with("idea:"))
+                {
+                    for (key, value) in modifiers {
+                        *m.country.entry(key.clone()).or_default() += value;
+                    }
+                }
+            }
+            m.ideas = research
+                .country(tag)
+                .filter(|c| c.ideas_authoritative)
+                .map_or_else(
+                    || country.modifiers.ideas.clone(),
+                    |c| c.context.ideas.clone(),
+                );
             m.flags = country.modifiers.flags.clone();
             if let Some(c) = research.country(tag) {
                 m.flags.extend(c.flags.iter().cloned());
@@ -397,6 +421,22 @@ impl Warfare {
                     }
                 }
             }
+            if country.core_population > 0 {
+                let rate = (m.value("conscription")
+                    * (1. + m.value("conscription_factor")).max(0.))
+                .clamp(0., 1.);
+                let total = (country.core_population as f64 * rate) as u64;
+                if total >= country.recruitable_total {
+                    country.manpower_pool = country
+                        .manpower_pool
+                        .saturating_add(total - country.recruitable_total);
+                } else {
+                    country.manpower_pool = country
+                        .manpower_pool
+                        .saturating_sub(country.recruitable_total - total);
+                }
+                country.recruitable_total = total;
+            }
             country.modifiers = m;
         }
         for division in self.divisions.values_mut().filter(|d| !d.destroyed) {
@@ -409,10 +449,24 @@ impl Warfare {
                         &country.modifiers,
                         Some(&division.equipment),
                     ) {
-                        let strength = division.strength();
+                        let strength = division.hitpoint_fraction();
                         division.hp = new.stats.hp * strength;
                         division.organization = division.organization.min(new.stats.organization);
                         division.derived = new;
+                    }
+                }
+            }
+        }
+    }
+    pub fn refresh_division_equipment(&mut self) {
+        for d in self.divisions.values_mut().filter(|d| !d.destroyed) {
+            if let Some(a) = self.countries.get(&d.country) {
+                if let Some(t) = a.templates.get(&d.template) {
+                    if let Ok(stats) = self
+                        .catalogue
+                        .aggregate(t, &a.modifiers, Some(&d.equipment))
+                    {
+                        d.derived = stats;
                     }
                 }
             }
@@ -1004,6 +1058,13 @@ impl Warfare {
         Ok(())
     }
     pub fn return_surplus(&mut self, id: u64, production: &mut ProductionState) {
+        if !self
+            .divisions
+            .get(&id)
+            .is_some_and(|d| self.logistics.can_deliver(&d.country, d.province))
+        {
+            return;
+        }
         let Some(d) = self.divisions.get_mut(&id).filter(|d| !d.destroyed) else {
             return;
         };
@@ -1070,7 +1131,23 @@ impl Warfare {
             return;
         };
         let stock = &mut production.country_mut(&d.country).model_stockpile;
-        for (archetype, preferred) in &t.equipment_preferences {
+        let preferences: BTreeMap<_, _> = d
+            .derived
+            .equipment
+            .keys()
+            .filter_map(|kind| {
+                t.equipment_preferences
+                    .get(kind)
+                    .cloned()
+                    .or_else(|| {
+                        self.catalogue
+                            .best_equipment(kind, &army.modifiers)
+                            .map(|e| e.id.clone())
+                    })
+                    .map(|id| (kind.clone(), id))
+            })
+            .collect();
+        for (archetype, preferred) in &preferences {
             if !self
                 .catalogue
                 .equipment_available(preferred, &army.modifiers)
@@ -1090,11 +1167,11 @@ impl Warfare {
                 .keys()
                 .filter(|id| {
                     *id != preferred
-                        && self
-                            .catalogue
-                            .equipment
-                            .get(*id)
-                            .is_some_and(|e| e.archetype == *archetype)
+                        && self.catalogue.equipment.get(*id).is_some_and(|e| {
+                            e.archetype == *archetype
+                                && (t.equipment_preferences.contains_key(archetype)
+                                    || e.year < self.catalogue.equipment[preferred].year)
+                        })
                 })
                 .cloned()
                 .collect();
@@ -1147,6 +1224,7 @@ impl Warfare {
         let need = self.divisions[&id].manpower;
         self.countries.get_mut(country).unwrap().manpower_pool -= u64::from(need);
         let d = self.divisions.get_mut(&id).unwrap();
+        d.fuel_fraction = 0.;
         d.order = DivisionOrder::Train { hours: 0.0 };
         d.organization = 0.0;
         self.replenish(production);
@@ -1165,6 +1243,9 @@ impl Warfare {
             .ok_or("Unknown own division")?;
         if d.battle.is_some() {
             return Err("Withdraw from combat before disbanding".into());
+        }
+        if !self.logistics.can_deliver(country, d.province) {
+            return Err("Нет пути для возвращения людей и техники на национальный склад".into());
         }
         let d = self.divisions.remove(&id).unwrap();
         let army = self.countries.get_mut(country).unwrap();
@@ -1229,6 +1310,13 @@ impl Warfare {
     pub fn replenish(&mut self, production: &mut ProductionState) {
         let ids: Vec<_> = self.divisions.keys().copied().collect();
         for id in ids {
+            let connected = self
+                .divisions
+                .get(&id)
+                .is_some_and(|d| self.logistics.can_deliver(&d.country, d.province));
+            if !connected {
+                continue;
+            }
             self.return_surplus(id, production);
             self.refit_preferred_equipment(id, production);
             let Some(d) = self
@@ -1289,8 +1377,12 @@ impl Warfare {
                     / self.divisions[&id].derived.stats.manpower.max(1.0),
             );
             let d = self.divisions.get_mut(&id).unwrap();
-            d.hp = (d.hp + (after - before).max(0.0) * d.derived.stats.hp)
-                .min(d.derived.stats.hp * after);
+            // apply_damage converts HP loss into people/equipment using the
+            // casualty coefficient. Invert the same conversion on replacement;
+            // otherwise a fully restored inventory leaves permanent missing HP.
+            let restored =
+                (after - before).max(0.0) / self.catalogue.rules.casualty_factor.max(1e-9);
+            d.hp = (d.hp + restored * d.derived.stats.hp).min(d.derived.stats.hp * after);
             if let Some(army) = self.countries.get(&d.country) {
                 if let Some(t) = army.templates.get(&d.template) {
                     if let Ok(stats) =
@@ -1692,6 +1784,56 @@ impl Warfare {
             }
         }
     }
+    fn hourly_air_allocations(&self) -> BTreeMap<(u64, bool), AirSupport> {
+        let mut allocations = BTreeMap::new();
+        let mut groups = BTreeMap::<(u32, String), Vec<(u64, bool, String, u32)>>::new();
+        for b in self.battles.values().filter(|b| b.outcome.is_none()) {
+            let Some(region) = self.air.region_at(b.province) else {
+                continue;
+            };
+            let country = |side: &crate::land_combat::BattleSide| {
+                side.active
+                    .iter()
+                    .chain(&side.reserves)
+                    .find_map(|id| self.divisions.get(id))
+                    .map(|d| d.country.clone())
+            };
+            if let (Some(a), Some(d)) = (country(&b.attackers), country(&b.defenders)) {
+                groups.entry((region, a.clone())).or_default().push((
+                    b.id,
+                    true,
+                    d.clone(),
+                    b.province,
+                ));
+                groups
+                    .entry((region, d))
+                    .or_default()
+                    .push((b.id, false, a, b.province));
+            }
+        }
+        for ((_, tag), entries) in groups {
+            let n = entries.len() as u32;
+            // Rotate the integer remainder so tiny wings remain useful and the
+            // exact national sortie budget is conserved regardless of battle order.
+            let offset = self.simulated_hours as usize % entries.len();
+            for (i, (id, attacker, enemy, province)) in entries.iter().enumerate() {
+                let mut air = self
+                    .air
+                    .support(&tag, enemy, *province, self.simulated_hours);
+                let total = air.cas_planes;
+                let rank = (i + entries.len() - offset) % entries.len();
+                let planes = total / n + u32::from(rank < (total % n) as usize);
+                air.plane_attack_rolls *= if total > 0 {
+                    f64::from(planes) / f64::from(total)
+                } else {
+                    0.
+                };
+                air.cas_planes = planes;
+                allocations.insert((*id, *attacker), air);
+            }
+        }
+        allocations
+    }
     pub(crate) fn environment(
         &self,
         battle: &LandBattle,
@@ -1753,20 +1895,18 @@ impl Warfare {
             env.defender_air =
                 self.air
                     .support(defender, attacker, battle.province, self.simulated_hours);
-            let region = self.air.region_at(battle.province);
-            let simultaneous = 1 + self
-                .battles
-                .values()
-                .filter(|b| {
-                    b.id != battle.id
-                        && b.outcome.is_none()
-                        && self.air.region_at(b.province) == region
-                })
-                .count();
-            // A sortie cannot hit every province with the wing's full strength.
-            for air in [&mut env.attacker_air, &mut env.defender_air] {
-                air.plane_attack_rolls /= simultaneous as f64;
-                air.cas_planes /= simultaneous as u32;
+            let fallback;
+            let allocation = if self.hourly_air.is_empty() {
+                fallback = self.hourly_air_allocations();
+                &fallback
+            } else {
+                &self.hourly_air
+            };
+            if let Some(support) = allocation.get(&(battle.id, true)) {
+                env.attacker_air = support.clone();
+            }
+            if let Some(support) = allocation.get(&(battle.id, false)) {
+                env.defender_air = support.clone();
             }
             let aa = |ids: &[u64]| {
                 ids.iter()
@@ -2570,6 +2710,7 @@ impl Warfare {
             .iter()
             .map(|(tag, a)| (tag.clone(), a.modifiers.clone()))
             .collect();
+        self.hourly_air = self.hourly_air_allocations();
         for id in battle_ids {
             let mut battle = self.battles.remove(&id).unwrap();
             let active: Vec<_> = battle
@@ -2598,6 +2739,22 @@ impl Warfare {
                         d.destination = None;
                         d.waypoints.clear();
                         d.attack_delay = self.catalogue.rules.attack_delay;
+                    }
+                }
+            }
+            // Recalculate only actual participants whose inventories may have
+            // changed; unrelated divisions keep their cached template stats.
+            for unit in &active {
+                if let Some(d) = self.divisions.get_mut(unit) {
+                    if let Some(a) = self.countries.get(&d.country) {
+                        if let Some(t) = a.templates.get(&d.template) {
+                            if let Ok(stats) =
+                                self.catalogue
+                                    .aggregate(t, &a.modifiers, Some(&d.equipment))
+                            {
+                                d.derived = stats;
+                            }
+                        }
                     }
                 }
             }
@@ -2647,6 +2804,11 @@ impl Warfare {
             }
         }
         if world.control_revision != initial_control_revision {
+            let mut logistics = std::mem::take(&mut self.logistics);
+            if logistics.enabled {
+                logistics.refresh_network(self, world);
+            }
+            self.logistics = logistics;
             self.fronts.active_orders = self.plans.active_divisions();
             let mut fronts = std::mem::take(&mut self.fronts);
             self.automatic_order = true;

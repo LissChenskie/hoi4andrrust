@@ -1,0 +1,104 @@
+{
+  "audit_date": "2026-10-28",
+  "source_commit": "ac0ee26d934a1df15d7b98ec43f479504fc31c11",
+  "branch": "feat/land-command-1193-20261026",
+  "target_reference": "HOI4 1.19.3",
+  "rustc": "1.99.1 (58cf8f9c3 2026-10-13)",
+  "baseline_tests": {
+    "library": 65,
+    "game": 228,
+    "exporter": 3,
+    "integration": 7,
+    "total": 303,
+    "failed": 0
+  },
+  "diagnostic_probes": {
+    "total": 11,
+    "observed": 11,
+    "failed": 0,
+    "pass_means": "Documented defect or model limitation reproduced; not a correctness gate",
+    "observations": [
+      "CAS BUDGET: available 100 rolls/h; applied inputs 50 + 100 = 150; HP loss 5.25, conserved-budget maximum 3.5",
+      "POCKET: paths=0; men 500 -> 1000; rifles 1 -> 100; national stock 0",
+      "RELIABILITY: model=0.8, modifier=+25%, expected adjusted=1.0, final=0.8",
+      "FUEL PATH ONLY: supply delivery 0.0005000000000023874 / 24; fuel delivered 25, carried 24, fraction 1",
+      "LEGACY SILO: previous total 2000 -> 3000, inferred base Some(2000.0)",
+      "NEW UNIT FUEL: national=0, drawn=0, carried=23.9, readiness=1",
+      "CAS ROUNDING: planes 0+0, attack inputs 0.5+0.5, total HP loss 0",
+      "GEAR: quantity 100 -> 1; SA 50 -> 50; HP strength 1",
+      "AIR REFILL: paths=0; planes 0 -> 100; stock 0",
+      "RESERVE: full delivery for 49 h; stock=0, fraction=1",
+      "XP: after 48 h of exercise, Army XP=0"
+    ]
+  },
+  "verified_commands": {
+    "cargo fmt --all -- --check": 0,
+    "cargo check --all-targets -j1": 0,
+    "cargo clippy --all-targets -j1": 0,
+    "cargo test --all-targets -j1": 0,
+    "python tools/audit/run-military-probes.py --ref ac0ee26 --cargo CARGO_WRAPPER": 0
+  },
+  "dev_test_profile": {
+    "opt_level": 0,
+    "debug": 0,
+    "codegen_units": 1,
+    "incremental": false
+  },
+  "clippy_warnings_remain": true,
+  "original_engine_comparisons": 0,
+  "android_device_runs": 0,
+  "ios_runs": 0,
+  "fresh_release_build": false,
+  "new_native_ui_run": false,
+  "findings": [
+    {
+      "id": "D1",
+      "priority": "P0",
+      "summary": "Missing equipment retains full attack and HP strength"
+    },
+    {
+      "id": "D2",
+      "priority": "P0",
+      "summary": "Land reinforcements bypass disconnected delivery network"
+    },
+    {
+      "id": "D3",
+      "priority": "P1",
+      "summary": "Carried supply reserve cannot recharge"
+    },
+    {
+      "id": "D4",
+      "priority": "P0",
+      "summary": "Sequential battle completion duplicates CAS hourly budget"
+    },
+    {
+      "id": "D5",
+      "priority": "P1",
+      "summary": "Integer division drops small CAS allocation"
+    },
+    {
+      "id": "D6",
+      "priority": "P0",
+      "summary": "Runtime recruitment creates carried fuel without source"
+    },
+    {
+      "id": "D7",
+      "priority": "P1",
+      "summary": "Legacy silo capacity migration counts silo contribution twice"
+    },
+    {
+      "id": "D8",
+      "priority": "P1",
+      "summary": "Equipment reliability modifiers are overwritten and bypassed by attrition"
+    }
+  ],
+  "model_limitations": [
+    "Fuel delivery is gated by reachability, not shared transport capacity",
+    "Air reinforcements lack ferry/range/time logistics; exact target-game rule unverified",
+    "Normal exercise/combat Army XP income missing"
+  ],
+  "gameplay_source_files_changed": [],
+  "resolved_cargo_lock_sha256": "1794e46e2a170bed76ef2ea249e90b6572f3e1a5be6d05c6bc58c019741a0983",
+  "cargo_lock_versioned_in_audited_snapshot": false,
+  "diagnostic_lock_fixture": "tools/audit/cargo-ac0ee26.lock"
+}
