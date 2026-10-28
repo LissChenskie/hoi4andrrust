@@ -48,6 +48,45 @@ mod regressions {
         (world, w)
     }
     #[test]
+    fn reinforcement_consumes_network_cargo_credit_without_inventing_equipment() {
+        let (_, mut w) = equipped();
+        let d = w.divisions.get_mut(&1).unwrap();
+        d.equipment.insert("rifle_1".into(), 50);
+        d.derived = w.catalogue.aggregate(
+            &template(), &MilitaryModifiers::default(), Some(&d.equipment)
+        ).unwrap();
+        let mut production = crate::production::ProductionState::default();
+        production.country_mut("A").model_stockpile.insert("rifle_1".into(), 50);
+        w.logistics.enabled = true;
+        w.logistics.last_hour = Some(1);
+        w.logistics.serviced.insert(("A".into(), 5));
+        w.logistics.rules.equipment_transport_weight = 0.01;
+        w.logistics.reinforcement_credit.insert(1, 0.05);
+        w.replenish(&mut production);
+        assert_eq!(w.divisions[&1].equipment["rifle_1"], 55);
+        assert_eq!(production.country("A").unwrap().model_stockpile["rifle_1"], 45);
+        assert!(w.logistics.reinforcement_credit[&1] < 1e-8);
+        w.replenish(&mut production);
+        assert_eq!(w.divisions[&1].equipment["rifle_1"], 55);
+    }
+    #[test]
+    fn reinforcement_requests_require_stockpile_and_real_deficits() {
+        let (_, mut w) = equipped();
+        let mut production = crate::production::ProductionState::default();
+        w.logistics.enabled = true;
+        let mut logistics = std::mem::take(&mut w.logistics);
+        logistics.prepare_reinforcements(&w, &production);
+        assert!(logistics.reinforcement_requests.is_empty());
+        let d = w.divisions.get_mut(&1).unwrap();
+        d.equipment.insert("rifle_1".into(), 10);
+        d.derived = w.catalogue.aggregate(
+            &template(), &MilitaryModifiers::default(), Some(&d.equipment)
+        ).unwrap();
+        production.country_mut("A").model_stockpile.insert("rifle_1".into(), 100);
+        logistics.prepare_reinforcements(&w, &production);
+        assert!(logistics.reinforcement_requests[&1] > 0.);
+    }
+    #[test]
     fn replacing_actual_combat_losses_restores_hp_without_permanent_ghost_damage() {
         let (_, mut w) = equipped();
         let (men, rifles) = w.divisions.get_mut(&1).unwrap().apply_damage(10., 5., &w.catalogue.rules);
