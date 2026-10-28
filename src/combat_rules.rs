@@ -78,6 +78,9 @@ pub struct CombatRules {
     pub hp_damage: f64,
     pub org_damage: f64,
     pub casualty_factor: f64,
+    /// Experience tier modifier from imported game version (fallback: classic 0.25).
+    #[serde(default = "default_experience_combat_factor")]
+    pub experience_combat_factor: f64,
     pub minimum_hours: u32,
     pub tactic_hours: u32,
     pub reinforce_chance: f64,
@@ -138,6 +141,9 @@ pub struct CombatRules {
     pub diagnostics: Vec<String>,
 }
 
+fn default_experience_combat_factor() -> f64 {
+    0.25
+}
 impl Default for CombatRules {
     fn default() -> Self {
         Self {
@@ -151,6 +157,7 @@ impl Default for CombatRules {
             hp_damage: 0.06,
             org_damage: 0.053,
             casualty_factor: 0.7,
+            experience_combat_factor: default_experience_combat_factor(),
             minimum_hours: 4,
             tactic_hours: 12,
             reinforce_chance: 0.02,
@@ -389,6 +396,10 @@ impl CombatRules {
                 }
                 "LAND_COMBAT_STR_DAMAGE_MODIFIER" => {
                     self.hp_damage = v.max(0.0);
+                    true
+                }
+                "EXPERIENCE_COMBAT_FACTOR" => {
+                    self.experience_combat_factor = v.max(0.0);
                     true
                 }
                 "LAND_COMBAT_ORG_DAMAGE_MODIFIER" => {
@@ -684,6 +695,24 @@ mod tests {
         assert!(r.can_fit(70.0, 23.1, 70.0));
         assert!(!r.can_fit(70.0, 23.101, 70.0));
         assert_eq!(r.stacking(9, 2), 0.02);
+    }
+    #[test]
+    fn experience_factor_uses_imported_versioned_define() {
+        let mut rules = CombatRules::default();
+        assert!((rules.experience_combat_factor - 0.25).abs() < 1e-9);
+        rules.import_defines(
+            "NDefines.NMilitary.EXPERIENCE_COMBAT_FACTOR = 0.15",
+            "xp.lua",
+        );
+        assert!((rules.experience_combat_factor - 0.15).abs() < 1e-9);
+        assert_eq!(rules.provenance["EXPERIENCE_COMBAT_FACTOR"], "xp.lua");
+        assert!(
+            (crate::military_model::ExperienceLevel::Veteran
+                .bonus_with_factor(rules.experience_combat_factor,)
+                - 0.45)
+                .abs()
+                < 1e-9
+        );
     }
     #[test]
     fn imports_namespaced_table_and_array_defines() {
