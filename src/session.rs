@@ -285,6 +285,11 @@ impl GameSession {
         research: &ResearchRules,
     ) -> bool {
         construction::initialize_builders(&self.world, &mut self.construction_queues);
+        // Persisted troop voyages reserve physical convoys before supply
+        // and trade receive their shared pool allocations.
+        self.military
+            .naval
+            .sync_transport_convoys(&mut self.military.logistics);
         // Reconcile the logistics allocation before recalculating hub ranges:
         // toggles and occupied hubs release trucks, new hubs reserve available stock.
         self.military.logistics.reserve_trucks(
@@ -313,6 +318,7 @@ impl GameSession {
         // Temporarily extract the naval state to avoid borrowing warfare twice.
         let mut naval = std::mem::take(&mut self.military.naval);
         naval.tick_naval_combat(&self.world, &mut self.military, self.clock.elapsed_hours);
+        naval.tick_voyages(&mut self.military, &mut self.world);
         self.military.naval = naval;
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();

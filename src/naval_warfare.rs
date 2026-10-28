@@ -179,6 +179,10 @@ pub struct NavalState {
     #[serde(default, with = "save_pairs")]
     pub conditions: BTreeMap<(u64, usize), crate::naval_combat::ShipCondition>,
     pub battle_reports: Vec<crate::naval_combat::NavalBattleReport>,
+    #[serde(default)]
+    pub voyages: BTreeMap<u64, crate::naval_transport::NavalVoyage>,
+    #[serde(default)]
+    pub next_voyage_id: u64,
     /// Transient result of the immediately preceding hourly naval fuel tick.
     /// Trade is settled after that tick, never directly from assigned orders.
     #[serde(skip)]
