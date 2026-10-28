@@ -41,6 +41,11 @@ pub struct LogisticsRules {
     /// Fuel units occupy this many supply-equivalent transport units. This is
     /// an explicit mobile profile coefficient, not a recovered engine define.
     pub fuel_transport_weight: f64,
+    /// Cargo uses the same network flow as ordinary supply and fuel.
+    /// These weights are explicitly calibrated mobile approximations.
+    pub equipment_transport_weight: f64,
+    pub manpower_transport_weight: f64,
+    pub max_reinforcement_daily: f64,
     pub network_interval: u64,
 }
 impl Default for LogisticsRules {
@@ -69,6 +74,9 @@ impl Default for LogisticsRules {
             base_fuel_capacity: 100_000.,
             silo_fuel_capacity: 100_000.,
             fuel_transport_weight: 1.,
+            equipment_transport_weight: 0.01,
+            manpower_transport_weight: 0.001,
+            max_reinforcement_daily: 2.,
             network_interval: 6,
         }
     }
@@ -136,6 +144,10 @@ pub struct LogisticsState {
     #[serde(skip)]
     pub local_counts: BTreeMap<u32, u32>,
     pub delivery: BTreeMap<u64, f64>,
+    /// Network requests are refreshed from actual national stockpiles every hour.
+    pub reinforcement_requests: BTreeMap<u64, f64>,
+    /// Carry-over of network-allocated reinforcement cargo, in supply-equivalent units.
+    pub reinforcement_credit: BTreeMap<u64, f64>,
     pub network_key: Option<(u64, u64)>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -427,8 +439,130 @@ impl LogisticsState {
     }
     fn dispatch_demand(&self, d: &crate::military_model::Division) -> f64 {
         let (supply, fuel) = self.dispatch_parts(d);
-        supply + fuel * self.rules.fuel_transport_weight
+        supply
+            + fuel * self.rules.fuel_transport_weight
+            + self
+                .reinforcement_requests
+                .get(&d.id)
+                .copied()
+                .unwrap_or(0.)
     }
+    /// Reserve throughput only for equipment or personnel that can really be dispatched.
+    /// This is separate from the daily stockpile transaction: no goods are created here.
+    pub fn prepare_reinforcements(
+        &mut self,
+        w: &Warfare,
+        production: &crate::production::ProductionState,
+    ) {
+        if !self.enabled {
+            return;
+        }
+        let mut requests = BTreeMap::new();
+        for d in w
+            .divisions
+            .values()
+            .filter(|d| !d.destroyed && d.battle.is_none())
+        {
+            let mut stock_by_kind = BTreeMap::<String, u64>::new();
+            if let Some(stock) = production.country(&d.country) {
+                for (id, &quantity) in &stock.model_stockpile {
+                    if let Some(model) = w.catalogue.equipment.get(id) {
+                        *stock_by_kind.entry(model.archetype.clone()).or_default() += quantity;
+                    }
+                }
+            }
+            let mut equipment = 0_u64;
+            for (kind, &needed) in &d.derived.equipment {
+                let carried: u64 = d
+                    .equipment
+                    .iter()
+                    .filter_map(|(id, &n)| {
+                        w.catalogue
+                            .equipment
+                            .get(id)
+                            .filter(|model| model.archetype == *kind)
+                            .map(|_| u64::from(n))
+                    })
+                    .sum();
+                let deficit = (needed.ceil().max(0.) as u64).saturating_sub(carried);
+                equipment = equipment
+                    .saturating_add(deficit.min(stock_by_kind.get(kind).copied().unwrap_or(0)));
+            }
+            let people_needed = (d.derived.stats.manpower.ceil().max(0.) as u64)
+                .saturating_sub(u64::from(d.manpower));
+            let available_people = w
+                .countries
+                .get(&d.country)
+                .map_or(0, |country| country.manpower_pool);
+            // Upgrading a fully equipped division also sends new models from
+            // the stockpile; those replacements must occupy transport capacity.
+            let mut upgrades = 0_u64;
+            if let Some(army) = w.countries.get(&d.country) {
+                if let Some(template) = army.templates.get(&d.template) {
+                    if let Some(stock) = production.country(&d.country) {
+                        for kind in d.derived.equipment.keys() {
+                            let preferred = template
+                                .equipment_preferences
+                                .get(kind)
+                                .cloned()
+                                .or_else(|| {
+                                    w.catalogue
+                                        .best_equipment(kind, &army.modifiers)
+                                        .map(|model| model.id.clone())
+                                });
+                            let Some(preferred) = preferred else {
+                                continue;
+                            };
+                            if !w.catalogue.equipment_available(&preferred, &army.modifiers) {
+                                continue;
+                            }
+                            let Some(model) = w.catalogue.equipment.get(&preferred) else {
+                                continue;
+                            };
+                            if model.archetype != *kind {
+                                continue;
+                            }
+                            let obsolete: u64 = d
+                                .equipment
+                                .iter()
+                                .filter_map(|(id, &n)| {
+                                    w.catalogue
+                                        .equipment
+                                        .get(id)
+                                        .filter(|old| {
+                                            old.archetype == *kind
+                                                && old.id != preferred
+                                                && (template
+                                                    .equipment_preferences
+                                                    .contains_key(kind)
+                                                    || old.year < model.year)
+                                        })
+                                        .map(|_| u64::from(n))
+                                })
+                                .sum();
+                            upgrades =
+                                upgrades.saturating_add(obsolete.min(
+                                    stock.model_stockpile.get(&preferred).copied().unwrap_or(0),
+                                ));
+                        }
+                    }
+                }
+            }
+            let cost = equipment.max(upgrades) as f64
+                * self.rules.equipment_transport_weight.max(0.)
+                + people_needed.min(available_people) as f64
+                    * self.rules.manpower_transport_weight.max(0.);
+            let demand = cost.min(self.rules.max_reinforcement_daily.max(0.));
+            if demand.is_finite() && demand > 0. {
+                requests.insert(d.id, demand);
+            }
+        }
+        if self.reinforcement_requests != requests {
+            self.reinforcement_requests = requests;
+            self.network_key = None;
+        }
+    }
+
     fn rebuild(&mut self, w: &Warfare, world: &World) {
         self.delivery.clear();
         self.serviced.clear();
@@ -693,6 +827,8 @@ impl LogisticsState {
         }
         self.divisions
             .retain(|id, _| w.divisions.get(id).is_some_and(|d| !d.destroyed));
+        self.reinforcement_credit
+            .retain(|id, _| w.divisions.get(id).is_some_and(|d| !d.destroyed));
         for (tag, c) in &mut self.countries {
             let refineries = world
                 .country_economy(tag)
@@ -775,7 +911,13 @@ impl LogisticsState {
         let mut dirty = Vec::new();
         for d in w.divisions.values_mut().filter(|d| !d.destroyed) {
             let (supply_request, fuel_request) = self.dispatch_parts(d);
-            let total_request = supply_request + fuel_request * self.rules.fuel_transport_weight;
+            let cargo_request = self
+                .reinforcement_requests
+                .get(&d.id)
+                .copied()
+                .unwrap_or(0.);
+            let total_request =
+                supply_request + fuel_request * self.rules.fuel_transport_weight + cargo_request;
             let delivered = if self.serviced.contains(&(d.country.clone(), d.province)) {
                 self.delivery
                     .get(&d.id)
@@ -786,6 +928,12 @@ impl LogisticsState {
                 0.
             };
             let transport_fraction = (delivered / total_request.max(1e-9)).clamp(0., 1.);
+            // Allocate each hour of the solved shared flow among supplies, fuel and cargo.
+            // The credit is a physical delivery budget, not free national equipment.
+            let cargo_per_hour = cargo_request * transport_fraction / 24.;
+            let limit = self.rules.max_reinforcement_daily.max(0.) * 2.;
+            let credit = self.reinforcement_credit.entry(d.id).or_default();
+            *credit = (*credit + cargo_per_hour).min(limit);
             let s = self.divisions.get_mut(&d.id).unwrap();
             s.transport_received = delivered;
             s.fuel_received = 0.;

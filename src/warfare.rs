@@ -1117,6 +1117,17 @@ impl Warfare {
         }
     }
     fn refit_preferred_equipment(&mut self, id: u64, production: &mut ProductionState) {
+        let limited = self.logistics.enabled && self.logistics.last_hour.is_some();
+        let unit_cost = self.logistics.rules.equipment_transport_weight.max(1e-9);
+        let mut cargo = if limited {
+            self.logistics
+                .reinforcement_credit
+                .get(&id)
+                .copied()
+                .unwrap_or(0.)
+        } else {
+            f64::INFINITY
+        };
         let Some(d) = self
             .divisions
             .get_mut(&id)
@@ -1177,21 +1188,33 @@ impl Warfare {
                 .collect();
             for model in old {
                 let count = d.equipment[&model];
+                let transfer_max = if limited {
+                    (cargo / unit_cost + 1e-9).floor().max(0.) as u64
+                } else {
+                    u64::MAX
+                };
                 let replacement = stock
                     .get(preferred)
                     .copied()
                     .unwrap_or(0)
-                    .min(u64::from(count)) as u32;
+                    .min(u64::from(count))
+                    .min(transfer_max) as u32;
                 if replacement == 0 {
                     continue;
                 }
                 *stock.get_mut(preferred).unwrap() -= u64::from(replacement);
+                if limited {
+                    cargo = (cargo - f64::from(replacement) * unit_cost).max(0.);
+                }
                 *stock.entry(model.clone()).or_default() += u64::from(replacement);
                 *d.equipment.get_mut(&model).unwrap() -= replacement;
                 *d.equipment.entry(preferred.clone()).or_default() += replacement;
             }
         }
         d.equipment.retain(|_, n| *n > 0);
+        if limited {
+            self.logistics.reinforcement_credit.insert(id, cargo);
+        }
     }
     pub fn recruit(
         &mut self,
@@ -1310,6 +1333,20 @@ impl Warfare {
     pub fn replenish(&mut self, production: &mut ProductionState) {
         let ids: Vec<_> = self.divisions.keys().copied().collect();
         for id in ids {
+            // Older direct-call test fixtures with the solver disabled retain their
+            // established behavior. Real hourly campaigns consume allocated cargo.
+            let cargo_limited = self.logistics.enabled && self.logistics.last_hour.is_some();
+            let mut cargo = if cargo_limited {
+                self.logistics
+                    .reinforcement_credit
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0.)
+            } else {
+                f64::INFINITY
+            };
+            let equipment_weight = self.logistics.rules.equipment_transport_weight.max(1e-9);
+            let manpower_weight = self.logistics.rules.manpower_transport_weight.max(1e-9);
             let connected = self
                 .divisions
                 .get(&id)
@@ -1319,6 +1356,15 @@ impl Warfare {
             }
             self.return_surplus(id, production);
             self.refit_preferred_equipment(id, production);
+            // Model upgrades consume the same budget before unfilled models.
+            if cargo_limited {
+                cargo = self
+                    .logistics
+                    .reinforcement_credit
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0.);
+            }
             let Some(d) = self
                 .divisions
                 .get(&id)
@@ -1362,20 +1408,45 @@ impl Warfare {
                         break;
                     }
                     let available = stock.get_mut(&model.id).unwrap();
-                    let taken = deficit.min(*available).min(u64::from(u32::MAX));
+                    let transport_limit = if cargo_limited {
+                        ((cargo / equipment_weight + 1e-9).floor().max(0.) as u64)
+                            .min(u64::from(u32::MAX))
+                    } else {
+                        u64::from(u32::MAX)
+                    };
+                    let taken = deficit
+                        .min(*available)
+                        .min(transport_limit)
+                        .min(u64::from(u32::MAX));
                     *available -= taken;
+                    if cargo_limited {
+                        cargo = (cargo - taken as f64 * equipment_weight).max(0.);
+                    }
                     *d.equipment.entry(model.id.clone()).or_default() += taken as u32;
                     deficit -= taken;
                 }
             }
             let army = self.countries.entry(tag).or_default();
-            let men = u64::from(max_manpower.saturating_sub(d.manpower)).min(army.manpower_pool);
+            let transport_limit = if cargo_limited {
+                (cargo / manpower_weight + 1e-9).floor().max(0.) as u64
+            } else {
+                u64::MAX
+            };
+            let men = u64::from(max_manpower.saturating_sub(d.manpower))
+                .min(army.manpower_pool)
+                .min(transport_limit);
             army.manpower_pool -= men;
+            if cargo_limited {
+                cargo = (cargo - men as f64 * manpower_weight).max(0.);
+            }
             d.manpower = d.manpower.saturating_add(men as u32);
             let after = self.equipment_fraction(&self.divisions[&id]).min(
                 f64::from(self.divisions[&id].manpower)
                     / self.divisions[&id].derived.stats.manpower.max(1.0),
             );
+            if cargo_limited {
+                self.logistics.reinforcement_credit.insert(id, cargo);
+            }
             let d = self.divisions.get_mut(&id).unwrap();
             // apply_damage converts HP loss into people/equipment using the
             // casualty coefficient. Invert the same conversion on replacement;

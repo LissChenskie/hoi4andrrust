@@ -292,6 +292,11 @@ impl GameSession {
             &self.world,
             &self.military.catalogue,
         );
+        // Only genuine unfilled equipment/manpower requests consume rail/port capacity.
+        // Taking the logistics state out prevents aliasing Warfare and its transport fields.
+        let mut logistics = std::mem::take(&mut self.military.logistics);
+        logistics.prepare_reinforcements(&self.military, &self.production);
+        self.military.logistics = logistics;
         let control_revision = self.world.control_revision;
         let completed_day = self.clock.advance_one_hour();
         self.military
