@@ -407,10 +407,11 @@ impl LandBattle {
         } else {
             division.entrenchment * rules.entrenchment_bonus
         };
+        let experience = division.experience.bonus_with_factor(rules.experience_combat_factor);
         f.multiply(
             "experience",
-            1.0 + division.experience.bonus(),
-            1.0 + division.experience.bonus(),
+            1.0 + experience,
+            1.0 + experience,
         );
         f.multiply(
             if attacker { "planning" } else { "entrenchment" },
