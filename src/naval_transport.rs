@@ -217,15 +217,21 @@ impl NavalState {
                 self.voyages.remove(&id);
                 continue;
             }
-            let v = self.voyages.get_mut(&id).unwrap();
             // A convoy shortage suspends the voyage rather than silently
             // spawning missing transport hulls or a destination occupation.
             let pool = w.logistics.countries.get(&v.country).map_or(0, |c| c.convoys);
-            if pool < self.reserved_transport_convoys(&v.country) {
+            let reserved = self.reserved_transport_convoys(&v.country);
+            if pool < reserved {
                 continue;
             }
+            let v = self.voyages.get_mut(&id).unwrap();
             if v.hours_remaining > 0 {
                 v.hours_remaining -= 1;
+                continue;
+            }
+            // A newly closed strait or interdicted sea route cannot be
+            // crossed by a previously accepted naval transport.
+            if v.sea_path.iter().any(|p| w.logistics.blocked_sea.contains(p)) {
                 continue;
             }
             let Some(controller) = world.controller_of_province(v.destination) else {
@@ -237,7 +243,7 @@ impl NavalState {
                 VoyageKind::UnopposedLanding => w.at_war(&v.country, controller)
                     && !w.divisions.values().any(|d| {
                         !d.destroyed && d.province == v.destination
-                            && w.at_war(&v.country, &d.country) && d.fighting()
+                            && w.at_war(&v.country, &d.country)
                     })
                     && !w.battles.values().any(|b| b.province == v.destination
                         && b.outcome.is_none()),
