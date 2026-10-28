@@ -185,16 +185,24 @@ pub fn draw(
         let early_ready = job.training_hours / job.required_hours >= 0.2 && supply >= 0.2;
         ui::label(
             state,
-            Rect::new(x + 5.0, row.y + 63.0, row.w - if early_ready { 70.0 } else { 10.0 }, 17.0),
+            Rect::new(
+                x + 5.0,
+                row.y + 63.0,
+                row.w - if early_ready { 70.0 } else { 10.0 },
+                17.0,
+            ),
             10.0,
             ui::MUTED,
         );
-        if early_ready && ui::small_button(
-            "Рано",
-            Rect::new(row.right() - 58.0, row.y + 60.0, 53.0, 20.0),
-            false,
-        ) {
-            view.notice = w.deploy_recruitment_early(tag, *id, world)
+        if early_ready
+            && ui::small_button(
+                "Рано",
+                Rect::new(row.right() - 58.0, row.y + 60.0, 53.0, 20.0),
+                false,
+            )
+        {
+            view.notice = w
+                .deploy_recruitment_early(tag, *id, world)
                 .map_or_else(|err| err, |_| "Дивизия досрочно развёрнута".into());
         }
         if let Some(p) = location.filter(|p| *p != job.province) {
