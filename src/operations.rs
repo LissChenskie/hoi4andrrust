@@ -473,7 +473,11 @@ impl OperationalState {
             }
             // Event invalidation plus a bounded operational interval. Rendering
             // never invokes this solver.
-            if !topology && p.last_review != 0 && elapsed.saturating_sub(p.last_review) < 6 {
+            let review_interval = if p.order_type == OrderType::Offensive { 3 } else { 6 };
+            if !topology
+                && p.last_review != 0
+                && elapsed.saturating_sub(p.last_review) < review_interval
+            {
                 self.plans.insert(id, p);
                 continue;
             }
@@ -552,6 +556,36 @@ fn ready(d: &Division, mode: ExecutionMode) -> bool {
         && d.organization / d.derived.stats.organization.max(1.0) >= org
         && d.supply_fraction >= supply
 }
+/// An unopposed province needs movement, not a combat-strength comparison.
+/// Do not confuse an ongoing battle with an empty province.
+fn unopposed_target(w: &Warfare, world: &World, country: &str, target: u32) -> bool {
+    world
+        .controller_of_province(target)
+        .is_some_and(|c| w.at_war(country, c))
+        && !w
+            .divisions
+            .values()
+            .any(|d| d.province == target
+                && !d.destroyed
+                && d.fighting()
+                && w.at_war(country, &d.country)
+                && !matches!(d.order, DivisionOrder::Retreat { .. }))
+        && !w.battles.values().any(|b| b.province == target && b.outcome.is_none())
+}
+
+/// Two controlled approaches allow taking the mouth/side of a salient, even
+/// when the province is not strictly closer to the drawn final line.
+/// This does not require the rest of the pocket to be fully surrounded.
+fn exposed_salient(world: &World, country: &str, target: u32) -> bool {
+    world
+        .geography
+        .land_neighbors(target)
+        .filter(|e| world.controller_of_province(e.to) == Some(country))
+        .take(2)
+        .count()
+        >= 2
+}
+
 fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
     if let Some(neutral) = p
         .destination_line
@@ -604,19 +638,24 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
         let Some(d) = w.divisions.get(&id) else {
             continue;
         };
-        if !ready(d, p.mode) {
+        // A lightly supplied/organised division may still march into an
+        // undefended enemy province. Defended attacks keep the normal risk and
+        // readiness policies; never bypass battle, retreat or attack delay.
+        let available = d.fighting()
+            && d.battle.is_none()
+            && d.attack_delay == 0
+            && d.derived.stats.speed > 0.0
+            && matches!(d.order, DivisionOrder::Hold);
+        if !available {
             continue;
         }
-        if let Some(target) = p
+        let battle_ready = ready(d, p.mode);
+        let assigned = p
             .source_front
             .and_then(|front| w.fronts.fronts.get(&front))
             .and_then(|f| f.assignments.get(&id))
             .copied()
-            .filter(|t| *t != d.province)
-        {
-            moves.push((id, target));
-            continue;
-        }
+            .filter(|t| *t != d.province);
         let here = p.distance.get(&d.province).copied().unwrap_or(u32::MAX);
         let targets: Vec<_> = world
             .geography
@@ -628,10 +667,16 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                     .is_some_and(|c| w.at_war(&p.country, c))
             })
             .filter(|e| {
-                p.distance.get(&e.to).is_some_and(|n| *n < here)
+                let forward = p.distance.get(&e.to).is_some_and(|n| *n < here);
+                let close_salient = p.order_type == OrderType::Offensive
+                    && exposed_salient(world, &p.country, e.to)
+                    && p.distance.get(&e.to).is_some_and(|n| *n <= here.saturating_add(1));
+                forward
+                    || close_salient
                     || (p.order_type == OrderType::Offensive && enclosed.contains(&e.to))
             })
             .filter(|e| p.order_type != OrderType::Spearhead || p.cached_route.contains(&e.to))
+            .filter(|e| battle_ready || unopposed_target(w, world, &p.country, e.to))
             .collect();
         let target = targets
             .into_iter()
@@ -655,26 +700,33 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                         _ => 0.0,
                     };
                     let forts = w.conditions.get(&target).map_or(0, |c| c.fort_level) as f64;
-                    p.distance.get(&target).copied().unwrap_or(0) as f64
+                    // Local easy occupations should not wait for every guarded
+                    // frontal approach to meet a risk threshold first.
+                    let empty_bonus =
+                        if unopposed_target(w, world, &p.country, target) { -3.0 } else { 0.0 };
+                    let pocket_bonus =
+                        if exposed_salient(world, &p.country, target) { -1.0 } else { 0.0 };
+                    p.distance.get(&target).copied().unwrap_or(u32::MAX / 4) as f64
                         + base.movement_cost
                         + forts
                         - river
+                        + empty_bonus
+                        + pocket_bonus
                         + planned_targets.get(&target).copied().unwrap_or(0) as f64
                 };
                 score(a.to).total_cmp(&score(b.to)).then(a.to.cmp(&b.to))
             })
             .map(|e| e.to);
-        if let Some(target) = target {
+        // Take a nearby undefended opening before walking away to rebalance the
+        // frontline. Guarded assaults still wait until assigned units arrive.
+        if let Some(target) = target.filter(|t| {
+            assigned.is_none() || unopposed_target(w, world, &p.country, *t)
+        }) {
             attacks.entry(target).or_default().push(id);
             origins.entry(target).or_default().insert(d.province);
             *planned_targets.entry(target).or_default() += 1;
-        } else {
-            let assigned = p
-                .source_front
-                .and_then(|id| w.fronts.fronts.get(&id))
-                .and_then(|f| f.assignments.get(&id))
-                .copied();
-            if let Some(target) = assigned.filter(|p| *p != d.province) {
+        } else if battle_ready {
+            if let Some(target) = assigned {
                 moves.push((id, target));
             }
         }
