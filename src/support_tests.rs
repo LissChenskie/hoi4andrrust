@@ -88,8 +88,19 @@ fn reinforcement_cargo_and_regular_supply_share_the_same_rail_bottleneck() {
     tick(&mut cargo, &world, 1);
     let regular = plain.logistics.divisions[&1].received;
     let with_cargo = cargo.logistics.divisions[&1].received;
-    assert!(regular > with_cargo, "cargo must use network capacity rather than free bandwidth");
-    assert!(cargo.logistics.reinforcement_credit.get(&1).copied().unwrap_or(0.) > 0.);
+    assert!(
+        regular > with_cargo,
+        "cargo must use network capacity rather than free bandwidth"
+    );
+    assert!(
+        cargo
+            .logistics
+            .reinforcement_credit
+            .get(&1)
+            .copied()
+            .unwrap_or(0.)
+            > 0.
+    );
     assert!(cargo.logistics.delivery[&1] <= 12. + 1e-6);
 }
 fn air_tick(w: &mut Warfare, world: &World, h: u64) {
