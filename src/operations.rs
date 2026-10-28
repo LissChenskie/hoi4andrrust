@@ -684,7 +684,13 @@ fn advance(p: &mut BattlePlan, w: &mut Warfare, world: &World) {
                     || (p.order_type == OrderType::Offensive && enclosed.contains(&e.to))
             })
             .filter(|e| p.order_type != OrderType::Spearhead || p.cached_route.contains(&e.to))
-            .filter(|e| battle_ready || unopposed_target(w, world, &p.country, e.to))
+            // Do not send the entire army into one empty border province.
+            // One division occupies it while the others retain their front slots.
+            .filter(|e| {
+                let empty = unopposed_target(w, world, &p.country, e.to);
+                (battle_ready || empty)
+                    && (!empty || planned_targets.get(&e.to).copied().unwrap_or(0) == 0)
+            })
             .collect();
         let target = targets
             .into_iter()
@@ -1018,6 +1024,24 @@ pub(crate) mod tests {
         assert!(matches!(&w.divisions[&1].order,
             DivisionOrder::Move { path, .. } if path == &vec![9]));
         assert_eq!(world.controller_of_province(9), Some("B"));
+    }
+    #[test]
+    fn undefended_occupation_uses_one_division_not_the_entire_frontline() {
+        let (world, mut w, front, plan) = configured(OrderType::Offensive);
+        let mut p = w.plans.plans.remove(&plan).unwrap();
+        p.distance = goal_distances(&w, &world, "A", &p.destination_line);
+        p.assigned_divisions = BTreeSet::from([1, 2, 3]);
+        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(1, 1);
+        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(2, 4);
+        w.fronts.fronts.get_mut(&front).unwrap().assignments.insert(3, 6);
+        advance(&mut p, &mut w, &world);
+        let occupying = (1..=3).filter(|id| {
+            matches!(&w.divisions[id].order, DivisionOrder::Move { path, .. }
+                if path == &vec![9])
+        }).count();
+        assert_eq!(occupying, 1);
+        assert!(matches!(w.divisions[&2].order, DivisionOrder::Move { .. }));
+        assert!(matches!(w.divisions[&3].order, DivisionOrder::Move { .. }));
     }
     #[test]
     fn empty_provinces_do_not_wait_for_battle_readiness_but_defended_ones_do() {
