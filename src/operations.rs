@@ -1045,6 +1045,7 @@ pub(crate) mod tests {
         // Province 12 connects to the wider enemy region, and is at the
         // SAME goal distance as the friendly 11: strict downhill and the old
         // fully-enclosed special case would both refuse the closing move.
+        world.set_province_controller(10, Some("A"));
         world.set_province_controller(11, Some("A"));
         w.divisions.get_mut(&1).unwrap().province = 11;
         w.divisions
