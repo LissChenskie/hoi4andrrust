@@ -194,7 +194,10 @@ impl ResourceEconomy {
         let mut unassigned_convoys = BTreeMap::<String, u64>::new();
         if let Some(w) = warfare {
             for (tag, country) in &w.logistics.countries {
-                unassigned_convoys.insert(tag.clone(), country.convoys);
+                unassigned_convoys.insert(
+                    tag.clone(),
+                    country.convoys.saturating_sub(country.transport_convoys_committed),
+                );
             }
         }
         let mut reports: BTreeMap<String, CountryResources> = world
