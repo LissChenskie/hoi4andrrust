@@ -1117,6 +1117,13 @@ impl Warfare {
         }
     }
     fn refit_preferred_equipment(&mut self, id: u64, production: &mut ProductionState) {
+        let limited = self.logistics.enabled && self.logistics.last_hour.is_some();
+        let unit_cost = self.logistics.rules.equipment_transport_weight.max(1e-9);
+        let mut cargo = if limited {
+            self.logistics.reinforcement_credit.get(&id).copied().unwrap_or(0.)
+        } else {
+            f64::INFINITY
+        };
         let Some(d) = self
             .divisions
             .get_mut(&id)
@@ -1177,21 +1184,33 @@ impl Warfare {
                 .collect();
             for model in old {
                 let count = d.equipment[&model];
+                let transfer_max = if limited {
+                    (cargo / unit_cost + 1e-9).floor().max(0.) as u64
+                } else {
+                    u64::MAX
+                };
                 let replacement = stock
                     .get(preferred)
                     .copied()
                     .unwrap_or(0)
-                    .min(u64::from(count)) as u32;
+                    .min(u64::from(count))
+                    .min(transfer_max) as u32;
                 if replacement == 0 {
                     continue;
                 }
                 *stock.get_mut(preferred).unwrap() -= u64::from(replacement);
+                if limited {
+                    cargo = (cargo - f64::from(replacement) * unit_cost).max(0.);
+                }
                 *stock.entry(model.clone()).or_default() += u64::from(replacement);
                 *d.equipment.get_mut(&model).unwrap() -= replacement;
                 *d.equipment.entry(preferred.clone()).or_default() += replacement;
             }
         }
         d.equipment.retain(|_, n| *n > 0);
+        if limited {
+            self.logistics.reinforcement_credit.insert(id, cargo);
+        }
     }
     pub fn recruit(
         &mut self,
@@ -1333,6 +1352,10 @@ impl Warfare {
             }
             self.return_surplus(id, production);
             self.refit_preferred_equipment(id, production);
+            // Model upgrades consume the same budget before unfilled models.
+            if cargo_limited {
+                cargo = self.logistics.reinforcement_credit.get(&id).copied().unwrap_or(0.);
+            }
             let Some(d) = self
                 .divisions
                 .get(&id)
