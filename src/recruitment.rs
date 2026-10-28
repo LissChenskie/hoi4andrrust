@@ -343,6 +343,40 @@ mod tests {
         (world, w, ProductionState::default(), name)
     }
     #[test]
+    fn partial_equipment_advances_training_proportionally_until_fully_equipped() {
+        let (world, mut w, mut production, name) = setup();
+        let id = w.queue_recruitment("A", &name, 1, &world, &mut production).unwrap();
+        production.country_mut("A").model_stockpile.insert("rifle".into(), 50);
+        w.supply_recruitment(&mut production);
+        for _ in 0..24 { w.tick_recruitment(&world); }
+        assert_eq!(w.recruitment[&id].training_hours, 12.);
+        assert!(w.divisions.is_empty());
+        production.country_mut("A").model_stockpile.insert("rifle".into(), 50);
+        w.supply_recruitment(&mut production);
+        for _ in 0..12 { w.tick_recruitment(&world); }
+        assert!(!w.recruitment.contains_key(&id));
+        assert_eq!(w.divisions.values().next().unwrap().equipment["rifle"], 100);
+    }
+    #[test]
+    fn early_deployment_requires_progress_and_preserves_reservations() {
+        let (world, mut w, mut production, name) = setup();
+        let initial = w.countries["A"].manpower_pool;
+        let job = w.queue_recruitment("A", &name, 1, &world, &mut production).unwrap();
+        production.country_mut("A").model_stockpile.insert("rifle".into(), 25);
+        w.supply_recruitment(&mut production);
+        assert!(w.deploy_recruitment_early("A", job, &world).is_err());
+        for _ in 0..20 { w.tick_recruitment(&world); }
+        let unit = w.deploy_recruitment_early("A", job, &world).unwrap();
+        let d = &w.divisions[&unit];
+        assert_eq!(d.experience, ExperienceLevel::Green);
+        assert_eq!(d.equipment["rifle"], 25);
+        assert!(d.hp < d.derived.stats.hp);
+        assert!(w.recruitment.is_empty());
+        assert_eq!(w.countries["A"].manpower_pool + u64::from(d.manpower), initial);
+        assert_eq!(production.country("A").unwrap().model_stockpile["rifle"], 0);
+        assert!(w.deploy_recruitment_early("A", job, &world).is_err());
+    }
+    #[test]
     fn equipment_gates_training_and_deployment_does_not_create_resources() {
         let (world, mut w, mut production, name) = setup();
         let men = w.countries["A"].manpower_pool;
