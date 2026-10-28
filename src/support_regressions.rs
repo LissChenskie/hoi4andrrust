@@ -87,6 +87,35 @@ mod regressions {
         assert!(logistics.reinforcement_requests[&1] > 0.);
     }
     #[test]
+    fn replacing_old_models_uses_cargo_even_at_full_equipment_strength() {
+        let (_, mut w) = equipped();
+        let mut db = (*w.catalogue).clone();
+        let mut upgraded = db.equipment["rifle_1"].clone();
+        upgraded.id = "rifle_2".into();
+        upgraded.year = 1940;
+        db.equipment.insert(upgraded.id.clone(), upgraded);
+        w.catalogue = std::sync::Arc::new(db);
+        w.countries.get_mut("A").unwrap().templates.get_mut("test").unwrap()
+            .equipment_preferences.insert("rifle".into(), "rifle_2".into());
+        let mut p = crate::production::ProductionState::default();
+        p.country_mut("A").model_stockpile.insert("rifle_2".into(), 100);
+        w.logistics.enabled = true;
+        w.logistics.last_hour = Some(1);
+        w.logistics.serviced.insert(("A".into(), 5));
+        w.logistics.reinforcement_credit.insert(1, 0.05);
+        let mut logistics = std::mem::take(&mut w.logistics);
+        logistics.prepare_reinforcements(&w, &p);
+        assert!(logistics.reinforcement_requests[&1] > 0.);
+        w.logistics = logistics;
+        w.replenish(&mut p);
+        assert_eq!(w.divisions[&1].equipment["rifle_1"], 95);
+        assert_eq!(w.divisions[&1].equipment["rifle_2"], 5);
+        assert_eq!(p.country("A").unwrap().model_stockpile["rifle_2"], 95);
+        assert_eq!(p.country("A").unwrap().model_stockpile["rifle_1"], 5);
+        w.replenish(&mut p);
+        assert_eq!(w.divisions[&1].equipment["rifle_2"], 5);
+    }
+    #[test]
     fn replacing_actual_combat_losses_restores_hp_without_permanent_ghost_damage() {
         let (_, mut w) = equipped();
         let (men, rifles) = w.divisions.get_mut(&1).unwrap().apply_damage(10., 5., &w.catalogue.rules);
