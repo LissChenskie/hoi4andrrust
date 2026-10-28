@@ -791,14 +791,18 @@ pub enum ExperienceLevel {
     Veteran,
 }
 impl ExperienceLevel {
+    pub fn bonus_with_factor(self, factor: f64) -> f64 {
+        let tier = match self {
+            Self::Green => -1.,
+            Self::Trained => 0.,
+            Self::Regular => 1.,
+            Self::Seasoned => 2.,
+            Self::Veteran => 3.,
+        };
+        tier * factor
+    }
     pub fn bonus(self) -> f64 {
-        match self {
-            Self::Green => -0.25,
-            Self::Trained => 0.0,
-            Self::Regular => 0.25,
-            Self::Seasoned => 0.5,
-            Self::Veteran => 0.75,
-        }
+        self.bonus_with_factor(0.25)
     }
 }
 
