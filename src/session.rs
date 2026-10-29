@@ -24,6 +24,8 @@ pub struct CountryConstruction {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct GameSession {
+    #[serde(default)]
+    pub campaign: crate::campaign::CampaignState,
     pub world: World,
     pub clock: GameState,
     pub player_country: Option<String>,
@@ -69,6 +71,7 @@ impl GameSession {
             research: ResearchWorld::default(),
             military: crate::warfare::Warfare::default(),
             peace: crate::peace::PeaceSystem::default(),
+            campaign: Default::default(),
         }
     }
 
@@ -307,6 +310,7 @@ impl GameSession {
         self.military.logistics = logistics;
         let control_revision = self.world.control_revision;
         let completed_day = self.clock.advance_one_hour();
+        self.tick_campaign(catalogue, research);
         self.military
             .air
             .replenish(&mut self.production, &self.world);
@@ -335,7 +339,13 @@ impl GameSession {
         let Some(completed_day) = completed_day else {
             return false;
         };
-        let tags: Vec<_> = self.world.countries.keys().cloned().collect();
+        let tags: Vec<_> = self
+            .world
+            .countries
+            .keys()
+            .filter(|t| !self.campaign.inactive.contains(*t))
+            .cloned()
+            .collect();
         self.research.refresh_sharing(catalogue);
         for tag in &tags {
             self.research.country_mut(tag, 0, research);
