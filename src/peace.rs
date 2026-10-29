@@ -639,15 +639,21 @@ impl PeaceSystem {
     /// Withdraw a previously reserved demand without changing territory.
     /// Only the author may reclaim its own points.
     pub fn withdraw_latest_demand(
-        &mut self, conference_id: u64, claimant: &str,
+        &mut self,
+        conference_id: u64,
+        claimant: &str,
     ) -> Result<PeaceDemand, String> {
-        let conference = self.conferences.get_mut(&conference_id)
+        let conference = self
+            .conferences
+            .get_mut(&conference_id)
             .ok_or("Unknown conference")?;
-        if conference.phase != ConferencePhase::Demands
-            || !conference.winners.contains(claimant) {
+        if conference.phase != ConferencePhase::Demands || !conference.winners.contains(claimant) {
             return Err("Cannot withdraw demands at this conference".into());
         }
-        let pos = conference.demands.iter().rposition(|d|d.claimant==claimant)
+        let pos = conference
+            .demands
+            .iter()
+            .rposition(|d| d.claimant == claimant)
             .ok_or("No own demands to undo")?;
         let demand = conference.demands.remove(pos);
         let spent = conference.spent.entry(claimant.into()).or_default();
