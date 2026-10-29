@@ -131,9 +131,9 @@ impl ResourceEconomy {
             for (resource, &amount) in resources {
                 let quantity = (f64::from(amount) * (1. + f64::from(infra)*0.2)
                     * (1. + gain).max(0.)).floor().clamp(0., u32::MAX as f64) as u32;
-                *deposits.entry(tag.into()).or_default().entry(resource.clone()).or_default() =
-                    deposits.get(tag).and_then(|r|r.get(resource)).copied().unwrap_or(0)
-                        .saturating_add(quantity);
+                let entry = deposits.entry(tag.into()).or_default()
+                    .entry(resource.clone()).or_default();
+                *entry = entry.saturating_add(quantity);
             }
         }
         let mut exports = BTreeMap::<(String,String), u32>::new();
