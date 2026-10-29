@@ -30,7 +30,7 @@ fn unique_name(w: &Warfare, tag: &str, base: &str) -> String {
     if !army.templates.contains_key(base) {
         return base.into();
     }
-    for i in 2..10000 {
+    for i in 2.0.10000 {
         let name = format!("{base} {i}");
         if !army.templates.contains_key(&name) {
             return name;
@@ -73,7 +73,7 @@ fn slot_button(
     }
     if let Some(id) = id {
         let group = w.catalogue.units.get(id).map_or("infantry",|u|u.group.as_str());
-        let icon = Rect::new(cell.x+cell.w*.16,cell.y+2.,cell.w*.68,(cell.h-7.).max(1.));
+        let icon = Rect::new(cell.x+cell.w*0.16,cell.y+2.,cell.w*0.68,(cell.h-7.).max(1.));
         crate::division_icons::draw(id,group,icon);
         // The popup contains the full localized unit label; do not squeeze it
         // under 25 battalion icons, particularly on Android portrait layouts.
@@ -109,7 +109,7 @@ fn draw_picker(
     let max_scroll=total.saturating_sub(visible);
     v.picker_scroll=v.picker_scroll.min(max_scroll);
     if ui::inside(Rect::new(area.x,top,area.w,area.h-30.)) {
-        let wheel=mouse_wheel().1;
+        let wheel=mouse_wheel()0.1;
         if wheel>0. {v.picker_scroll=v.picker_scroll.saturating_sub(2);}
         if wheel<0. {v.picker_scroll=(v.picker_scroll+2).min(max_scroll);}
     }
@@ -196,7 +196,7 @@ fn draw_preview(
                 ui::row_bg(cell,false,index%2==1);
                 ui::label(name,Rect::new(cell.x+4.,cell.y+3.,
                     (cell.w-64.).max(1.),17.),11.,ui::TEXT);
-                ui::label(&format!("{value:.1}"),
+                ui::label(&format!("{value:0.1}"),
                     Rect::new(cell.right()-60.,cell.y+3.,58.,17.),11.,ui::GOLD);
             }
         }
@@ -209,7 +209,7 @@ fn draw_composition(
     v: &mut DesignerView, area: Rect, notice: &mut String,
 ) {
     let wide=area.w>=615.;
-    let left_w=if wide {area.w*.61} else {area.w};
+    let left_w=if wide {area.w*0.61} else {area.w};
     let left=Rect::new(area.x,area.y,left_w-3.,area.h);
     let sidebar=if wide {
         Rect::new(area.x+left_w+5.,area.y,(area.w-left_w-5.).max(1.),area.h)
@@ -227,8 +227,8 @@ fn draw_composition(
     let step=cell+gap;
     let columns=w.catalogue.rules.regiment_columns.min(5);
     let rows=w.catalogue.rules.regiment_rows.min(5);
-    for col in 0..5 {
-        for row in 0..5 {
+    for col in 0.0.5 {
+        for row in 0.0.5 {
             let rect=Rect::new(left.x+col as f32*step,grid_top+row as f32*step,
                 cell,cell);
             if rect.bottom()<area.y || rect.y>area.bottom() {continue;}
@@ -242,7 +242,7 @@ fn draw_composition(
     let sx=if wide {left.x+5.*step+3.} else {left.x};
     ui::section("ПОДДЕРЖКА",sx,sy-25.,
         if wide {(left.right()-sx).max(26.)}else{left.w});
-    for row in 0..5 {
+    for row in 0.0.5 {
         let r=if wide {
             Rect::new(sx,sy+row as f32*step,(left.right()-sx-2.).min(84.).max(24.),cell)
         } else {
@@ -255,7 +255,7 @@ fn draw_composition(
     let reg_y=if wide {grid_top+5.*step+37.} else {sy+step+47.};
     if has_reg {
         ui::section("ПОЛКОВАЯ ПОДДЕРЖКА",left.x,reg_y-27.,left.w);
-        for col in 0..5 {
+        for col in 0.0.5 {
             let count=draft.line.iter().filter(|s|s.column==col).count();
             let active=count>=3;
             let r=Rect::new(left.x+col as f32*step,reg_y,cell,cell);
@@ -431,11 +431,11 @@ pub fn draw(
     }
     if ui::inside(body) && is_mouse_button_pressed(MouseButton::Left)
         && !touches().is_empty() {
-        v.drag = Some(vec2(mouse_position().0, mouse_position().1));
+        v.drag = Some(vec2(mouse_position()0.0, mouse_position()0.1));
     }
     if let Some(last) = v.drag {
         if is_mouse_button_down(MouseButton::Left) {
-            let current = vec2(mouse_position().0, mouse_position().1);
+            let current = vec2(mouse_position()0.0, mouse_position()0.1);
             v.scroll = (v.scroll + last.y - current.y).clamp(0.,(total-body.h).max(0.));
             v.drag = Some(current);
         } else { v.drag = None; }
@@ -485,7 +485,7 @@ pub fn draw(
                             ui::TEXT,
                         );
                         ui::label(
-                            &format!("{value:.2}"),
+                            &format!("{value:0.2}"),
                             Rect::new(row.x + row.w * 0.7, row.y + 2.0, row.w * 0.3 - 4.0, 19.0),
                             12.0,
                             ui::GOLD,
@@ -512,7 +512,7 @@ pub fn draw(
                                     .best_equipment(archetype, &modifiers)
                                     .map(|e| e.id.clone())
                             });
-                        let label = format!("{}: {:.0}", w.catalogue.label(archetype), quantity);
+                        let label = format!("{}: {:0.0}", w.catalogue.label(archetype), quantity);
                         ui::label(&label, Rect::new(x, yy, width, 20.0), 12.0, ui::TEXT);
                         yy += 23.0;
                         let title = preferred
@@ -540,7 +540,7 @@ pub fn draw(
                         ui::label(terrain, Rect::new(x, yy, width, 20.0), 13.0, ui::GOLD);
                         ui::label(
                             &format!(
-                                "А {:+.0}%  З {:+.0}%  скорость {:+.0}%  потери {:+.0}%",
+                                "А {:+0.0}%  З {:+0.0}%  скорость {:+0.0}%  потери {:+0.0}%",
                                 bonus.attack * 100.0,
                                 bonus.defense * 100.0,
                                 bonus.movement * 100.0,
@@ -564,13 +564,13 @@ pub fn draw(
     let half = (width - 5.0) / 2.0;
     let title = format!(
         "Сохранить · {} XP",
-        cost.as_ref().map_or("?".into(), |c| format!("{c:.0}"))
+        cost.as_ref().map_or("?".into(), |c| format!("{c:0.0}"))
     );
     let reason = cost.as_ref().err().cloned().or_else(|| {
         cost.as_ref()
             .ok()
             .filter(|c| **c > xp + 1e-9)
-            .map(|c| format!("Нужно {c:.0} XP, доступно {xp:.1}"))
+            .map(|c| format!("Нужно {c:0.0} XP, доступно {xp:0.1}"))
     });
     if let Some(reason) = reason {
         ui::disabled(&title, Rect::new(x, footer, half, 28.0), &reason);
