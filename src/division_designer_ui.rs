@@ -494,8 +494,8 @@ pub fn draw(
     }
     let copy_rect = Rect::new(x + third + 4.0, y, third, 26.0);
     if v.editing.is_none() {
-        ui::disabled("КОПИЯ",copy_rect,"Сначала сохраните первый шаблон");
-    } else if ui::small_button("КОПИЯ",copy_rect,false) {
+        ui::disabled("КОПИЯ", copy_rect, "Сначала сохраните первый шаблон");
+    } else if ui::small_button("КОПИЯ", copy_rect, false) {
         if let Some(old) = v.editing.clone() {
             let name = unique_name(w, tag, &format!("{old} (копия)"));
             match w.copy_template(tag, &old, &name) {
@@ -792,8 +792,11 @@ pub fn draw(
         ui::disabled(
             "Применить к выбранным",
             assign_button,
-            if selected.is_empty() { "Сначала выделите дивизии" }
-            else { "Сначала сохраните изменения шаблона за армейский опыт" },
+            if selected.is_empty() {
+                "Сначала выделите дивизии"
+            } else {
+                "Сначала сохраните изменения шаблона за армейский опыт"
+            },
         );
     } else if ui::small_button("Применить к выбранным", assign_button, false) {
         let ids: Vec<_> = selected.iter().copied().collect();
