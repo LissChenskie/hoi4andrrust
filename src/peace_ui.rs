@@ -144,7 +144,9 @@ pub fn draw(
         ) {
             let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
             if shift {
-                if !view.selected_states.remove(&id) { view.selected_states.insert(id); }
+                if !view.selected_states.remove(&id) {
+                    view.selected_states.insert(id);
+                }
             } else {
                 view.selected_states.clear();
                 view.selected_states.insert(id);
@@ -169,8 +171,16 @@ pub fn draw(
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
         ui::label(
-            &format!("Штатов выбрано: {} · {}", view.selected_states.len(),
-                view.selected_states.iter().take(4).map(u32::to_string).collect::<Vec<_>>().join(",")),
+            &format!(
+                "Штатов выбрано: {} · {}",
+                view.selected_states.len(),
+                view.selected_states
+                    .iter()
+                    .take(4)
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
             Rect::new(rx, y + 143., rw, 26.),
             13.,
             ui::TEXT,
@@ -180,10 +190,16 @@ pub fn draw(
             None => "Нет core-получателя".into(),
         };
         ui::label(&note, Rect::new(rx, y + 175., rw, 25.), 12., ui::MUTED);
-        let all_cores = system.rights.get(&state_id)
+        let all_cores = system
+            .rights
+            .get(&state_id)
             .map(|r| r.cores.iter().cloned().collect::<Vec<_>>().join(", "))
             .unwrap_or_default();
-        ui::tooltip(Rect::new(rx,y+140.,rw,32.), "Все национальные владельцы", &all_cores);
+        ui::tooltip(
+            Rect::new(rx, y + 140., rw, 32.),
+            "Все национальные владельцы",
+            &all_cores,
+        );
         if ui::small_button("◀", Rect::new(rx, y + 203., 36., 30.), false) && !recipients.is_empty()
         {
             view.selected_recipient =
@@ -222,26 +238,37 @@ pub fn draw(
             if let Some(action) = action {
                 let targets = if view.selected_states.is_empty() {
                     BTreeSet::from([state_id])
-                } else { view.selected_states.clone() };
+                } else {
+                    view.selected_states.clone()
+                };
                 let valid = targets.iter().all(|id| match &action {
                     PeaceAction::Annex => true,
-                    PeaceAction::ReturnCore{country} | PeaceAction::Liberate{country}
-                        | PeaceAction::Puppet{country} => system.is_core(*id,country),
+                    PeaceAction::ReturnCore { country }
+                    | PeaceAction::Liberate { country }
+                    | PeaceAction::Puppet { country } => system.is_core(*id, country),
                 });
-                let price = if valid { targets.iter().try_fold(0u64, |sum,id| {
-                    system.demand_price(world,*id,player,&action).ok()
-                        .and_then(|v|sum.checked_add(v))
-                }) } else { None };
+                let price = if valid {
+                    targets.iter().try_fold(0u64, |sum, id| {
+                        system
+                            .demand_price(world, *id, player, &action)
+                            .ok()
+                            .and_then(|v| sum.checked_add(v))
+                    })
+                } else {
+                    None
+                };
                 let title = price.map_or_else(
                     || format!("{label}: нет core на каждом штате"),
-                    |n| format!("{label}: {n} очк. ({} шт.)", targets.len()));
+                    |n| format!("{label}: {n} очк. ({} шт.)", targets.len()),
+                );
                 if ui::small_button(&title, Rect::new(rx, yy, rw, 32.), false) {
                     view.notice = system
                         .submit_demand_batch(world, c.id, player, &targets, action)
                         .map(|n| format!("Штатов {} · -{n} очков", targets.len()))
                         .unwrap_or_else(|e| e);
-                    view.selected_states.retain(|id| !targets.contains(id)
-                        || !c.demands.iter().any(|d| d.state == *id));
+                    view.selected_states.retain(|id| {
+                        !targets.contains(id) || !c.demands.iter().any(|d| d.state == *id)
+                    });
                     view.selected_states.clear();
                     view.selected_state = None;
                 }
