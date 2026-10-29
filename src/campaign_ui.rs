@@ -998,15 +998,10 @@ fn draw_dock(
         );
         draw_rectangle(b.x, b.bottom() - 3.0, b.w, 3.0, color);
         let portrait = Rect::new(b.x + 3.0, b.y + 2.0, 26.0, b.h - 5.0);
-        ui_icons::draw(
-            Icon::Officer,
-            portrait,
-            if a.general.is_some() {
-                ui::GOLD
-            } else {
-                ui::MUTED
-            },
-        );
+        if !a.general.as_ref().is_some_and(|id|crate::hoi_assets::portrait(id,portrait)) {
+            ui_icons::draw(Icon::Officer,portrait,
+                if a.general.is_some() {ui::GOLD} else {ui::MUTED});
+        }
         let general = a
             .general
             .as_ref()
@@ -1317,11 +1312,11 @@ fn politics(
     );
     let portrait = Rect::new(x + 5.0, y + 67.0, 105.0, 127.0);
     ui::row_bg(portrait, false, false);
-    ui_icons::draw(
-        Icon::Officer,
-        Rect::new(portrait.x + 18.0, portrait.y + 16.0, 70.0, 82.0),
-        ui::MUTED,
-    );
+    if !crate::hoi_assets::country_portrait(tag,
+        Rect::new(portrait.x+6.,portrait.y+5.,portrait.w-12.,portrait.h-27.)) {
+        ui_icons::draw(Icon::Officer,
+            Rect::new(portrait.x+18.,portrait.y+16.,70.,82.),ui::MUTED);
+    }
     ui::label(
         "Лидер страны",
         Rect::new(
@@ -1335,8 +1330,8 @@ fn politics(
     );
     ui::tooltip(
         portrait,
-        "Лидер страны",
-        "ЗАГЛУШКА · Политическая модель и портрет лидера ещё не подключены.",
+        "Исторический портрет",
+        "Берётся из местной HOI4: первый гражданский персонаж, завербованный историей. Действующий лидер меняется политикой; динамическое назначение пока не реализовано.",
     );
     let tx = x + 124.0;
     let tw = width - 128.0;
