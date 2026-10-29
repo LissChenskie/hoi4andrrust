@@ -146,6 +146,7 @@ pub struct Hud {
     pub minimap: bool,
     pub orders_layout: bool,
     pub map_palette: bool,
+    pub war_panel_open: bool,
     pub menu: bool,
     pub menu_was_paused: bool,
     pub reload_requested: bool,
@@ -180,6 +181,7 @@ impl Default for Hud {
             minimap: true,
             orders_layout: false,
             map_palette: false,
+            war_panel_open: false,
             menu: false,
             menu_was_paused: true,
             reload_requested: false,
@@ -217,6 +219,7 @@ impl Hud {
         a: &mut ArmyView,
     ) {
         self.map_palette = false;
+        self.war_panel_open = false;
         c.close();
         p.close();
         r.open = false;
@@ -296,6 +299,7 @@ impl Hud {
             l.map_modes(),
         ];
         if self.active == Some(Panel::Focus)
+            || self.war_panel_open
             || self.menu
             || self.detail.is_some()
             || self.map_palette
