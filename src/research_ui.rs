@@ -261,12 +261,21 @@ fn draw_slots(
             79.0,
         );
         ui::row_bg(row, slot.active.is_some(), i % 2 == 1);
-        let art = Rect::new(row.x+12.,row.y+17.,37.,39.);
-        let pictured = slot.active.as_ref().is_some_and(|a|
-            crate::hoi_assets::draw_technology(&a.tech_id,art));
+        let art = Rect::new(row.x + 12., row.y + 17., 37., 39.);
+        let pictured = slot
+            .active
+            .as_ref()
+            .is_some_and(|a| crate::hoi_assets::draw_technology(&a.tech_id, art));
         if !pictured {
-            crate::ui_icons::draw(crate::ui_icons::Icon::Research,art,
-                if slot.active.is_some() {ui::GOLD} else {ui::MUTED});
+            crate::ui_icons::draw(
+                crate::ui_icons::Icon::Research,
+                art,
+                if slot.active.is_some() {
+                    ui::GOLD
+                } else {
+                    ui::MUTED
+                },
+            );
         }
         let tx = row.x + 64.0;
         let tw = row.w - 105.0;
@@ -640,10 +649,19 @@ pub fn draw(
             2.0,
             label_color(&tech.id, country, &view.available),
         );
-        let badge = Rect::new(area.x+4.,area.y+4.,(node_h-8.).min(41.),(node_h-8.).min(41.));
-        let pictured = crate::hoi_assets::draw_technology(&tech.id,badge);
-        let text_x = if pictured {badge.right()+5.} else {area.x+5.};
-        let text_w = (area.right()-text_x-4.).max(16.);
+        let badge = Rect::new(
+            area.x + 4.,
+            area.y + 4.,
+            (node_h - 8.).min(41.),
+            (node_h - 8.).min(41.),
+        );
+        let pictured = crate::hoi_assets::draw_technology(&tech.id, badge);
+        let text_x = if pictured {
+            badge.right() + 5.
+        } else {
+            area.x + 5.
+        };
+        let text_w = (area.right() - text_x - 4.).max(16.);
         draw_ui_text(
             &fit(
                 &tech.name,
@@ -686,7 +704,11 @@ pub fn draw(
                 tech.id,
                 tech.source,
                 effect_summary(tech),
-                if pictured {"оригинальная"} else {"не импортирована"}
+                if pictured {
+                    "оригинальная"
+                } else {
+                    "не импортирована"
+                }
             ),
         );
         if ui::inside(hit_area) {
