@@ -67,6 +67,7 @@ mod state;
 mod ui_icons;
 mod ui_layout;
 mod warfare;
+mod war_overview_ui;
 mod world;
 
 use construction::{BuildingRules, ConstructionQueues};
@@ -3308,7 +3309,9 @@ async fn main() {
                     }
                 }
                 if is_key_pressed(KeyCode::Escape) {
-                    if hud.detail.take().is_some() {
+                    if hud.war_panel_open {
+                        hud.war_panel_open = false;
+                    } else if hud.detail.take().is_some() {
                     } else if hud.map_palette {
                         hud.map_palette = false;
                     } else if hud.menu {
@@ -3552,6 +3555,10 @@ async fn main() {
                     military,
                     peace_state,
                     &mut army_view,
+                );
+                war_overview_ui::draw(
+                    &mut hud, world, military, peace_state,
+                    research_world, selected_country.as_deref(),
                 );
                 peace_ui::draw(
                     peace_state,
