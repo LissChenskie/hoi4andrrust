@@ -914,6 +914,10 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                     let t = task.block().unwrap_or(&[]);
                     let base = atom(t, "location")
                         .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|p| {
+                            warfare.conditions.get(p).is_some_and(|c| c.naval_base > 0)
+                                && world.controller_of_province(*p) == Some(tag.as_str())
+                        })
                         .or(fleet_base);
                     let Some(base) = base else {
                         out.diagnostics
@@ -921,7 +925,11 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                         continue;
                     };
                     let mut ships = Vec::new();
-                    for record in t.iter().filter(|e| e.key == "ship") {
+                    let records = t.iter().filter(|e| e.key == "ship")
+                        .chain(t.iter().filter(|e| e.key == "ships")
+                            .flat_map(|e| e.block().unwrap_or(&[]).iter())
+                            .filter(|e| e.key == "ship"));
+                    for record in records {
                         let b = record.block().unwrap_or(&[]);
                         let Some(ship_data) = block(b, "equipment").and_then(|e| e.first()) else {
                             out.diagnostics
