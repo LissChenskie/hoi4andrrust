@@ -10,6 +10,11 @@ pub struct GameDate {
 }
 
 impl GameDate {
+    pub fn is_valid(self) -> bool {
+        let end = match self.month { 1|3|5|7|8|10|12=>31,4|6|9|11=>30,2 if is_leap_year(self.year)=>29,2=>28,_=>return false };
+        self.year > 0 && self.year < u32::MAX && self.day > 0 && self.day <= end
+    }
+
     pub const START: Self = Self {
         year: 1936,
         month: 1,

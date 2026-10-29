@@ -1123,6 +1123,9 @@ impl Warfare {
             .insert(template.name.clone(), template.clone());
         if let Some(old) = old_name {
             if old != template.name {
+                for job in self.recruitment.values_mut().filter(|j| j.country == country && j.template.name == old) {
+                    job.template.name = template.name.clone();
+                }
                 for d in self
                     .divisions
                     .values_mut()
@@ -1558,7 +1561,8 @@ impl Warfare {
                             .filter(|e| e.archetype == archetype)
                     })
                     .collect();
-                models.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.id.cmp(&b.id)));
+                let preference = self.countries[&tag].templates[&d.template].equipment_preferences.get(&archetype);
+                models.sort_by(|a, b| (Some(&b.id) == preference).cmp(&(Some(&a.id) == preference)).then_with(|| b.year.cmp(&a.year)).then_with(|| a.id.cmp(&b.id)));
                 for model in models {
                     if deficit == 0 {
                         break;
@@ -1609,7 +1613,8 @@ impl Warfare {
             // otherwise a fully restored inventory leaves permanent missing HP.
             let restored =
                 (after - before).max(0.0) / self.catalogue.rules.casualty_factor.max(1e-9);
-            d.hp = (d.hp + restored * d.derived.stats.hp).min(d.derived.stats.hp * after);
+            // Reinforcement must never damage existing battalions when a new category is empty.
+            d.hp = (d.hp + restored * d.derived.stats.hp).min(d.derived.stats.hp);
             if let Some(army) = self.countries.get(&d.country) {
                 if let Some(t) = army.templates.get(&d.template) {
                     if let Ok(stats) =

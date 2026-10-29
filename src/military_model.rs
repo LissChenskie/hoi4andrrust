@@ -633,7 +633,7 @@ impl MilitaryCatalogue {
                 }
                 let archetype_speed: f64 = selected
                     .iter()
-                    .map(|(e, w)| e.stats.get("maximum_speed").copied().unwrap_or(0.0) * w)
+                    .map(|(e, w)| self.effective_equipment_stat(&e.id, "maximum_speed", m) * w)
                     .sum();
                 equipment_speed = equipment_speed.max(archetype_speed);
                 for (e, weight) in selected {

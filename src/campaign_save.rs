@@ -118,12 +118,7 @@ impl GameSession {
             );
         }
         let s = &mut data.session;
-        if s.clock.hour >= 24
-            || s.clock.date.month == 0
-            || s.clock.date.month > 12
-            || s.clock.date.day == 0
-            || s.clock.date.day > 31
-        {
+        if s.clock.hour >= 24 || !s.clock.date.is_valid() {
             return Err("Повреждён игровой календарь".into());
         }
         if s.world.provinces.keys().ne(self.world.provinces.keys())
