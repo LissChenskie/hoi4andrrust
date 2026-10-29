@@ -947,6 +947,10 @@ pub struct CountryArmy {
     pub history_imported: usize,
     pub history_source: Option<String>,
     pub history_oobs: Vec<String>,
+    #[serde(default)]
+    pub history_naval_oobs: Vec<String>,
+    #[serde(default)]
+    pub history_air_oobs: Vec<String>,
     pub history_errors: Vec<String>,
 }
 
