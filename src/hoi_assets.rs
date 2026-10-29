@@ -2,7 +2,10 @@
 //! Only preview images under data/hoi4/ui are loaded; no proprietary images
 //! are committed with this independent Rust project.
 use macroquad::prelude::*;
-use std::{cell::{Cell,RefCell}, collections::HashMap};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+};
 
 thread_local! {
     static PREVIEWS: RefCell<HashMap<String,(Option<Texture2D>,u64)>> =
@@ -24,23 +27,25 @@ fn path(kind: &str, key: &str) -> Option<String> {
 }
 fn get(kind: &str, key: &str) -> Option<Texture2D> {
     let file = path(kind, key)?;
-    let tick=ACCESS.with(|access| {
-        let value=access.get().wrapping_add(1);
+    let tick = ACCESS.with(|access| {
+        let value = access.get().wrapping_add(1);
         access.set(value);
         value
     });
     PREVIEWS.with(|cell| {
         let mut previews = cell.borrow_mut();
-        if let Some((texture,access)) = previews.get_mut(&file) {
-            *access=tick;
+        if let Some((texture, access)) = previews.get_mut(&file) {
+            *access = tick;
             return texture.clone();
         }
         // Bound GPU memory on older mobile devices. Evict least-recently-used
         // icons instead of permanently disabling graphics after 320 lookups.
         if previews.len() >= 320 {
-            if let Some(oldest) = previews.iter()
-                .min_by_key(|(_,(_,last))|*last)
-                .map(|(name,_)|name.clone()) {
+            if let Some(oldest) = previews
+                .iter()
+                .min_by_key(|(_, (_, last))| *last)
+                .map(|(name, _)| name.clone())
+            {
                 previews.remove(&oldest);
             }
         }
@@ -54,7 +59,7 @@ fn get(kind: &str, key: &str) -> Option<Texture2D> {
             t.set_filter(FilterMode::Linear);
             Some(t)
         });
-        previews.insert(file, (texture.clone(),tick));
+        previews.insert(file, (texture.clone(), tick));
         texture
     })
 }
