@@ -1574,7 +1574,11 @@ fn trade(
     );
     let automatic = market.automatic_buyers.contains(tag);
     if ui::small_button(
-        if automatic { "АВТОИМПОРТ: ВКЛ" } else { "АВТОИМПОРТ: ВЫКЛ" },
+        if automatic {
+            "АВТОИМПОРТ: ВКЛ"
+        } else {
+            "АВТОИМПОРТ: ВЫКЛ"
+        },
         Rect::new(x + width - 174.0, y, 174.0, 25.0),
         automatic,
     ) {
@@ -1620,7 +1624,15 @@ fn trade(
         return;
     }
     ui::label(
-        &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received} · авто: {}", market.automatic_deals.iter().filter(|d|d.buyer==tag).map(|d|d.factories).sum::<u32>()),
+        &format!(
+            "Фабрики: импорт −{factories_spent} / экспорт +{factories_received} · авто: {}",
+            market
+                .automatic_deals
+                .iter()
+                .filter(|d| d.buyer == tag)
+                .map(|d| d.factories)
+                .sum::<u32>()
+        ),
         Rect::new(x, yy + 4.0, width, 21.0),
         12.0,
         ui::GOLD,
@@ -2893,7 +2905,13 @@ pub fn state_bounds() -> Rect {
         height,
     )
 }
-pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, peace: &crate::peace::PeaceSystem, province: u32) -> Vec<Action> {
+pub fn draw_state(
+    h: &mut Hud,
+    world: &World,
+    w: &Warfare,
+    peace: &crate::peace::PeaceSystem,
+    province: u32,
+) -> Vec<Action> {
     let r = state_bounds();
     let mut actions = Vec::new();
     let state = world.state_for_province(province);
@@ -2932,12 +2950,22 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, peace: &crate::peace:
         12.0,
         ui::GOLD,
     );
-    let vp = world.geography.provinces.get(&province)
+    let vp = world
+        .geography
+        .provinces
+        .get(&province)
         .map_or(0., |p| p.victory_points);
-    let capital = w.logistics.countries.iter()
-        .find(|(_, c)| c.capital == Some(province)).map(|(tag, _)| tag.as_str());
+    let capital = w
+        .logistics
+        .countries
+        .iter()
+        .find(|(_, c)| c.capital == Some(province))
+        .map(|(tag, _)| tag.as_str());
     ui::label(
-        &format!("{terrain} · P{province} · VP {vp:.0}{}",capital.map_or(String::new(),|tag|format!(" · Столица {tag}"))),
+        &format!(
+            "{terrain} · P{province} · VP {vp:.0}{}",
+            capital.map_or(String::new(), |tag| format!(" · Столица {tag}"))
+        ),
         Rect::new(x, r.y + 114.0, width, 20.0),
         12.0,
         ui::MUTED,
@@ -2971,14 +2999,26 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, peace: &crate::peace:
     );
     if let Some(state) = state {
         let rights = peace.rights.get(&state.id);
-        let cores = rights.map(|r| r.cores.iter().cloned().collect::<Vec<_>>().join(", "))
-            .filter(|s|!s.is_empty()).unwrap_or_else(|| "нет импортированных прав".into());
-        let claims = rights.map(|r| r.claims.iter().cloned().collect::<Vec<_>>().join(", "))
-            .filter(|s|!s.is_empty()).unwrap_or_else(|| "—".into());
-        ui::label(&format!("Национальные (core): {cores}"),
-            Rect::new(x, r.y + 254.0, width, 19.0), 11.0, ui::GOLD);
-        ui::label(&format!("Претензии (claims): {claims}"),
-            Rect::new(x, r.y + 274.0, width, 19.0), 11.0, ui::MUTED);
+        let cores = rights
+            .map(|r| r.cores.iter().cloned().collect::<Vec<_>>().join(", "))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "нет импортированных прав".into());
+        let claims = rights
+            .map(|r| r.claims.iter().cloned().collect::<Vec<_>>().join(", "))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "—".into());
+        ui::label(
+            &format!("Национальные (core): {cores}"),
+            Rect::new(x, r.y + 254.0, width, 19.0),
+            11.0,
+            ui::GOLD,
+        );
+        ui::label(
+            &format!("Претензии (claims): {claims}"),
+            Rect::new(x, r.y + 274.0, width, 19.0),
+            11.0,
+            ui::MUTED,
+        );
     }
     let b = Rect::new(x, r.bottom() - 40.0, (width - 5.0) * 0.6, 28.0);
     if ui::small_button("Строительство", b, false) {
