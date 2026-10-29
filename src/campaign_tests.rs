@@ -720,3 +720,404 @@ fn civil_war_transfers_real_air_navy_training_and_construction_without_cloning()
     assert_eq!(s.construction_queues[&2][0].progress, 17.);
     assert_eq!(s.construction["D01"].policy.consumer_goods_fraction, 0.2);
 }
+
+fn idea_timers(s: &GameSession) -> BTreeMap<String, BTreeMap<String, u64>> {
+    s.research
+        .countries
+        .iter()
+        .filter(|(_, r)| !r.timed_ideas.is_empty())
+        .map(|(t, r)| (t.clone(), r.timed_ideas.clone()))
+        .collect()
+}
+fn timed_catalogue() -> ResearchCatalogue {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "temporary".into(),
+        parse_pdx("modifier={army_attack_factor=0.5 industrial_capacity_factory=0.2 research_speed_factor=0.1 global_building_slots_factor=0.25} research_bonus={industry=0.15}").unwrap(),
+    );
+    cat.scripts.ideas.insert("replacement".into(), vec![]);
+    cat
+}
+fn with_cat(s: &mut GameSession, script: &str, cat: &ResearchCatalogue) -> Result<(), String> {
+    s.campaign_effects(
+        &Context::country("A"),
+        &parse_pdx(script).unwrap(),
+        "authored/timers",
+        cat,
+        &Default::default(),
+    )
+}
+#[test]
+fn timed_spirit_expires_before_same_hour_rewards_and_removes_actual_consumers() {
+    let mut s = fixture();
+    let cat = timed_catalogue();
+    let base = s.military.divisions[&1].derived.stats.soft_attack;
+    with_cat(&mut s, "add_timed_idea={idea=temporary days=1}", &cat).unwrap();
+    assert_eq!(idea_timers(&s)["A"]["temporary"], 24);
+    assert!((s.military.divisions[&1].derived.stats.soft_attack - base * 1.5).abs() < 1e-9);
+    for _ in 0..23 {
+        s.advance_one_hour(
+            &Default::default(),
+            &Default::default(),
+            &cat,
+            &Default::default(),
+        );
+    }
+    assert!(
+        s.research
+            .country("A")
+            .unwrap()
+            .context
+            .ideas
+            .contains("temporary")
+    );
+    s.advance_one_hour(
+        &Default::default(),
+        &Default::default(),
+        &cat,
+        &Default::default(),
+    );
+    assert!(idea_timers(&s).is_empty());
+    let r = s.research.country("A").unwrap();
+    assert!(!r.context.ideas.contains("temporary"));
+    for key in [
+        "army_attack_factor",
+        "industrial_capacity_factory",
+        "research_speed_factor",
+        "global_building_slots_factor",
+    ] {
+        assert_eq!(r.modifier(key), 0.);
+    }
+    assert_eq!(r.source_category_bonuses.get("industry"), None);
+    assert!((s.military.divisions[&1].derived.stats.soft_attack - base).abs() < 1e-9);
+    assert!(
+        !s.military.countries["A"]
+            .modifiers
+            .ideas
+            .contains("temporary")
+    );
+    let before = snap(&s);
+    s.tick_campaign(&cat, &Default::default());
+    assert_eq!(before, snap(&s));
+
+    with_cat(&mut s, "add_timed_idea={idea=temporary days=1}", &cat).unwrap();
+    s.campaign
+        .schedule(
+            48,
+            Context::country("A"),
+            "authored/regrant".into(),
+            Payload::Effects(parse_pdx("add_timed_idea={idea=temporary days=2}").unwrap()),
+        )
+        .unwrap();
+    s.clock.elapsed_hours = 48;
+    s.tick_campaign(&cat, &Default::default());
+    assert_eq!(idea_timers(&s)["A"]["temporary"], 96);
+    assert!((s.military.divisions[&1].derived.stats.soft_attack - base * 1.5).abs() < 1e-9);
+}
+#[test]
+fn timed_spirit_duration_arithmetic_and_no_stale_expiry() {
+    let cat = timed_catalogue();
+    let mut s = fixture();
+    with_cat(&mut s, "set_variable={var=duration value=2} add_timed_idea={idea=temporary years=1 months=2 days=duration}", &cat).unwrap();
+    assert_eq!(idea_timers(&s)["A"]["temporary"], (365 + 60 + 2) * 24);
+    with_cat(
+        &mut s,
+        "modify_timed_idea={idea=temporary years=-1 months=-2 days=1}",
+        &cat,
+    )
+    .unwrap();
+    assert_eq!(idea_timers(&s)["A"]["temporary"], 72);
+    s.clock.elapsed_hours = 25;
+    with_cat(&mut s, "add_timed_idea={idea=temporary days=5}", &cat).unwrap();
+    assert_eq!(idea_timers(&s)["A"]["temporary"], 145);
+    s.clock.elapsed_hours = 72;
+    s.tick_campaign(&cat, &Default::default());
+    assert!(
+        s.research
+            .country("A")
+            .unwrap()
+            .context
+            .ideas
+            .contains("temporary")
+    );
+    with_cat(&mut s, "modify_timed_idea={idea=temporary days=-100}", &cat).unwrap();
+    assert!(
+        !s.research
+            .country("A")
+            .unwrap()
+            .context
+            .ideas
+            .contains("temporary")
+    );
+    assert!(idea_timers(&s).is_empty());
+    assert!(with_cat(&mut s, "modify_timed_idea={idea=temporary days=1}", &cat).is_err());
+}
+#[test]
+fn timed_spirit_permanent_grant_removal_and_swap_cancel_timer() {
+    let cat = timed_catalogue();
+    for action in [
+        "add_ideas=temporary",
+        "remove_ideas=temporary",
+        "swap_ideas={remove_idea=temporary add_idea=replacement}",
+    ] {
+        let mut s = fixture();
+        with_cat(&mut s, "add_timed_idea={idea=temporary days=1}", &cat).unwrap();
+        with_cat(&mut s, action, &cat).unwrap();
+        assert!(idea_timers(&s).is_empty());
+        let expected = s.research.country("A").unwrap().context.ideas.clone();
+        s.clock.elapsed_hours = 24;
+        s.tick_campaign(&cat, &Default::default());
+        assert_eq!(s.research.country("A").unwrap().context.ideas, expected);
+    }
+}
+#[test]
+fn timed_spirit_invalid_duration_and_failed_rewards_are_atomic() {
+    let mut s = fixture();
+    let cat = timed_catalogue();
+    for script in [
+        "add_timed_idea={idea=temporary days=0}",
+        "add_timed_idea={idea=temporary days=-1}",
+        "add_timed_idea={idea=temporary days=0.5}",
+        "add_timed_idea={idea=temporary days=NaN}",
+        "add_timed_idea={idea=temporary days=missing}",
+        "add_timed_idea={idea=temporary years=9223372036854775807}",
+        "add_timed_idea={idea=temporary}",
+        "add_timed_idea={idea=temporary days=1 days=2}",
+        "add_timed_idea={idea=temporary days={bad=1} years=1}",
+        "add_timed_idea={idea=missing days=1}",
+        "modify_timed_idea={idea=temporary days=1}",
+        "add_timed_idea={idea=temporary days=1} divide_variable={var=paranoia value=0}",
+        "add_timed_idea={idea=temporary days=1} unknown_effect=yes",
+    ] {
+        let before = snap(&s);
+        assert!(
+            with_cat(&mut s, &format!("add_manpower=1 {script}"), &cat).is_err(),
+            "{script}"
+        );
+        assert_eq!(before, snap(&s), "{script}");
+    }
+    s.clock.elapsed_hours = u64::MAX - 10;
+    let before = snap(&s);
+    assert!(with_cat(&mut s, "add_timed_idea={idea=temporary days=1}", &cat).is_err());
+    assert_eq!(before, snap(&s));
+}
+#[test]
+fn timed_spirit_expirations_are_not_limited_by_event_budget_or_other_countries() {
+    let mut s = fixture();
+    let mut cat = timed_catalogue();
+    let mut script = String::new();
+    for i in 0..70 {
+        let id = format!("timed{i}");
+        cat.scripts.ideas.insert(id.clone(), vec![]);
+        script.push_str(&format!("add_timed_idea={{idea={id} days=1}} "));
+    }
+    with_cat(&mut s, &script, &cat).unwrap();
+    s.campaign_effects(
+        &Context::country("B"),
+        &parse_pdx("add_timed_idea={idea=temporary days=2}").unwrap(),
+        "fixture",
+        &cat,
+        &Default::default(),
+    )
+    .unwrap();
+    s.clock.elapsed_hours = 24;
+    s.tick_campaign(&cat, &Default::default());
+    assert!(!idea_timers(&s).contains_key("A"));
+    assert_eq!(idea_timers(&s)["B"]["temporary"], 48);
+    assert!(s.research.country("A").unwrap().context.ideas.is_empty());
+}
+#[test]
+fn timed_spirit_save_load_deadlines_validation_and_legacy_defaults() {
+    let mut s = fixture();
+    let cat = timed_catalogue();
+    with_cat(&mut s, "add_timed_idea={idea=temporary days=2}", &cat).unwrap();
+    s.clock.elapsed_hours = 17;
+    let path = std::env::temp_dir().join(format!("hoi-timed-{}.json", std::process::id()));
+    s.save_game(&path, &cat).unwrap();
+    let mut restored = fixture();
+    restored.restore_game(&path, &cat).unwrap();
+    for g in [&mut s, &mut restored] {
+        for h in 18..=49 {
+            g.clock.elapsed_hours = h;
+            g.tick_campaign(&cat, &Default::default());
+        }
+    }
+    assert_eq!(snap(&s), snap(&restored));
+    assert!(idea_timers(&s).is_empty());
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    saved["session"]["research"]["countries"]["A"]["timed_ideas"]["missing"] = 99.into();
+    std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+    let before = snap(&restored);
+    assert!(restored.restore_game(&path, &cat).is_err());
+    assert_eq!(snap(&restored), before);
+    let mut legacy = serde_json::to_value(crate::research::CountryResearch::new(
+        0,
+        &Default::default(),
+    ))
+    .unwrap();
+    legacy.as_object_mut().unwrap().remove("timed_ideas");
+    assert!(
+        serde_json::from_value::<crate::research::CountryResearch>(legacy)
+            .unwrap()
+            .timed_ideas
+            .is_empty()
+    );
+    std::fs::remove_file(path).unwrap();
+}
+#[test]
+fn timed_spirit_split_keeps_deadline_and_settlement_cleans_losing_timers() {
+    let cat = timed_catalogue();
+    for winner in ["A", "D01"] {
+        let mut s = fixture();
+        with_cat(&mut s, "add_timed_idea={idea=temporary days=3}", &cat).unwrap();
+        s.start_civil_war(&plan(), &Default::default()).unwrap();
+        assert_eq!(idea_timers(&s)["A"]["temporary"], 72);
+        assert_eq!(idea_timers(&s)["D01"]["temporary"], 72);
+        for province in s.world.provinces.keys().copied().collect::<Vec<_>>() {
+            s.world.set_province_controller(province, Some(winner));
+        }
+        s.settle_civil_war("D01", winner).unwrap();
+        assert_eq!(idea_timers(&s).len(), 1);
+        assert_eq!(idea_timers(&s)[winner]["temporary"], 72);
+        s.clock.elapsed_hours = 72;
+        s.tick_campaign(&cat, &Default::default());
+        assert!(idea_timers(&s).is_empty());
+        assert!(
+            !s.research
+                .country(winner)
+                .unwrap()
+                .context
+                .ideas
+                .contains("temporary")
+        );
+    }
+}
+#[test]
+fn timed_spirit_partition_free_deadline_properties_and_capacity() {
+    let cat = timed_catalogue();
+    // Exact arithmetic property: any extension followed by its inverse restores
+    // the deadline, even when the game clock moves between those operations.
+    let mut cases = 0;
+    for now in [0, 1, 23, 24, 719, 8760, 1_000_000] {
+        for days in 2..=19 {
+            let mut s = fixture();
+            s.clock.elapsed_hours = now;
+            with_cat(
+                &mut s,
+                &format!("add_timed_idea={{idea=temporary days={days}}}"),
+                &cat,
+            )
+            .unwrap();
+            let deadline = now + days * 24;
+            for delta in -1..=3 {
+                s.clock.elapsed_hours = now + 1;
+                with_cat(
+                    &mut s,
+                    &format!("modify_timed_idea={{idea=temporary days={delta}}}"),
+                    &cat,
+                )
+                .unwrap();
+                let expected = (i128::from(deadline) + i128::from(delta * 24)) as u64;
+                assert_eq!(idea_timers(&s)["A"]["temporary"], expected);
+                with_cat(
+                    &mut s,
+                    &format!("modify_timed_idea={{idea=temporary days={}}}", -delta),
+                    &cat,
+                )
+                .unwrap();
+                assert_eq!(idea_timers(&s)["A"]["temporary"], deadline);
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, 630);
+    let mut s = fixture();
+    let mut cat = cat;
+    for i in 0..4096 {
+        let id = format!("timer{i}");
+        s.research
+            .countries
+            .get_mut("A")
+            .unwrap()
+            .timed_ideas
+            .insert(id.clone(), 240);
+        s.research
+            .countries
+            .get_mut("A")
+            .unwrap()
+            .context
+            .ideas
+            .insert(id);
+    }
+    s.research
+        .countries
+        .get_mut("A")
+        .unwrap()
+        .ideas_authoritative = true;
+    cat.scripts.ideas.insert("timer0".into(), vec![]);
+    // Updating an existing timer at capacity succeeds without allocating a job.
+    with_cat(&mut s, "add_timed_idea={idea=timer0 days=2}", &cat).unwrap();
+    assert_eq!(idea_timers(&s)["A"]["timer0"], 48);
+    let before = snap(&s);
+    assert!(
+        with_cat(
+            &mut s,
+            "add_manpower=1 add_timed_idea={idea=temporary days=1}",
+            &cat
+        )
+        .is_err()
+    );
+    assert_eq!(before, snap(&s));
+}
+#[test]
+fn timed_spirit_legacy_research_rewards_cannot_leave_stale_timer() {
+    let cat = timed_catalogue();
+    for action in [
+        "add_ideas=temporary",
+        "remove_ideas=temporary",
+        "swap_ideas={remove_idea=temporary add_idea=replacement}",
+    ] {
+        let mut s = fixture();
+        with_cat(&mut s, "add_timed_idea={idea=temporary days=1}", &cat).unwrap();
+        crate::research_script::apply_effects(
+            s.research.countries.get_mut("A").unwrap(),
+            &parse_pdx(action).unwrap(),
+            &cat,
+            &Default::default(),
+            s.clock.date,
+            "authored/research-reward",
+        );
+        assert!(idea_timers(&s).is_empty());
+        s.campaign
+            .validate(&s.world, &s.research, s.clock.elapsed_hours)
+            .unwrap();
+        s.clock.elapsed_hours = 24;
+        s.tick_campaign(&cat, &Default::default());
+        assert_eq!(
+            s.research
+                .country("A")
+                .unwrap()
+                .context
+                .ideas
+                .contains("temporary"),
+            action.starts_with("add_ideas")
+        );
+    }
+    // Inheritance must be checked before the split mutates even one province.
+    let mut s = fixture();
+    let r = s.research.countries.get_mut("A").unwrap();
+    r.ideas_authoritative = true;
+    for i in 0..2049 {
+        let id = format!("timer{i}");
+        r.context.ideas.insert(id.clone());
+        r.timed_ideas.insert(id, 240);
+    }
+    let before = snap(&s);
+    assert!(
+        s.start_civil_war(&plan(), &Default::default())
+            .unwrap_err()
+            .contains("capacity")
+    );
+    assert_eq!(before, snap(&s));
+}

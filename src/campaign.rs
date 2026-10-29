@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 const STEPS: usize = 10000;
 const QUEUE: usize = 4096;
+pub(crate) const TIMED_IDEA_LIMIT: usize = 4096;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Scope {
     Country(String),
@@ -124,7 +125,12 @@ impl CampaignState {
         );
         Ok(id)
     }
-    pub fn validate(&self, w: &crate::world::World, hour: u64) -> Result<(), String> {
+    pub fn validate(
+        &self,
+        w: &crate::world::World,
+        research: &crate::research::ResearchWorld,
+        hour: u64,
+    ) -> Result<(), String> {
         let scope = |s: &Scope| match s {
             Scope::Country(t) => w.countries.contains_key(t),
             Scope::State(i) => w.states.contains_key(i),
@@ -169,6 +175,28 @@ impl CampaignState {
                     .any(|v| !(0.0..=1.).contains(&v))
             {
                 return Err("Invalid political state".into());
+            }
+        }
+        if research
+            .countries
+            .values()
+            .map(|c| c.timed_ideas.len())
+            .sum::<usize>()
+            > TIMED_IDEA_LIMIT
+        {
+            return Err("Timed idea capacity exceeded".into());
+        }
+        for (tag, country) in &research.countries {
+            let timers = &country.timed_ideas;
+            if timers.is_empty() {
+                continue;
+            }
+            if !w.countries.contains_key(tag)
+                || self.inactive.contains(tag)
+                || !country.ideas_authoritative
+                || timers.keys().any(|id| !country.context.ideas.contains(id))
+            {
+                return Err("Invalid timed idea reference".into());
             }
         }
         if self.state_flags.keys().any(|id| !w.states.contains_key(id)) {
@@ -379,6 +407,20 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
+                    "add_timed_idea" | "modify_timed_idea" => {
+                        fields(e, &["idea", "days", "months", "years"])?;
+                        field(body(e)?, "idea")?;
+                        for f in body(e)? {
+                            atom(f)?;
+                        }
+                        if !body(e)?
+                            .iter()
+                            .any(|f| ["days", "months", "years"].contains(&f.key.as_str()))
+                        {
+                            return Err("Timed idea requires a duration".into());
+                        }
+                        Ok(())
+                    }
                     "add_ideas" | "remove_ideas" | "swap_ideas" | "set_technology"
                     | "add_tech_bonus" | "add_research_slot" | "set_research_slots" => Ok(()),
                     k if cat.scripts.effects.contains_key(k) => {
@@ -472,6 +514,135 @@ impl<'a> Journal<'a> {
         c.context.global_flags = self.globals.clone();
         c.context.at_war = Some(self.s.military.wars.iter().any(|(a, b)| a == t || b == t));
         c
+    }
+    fn idea_effect(&mut self, e: &Entry, c: &Context, source: &str) -> Result<(), String> {
+        if matches!(e.key.as_str(), "add_ideas" | "remove_ideas" | "swap_ideas") {
+            let ids: Vec<_> = if e.key == "swap_ideas" {
+                fields(e, &["add_idea", "remove_idea"])?;
+                body(e)?.iter().map(|e| atom(e)).collect::<Result<_, _>>()?
+            } else if let Some(a) = e.atom() {
+                vec![a]
+            } else {
+                body(e)?.iter().map(|e| e.key.as_str()).collect()
+            };
+            for id in ids {
+                let raw = self.cat.scripts.ideas.get(id).ok_or("Unknown idea")?;
+                for f in raw {
+                    if f.key == "modifier" {
+                        for v in body(f)? {
+                            if crate::research::modifier_consumer(&v.key).is_none()
+                                || v.atom()
+                                    .and_then(|v| v.parse::<f64>().ok())
+                                    .is_none_or(|v| !v.is_finite())
+                            {
+                                return Err(format!("Missing modifier consumer {}", v.key));
+                            }
+                        }
+                    } else if ![
+                        "research_bonus",
+                        "picture",
+                        "name",
+                        "desc",
+                        "allowed",
+                        "visible",
+                        "cost",
+                        "removal_cost",
+                        "allowed_civil_war",
+                    ]
+                    .contains(&f.key.as_str())
+                    {
+                        return Err(format!("Unsupported idea semantics {}", f.key));
+                    }
+                }
+            }
+        }
+        let t = self.tag(c)?;
+        let (cat, rules, date) = (self.cat, self.rules, self.s.clock.date);
+        let r = self.research(&t);
+        let pending = std::mem::take(&mut r.pending_effects);
+        crate::research_script::apply_effects(r, std::slice::from_ref(e), cat, rules, date, source);
+        if let Some(failure) = r.pending_effects.first() {
+            return Err(failure.reason.clone());
+        }
+        r.pending_effects = pending;
+        r.ideas_authoritative = true;
+        Ok(())
+    }
+    fn timed_idea(&mut self, e: &Entry, c: &Context, source: &str) -> Result<(), String> {
+        fields(e, &["idea", "days", "months", "years"])?;
+        let b = body(e)?;
+        for f in b {
+            atom(f)?;
+        }
+        let idea = field(b, "idea")?.to_owned();
+        let t = self.tag(c)?;
+        let modifying = e.key == "modify_timed_idea";
+        let mut days: i128 = 0;
+        let mut specified = false;
+        for (key, factor) in [("days", 1), ("months", 30), ("years", 365)] {
+            if let Some(raw) = pdx::atom(b, key) {
+                specified = true;
+                let n = self.num(raw, c)?;
+                if n.fract() != 0. || n.abs() >= i64::MAX as f64 || (!modifying && n < 0.) {
+                    return Err("Invalid timed idea duration".into());
+                }
+                days += i128::from(n as i64) * factor;
+            }
+        }
+        let hours = i64::try_from(days * 24).map_err(|_| "Timed idea duration overflow")?;
+        if !specified || (!modifying && hours <= 0) {
+            return Err("Timed idea requires a positive duration".into());
+        }
+        let now = self.s.clock.elapsed_hours;
+        let base = if modifying {
+            let deadline = self
+                .research(&t)
+                .timed_ideas
+                .get(&idea)
+                .copied()
+                .ok_or("Cannot modify an idea without an active timer")?;
+            if deadline <= now || !self.research(&t).context.ideas.contains(&idea) {
+                return Err("Cannot modify an expired timed idea".into());
+            }
+            deadline
+        } else {
+            now
+        };
+        let deadline = if hours < 0 {
+            base.saturating_sub(hours.unsigned_abs())
+        } else {
+            base.checked_add(hours as u64)
+                .ok_or("Timed idea deadline overflow")?
+        };
+        let mut normalized = e.clone();
+        normalized.key = if deadline <= now {
+            "remove_ideas"
+        } else {
+            "add_ideas"
+        }
+        .into();
+        normalized.value = Some(Value::Atom(idea.clone()));
+        self.idea_effect(&normalized, c, source)?;
+        if deadline > now {
+            let existing: usize = self
+                .s
+                .research
+                .countries
+                .iter()
+                .map(|(tag, r)| self.research.get(tag).unwrap_or(r).timed_ideas.len())
+                .sum();
+            let added: usize = self
+                .research
+                .iter()
+                .filter(|(tag, _)| !self.s.research.countries.contains_key(*tag))
+                .map(|(_, r)| r.timed_ideas.len())
+                .sum();
+            if existing + added >= TIMED_IDEA_LIMIT {
+                return Err("Timed idea capacity exceeded".into());
+            }
+            self.research(&t).timed_ideas.insert(idea, deadline);
+        }
+        Ok(())
     }
     fn num(&mut self, a: &str, c: &Context) -> Result<f64, String> {
         if let Ok(n) = a.parse::<f64>() {
@@ -895,48 +1066,9 @@ impl<'a> Journal<'a> {
                     .schedule(due, ctx, origin, Payload::Event { id: id.into(), raw })?;
                 Ok(())
             }
-            "add_ideas" | "remove_ideas" | "swap_ideas" | "set_technology" | "add_tech_bonus"
-            | "set_research_slots" | "add_research_slot" => {
-                if matches!(e.key.as_str(), "add_ideas" | "remove_ideas" | "swap_ideas") {
-                    let ids: Vec<_> = if e.key == "swap_ideas" {
-                        fields(e, &["add_idea", "remove_idea"])?;
-                        body(e)?.iter().map(|e| atom(e)).collect::<Result<_, _>>()?
-                    } else if let Some(a) = e.atom() {
-                        vec![a]
-                    } else {
-                        body(e)?.iter().map(|e| e.key.as_str()).collect()
-                    };
-                    for id in ids {
-                        let raw = self.cat.scripts.ideas.get(id).ok_or("Unknown idea")?;
-                        for f in raw {
-                            if f.key == "modifier" {
-                                for v in body(f)? {
-                                    if crate::research::modifier_consumer(&v.key).is_none()
-                                        || v.atom()
-                                            .and_then(|v| v.parse::<f64>().ok())
-                                            .is_none_or(|v| !v.is_finite())
-                                    {
-                                        return Err(format!("Missing modifier consumer {}", v.key));
-                                    }
-                                }
-                            } else if ![
-                                "research_bonus",
-                                "picture",
-                                "name",
-                                "desc",
-                                "allowed",
-                                "visible",
-                                "cost",
-                                "removal_cost",
-                                "allowed_civil_war",
-                            ]
-                            .contains(&f.key.as_str())
-                            {
-                                return Err(format!("Unsupported idea semantics {}", f.key));
-                            }
-                        }
-                    }
-                }
+            "add_timed_idea" | "modify_timed_idea" => self.timed_idea(e, c, source),
+            "add_ideas" | "remove_ideas" | "swap_ideas" => self.idea_effect(e, c, source),
+            "set_technology" | "add_tech_bonus" | "set_research_slots" | "add_research_slot" => {
                 let t = self.tag(c)?;
                 let (cat, rules, date) = (self.cat, self.rules, self.s.clock.date);
                 let r = self.research(&t);
@@ -953,9 +1085,6 @@ impl<'a> Journal<'a> {
                     return Err(r.pending_effects[0].reason.clone());
                 }
                 r.pending_effects = pending;
-                if matches!(e.key.as_str(), "add_ideas" | "remove_ideas" | "swap_ideas") {
-                    r.ideas_authoritative = true;
-                }
                 Ok(())
             }
             k if self.cat.scripts.effects.contains_key(k) => {
@@ -1057,6 +1186,7 @@ impl GameSession {
             return;
         }
         self.campaign.last_hour = Some(h);
+        self.expire_campaign_ideas(cat);
         for _ in 0..64 {
             let next = self
                 .campaign
@@ -1081,6 +1211,33 @@ impl GameSession {
                     }
                 }
             }
+        }
+    }
+    /// Expiration precedes same-hour scripted rewards and military/economy ticks.
+    /// It only removes a known source; it does not rerun add/remove rewards.
+    fn expire_campaign_ideas(&mut self, cat: &ResearchCatalogue) {
+        let now = self.clock.elapsed_hours;
+        let mut changed = false;
+        for r in self.research.countries.values_mut() {
+            let mut country_changed = false;
+            r.timed_ideas.retain(|id, deadline| {
+                if *deadline <= now {
+                    country_changed |= r.context.ideas.remove(id);
+                    false
+                } else {
+                    r.context.ideas.contains(id)
+                }
+            });
+            if country_changed {
+                r.ideas_authoritative = true;
+                crate::research_script::refresh_ideas(r, cat);
+                r.revision = r.revision.saturating_add(1);
+                changed = true;
+            }
+        }
+        if changed {
+            self.military.refresh_modifiers(&self.research);
+            self.refresh_research_building_slots();
         }
     }
     fn fire_campaign_event(
