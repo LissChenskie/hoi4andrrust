@@ -282,28 +282,43 @@ impl GameSession {
         // National fuel at scenario start is defined by the player's version of
         // HOI4. Preserve explicit dated set_fuel / set_fuel_ratio effects.
         let defines = &self.military.catalogue.literal_defines;
-        if let Some(base) = defines.get("NDefines.NCountry.BASE_FUEL_CAPACITY")
-            .copied().filter(|v| v.is_finite() && *v > 0.) {
+        if let Some(base) = defines
+            .get("NDefines.NCountry.BASE_FUEL_CAPACITY")
+            .copied()
+            .filter(|v| v.is_finite() && *v > 0.)
+        {
             self.military.logistics.rules.base_fuel_capacity = base;
         }
-        if let Some(silo) = defines.get("NDefines.NCountry.FUEL_SILO_CAPACITY")
-            .copied().filter(|v| v.is_finite() && *v >= 0.) {
+        if let Some(silo) = defines
+            .get("NDefines.NCountry.FUEL_SILO_CAPACITY")
+            .copied()
+            .filter(|v| v.is_finite() && *v >= 0.)
+        {
             self.military.logistics.rules.silo_fuel_capacity = silo;
         }
-        let starting_ratio = defines.get("NDefines.NCountry.STARTING_FUEL_RATIO")
-            .copied().filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
+        let starting_ratio = defines
+            .get("NDefines.NCountry.STARTING_FUEL_RATIO")
+            .copied()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v));
         let base = self.military.logistics.rules.base_fuel_capacity;
         let silo = self.military.logistics.rules.silo_fuel_capacity;
         for tag in self.world.countries.keys() {
-            let capacity = base + f64::from(self.world.country_economy(tag)
-                .map_or(0, |e| e.fuel_silos)) * silo;
-            let country = self.military.logistics.countries.entry(tag.clone()).or_default();
+            let capacity = base
+                + f64::from(self.world.country_economy(tag).map_or(0, |e| e.fuel_silos)) * silo;
+            let country = self
+                .military
+                .logistics
+                .countries
+                .entry(tag.clone())
+                .or_default();
             country.fuel_capacity_base = Some(base);
             country.fuel_capacity = capacity.max(country.fuel).max(0.);
             match country.starting_fuel_ratio {
                 Some(ratio) => country.fuel = country.fuel_capacity * ratio,
                 None if !country.starting_fuel_explicit => {
-                    if let Some(ratio) = starting_ratio { country.fuel = country.fuel_capacity * ratio; }
+                    if let Some(ratio) = starting_ratio {
+                        country.fuel = country.fuel_capacity * ratio;
+                    }
                 }
                 None => {}
             }
