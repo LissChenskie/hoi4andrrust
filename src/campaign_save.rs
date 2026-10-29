@@ -118,7 +118,8 @@ impl GameSession {
             );
         }
         let s = &mut data.session;
-        s.campaign.validate(&s.world, s.clock.elapsed_hours)?;
+        s.campaign
+            .validate(&s.world, &s.research, s.clock.elapsed_hours)?;
         if s.clock.hour >= 24 || !s.clock.date.is_valid() {
             return Err("Повреждён игровой календарь".into());
         }

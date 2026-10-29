@@ -563,6 +563,7 @@ fn execute(
                     .map(|s| vec![s.to_owned()])
                     .unwrap_or_else(|| crate::pdx::names(nested).into_iter().collect());
                 for id in ids {
+                    c.timed_ideas.remove(&id);
                     if e.key == "add_ideas" {
                         if let Some(group) = cat.scripts.law_groups.get(&id) {
                             c.context
@@ -578,9 +579,11 @@ fn execute(
             }
             "swap_ideas" => {
                 if let Some(id) = atom(nested, "remove_idea") {
+                    c.timed_ideas.remove(id);
                     c.context.ideas.remove(id);
                 }
                 if let Some(id) = atom(nested, "add_idea") {
+                    c.timed_ideas.remove(id);
                     if let Some(group) = cat.scripts.law_groups.get(id) {
                         c.context
                             .ideas
@@ -655,6 +658,8 @@ fn execute(
     }
 }
 pub fn refresh_ideas(c: &mut CountryResearch, cat: &ResearchCatalogue) {
+    // Replacing a mutually exclusive law can remove ideas indirectly.
+    c.timed_ideas.retain(|id, _| c.context.ideas.contains(id));
     c.source_modifiers
         .retain(|source, _| !source.starts_with("idea:"));
     c.source_category_bonuses.clear();

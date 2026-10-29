@@ -264,7 +264,21 @@ impl SplitPlan {
         s.military.validate_references(&s.world)?;
         s.military.logistics.validate(&s.world)?;
         s.military.air.validate(&s.world, &s.military)?;
-        s.campaign.validate(&s.world, s.clock.elapsed_hours)?;
+        s.campaign
+            .validate(&s.world, &s.research, s.clock.elapsed_hours)?;
+        let timer_count: usize = s
+            .research
+            .countries
+            .values()
+            .map(|c| c.timed_ideas.len())
+            .sum();
+        let inherited = s
+            .research
+            .country(&self.parent)
+            .map_or(0, |c| c.timed_ideas.len());
+        if timer_count + inherited > crate::campaign::TIMED_IDEA_LIMIT {
+            return Err("Civil-war split would exceed timed idea capacity".into());
+        }
         Ok(())
     }
 }

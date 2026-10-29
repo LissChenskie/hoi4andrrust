@@ -678,6 +678,10 @@ pub struct ResearchSlot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryResearch {
+    /// Absolute campaign-hour deadlines; idea membership and its lifetime are
+    /// mutated together by every idea effect, including legacy research rewards.
+    #[serde(default)]
+    pub timed_ideas: BTreeMap<String, u64>,
     #[serde(default)]
     pub flags_authoritative: bool,
     #[serde(default)]
@@ -714,6 +718,7 @@ fn known_slots() -> bool {
 impl CountryResearch {
     pub fn new(slot_count: usize, rules: &ResearchRules) -> Self {
         Self {
+            timed_ideas: BTreeMap::new(),
             flags_authoritative: false,
             research_slots_known: true,
             ideas_authoritative: false,
