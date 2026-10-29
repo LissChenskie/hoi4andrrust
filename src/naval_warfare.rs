@@ -878,7 +878,10 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
     );
     let mut out = NavalState::default();
     for (tag, army) in &warfare.countries {
-        for oob in &army.history_oobs {
+        let selected = army.history_oobs.iter()
+            .chain(army.history_naval_oobs.iter())
+            .collect::<std::collections::BTreeSet<_>>();
+        for oob in selected {
             let Some(path) = files
                 .iter()
                 .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str()))
@@ -893,13 +896,13 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                     .push(format!("{tag}: unparseable naval OOB {oob}"));
                 continue;
             };
-            for unit in root.entries.iter().filter(|e| e.key == "units") {
-                for fleet in unit
-                    .block()
-                    .unwrap_or(&[])
-                    .iter()
-                    .filter(|e| e.key == "fleet")
-                {
+            // HOI4 historical files contain both top-level fleet blocks and
+            // fleet blocks nested under units. Keep the exact selected OOBs.
+            let fleets = root.entries.iter().filter(|e| e.key == "fleet")
+                .chain(root.entries.iter().filter(|e| e.key == "units")
+                    .flat_map(|e| e.block().unwrap_or(&[]).iter())
+                    .filter(|e| e.key == "fleet"));
+            for fleet in fleets {
                     let f = fleet.block().unwrap_or(&[]);
                     let fleet_base = atom(f, "naval_base").and_then(|v| v.parse::<u32>().ok());
                     for task in f.iter().filter(|e| e.key == "task_force") {
@@ -954,7 +957,6 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                             out.diagnostics.push(e);
                         }
                     }
-                }
             }
         }
     }
