@@ -323,7 +323,12 @@ impl GameSession {
         naval.tick_naval_combat(&self.world, &mut self.military, self.clock.elapsed_hours);
         naval.tick_voyages(&mut self.military, &mut self.world);
         self.military.naval = naval;
-        self.peace.tick(&mut self.world, &mut self.military, &self.research, self.clock.elapsed_hours);
+        self.peace.tick(
+            &mut self.world,
+            &mut self.military,
+            &self.research,
+            self.clock.elapsed_hours,
+        );
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();
         }
