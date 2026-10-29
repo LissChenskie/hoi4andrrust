@@ -531,7 +531,11 @@ impl Warfare {
                 );
             m.flags = country.modifiers.flags.clone();
             if let Some(c) = research.country(tag) {
-                m.flags.extend(c.flags.iter().cloned());
+                if c.flags_authoritative {
+                    m.flags = c.flags.clone();
+                } else {
+                    m.flags.extend(c.flags.iter().cloned());
+                }
                 for unlock in &c.unlocks {
                     if let Some((kind, id)) = unlock.split_once(':') {
                         match kind {
@@ -1123,7 +1127,11 @@ impl Warfare {
             .insert(template.name.clone(), template.clone());
         if let Some(old) = old_name {
             if old != template.name {
-                for job in self.recruitment.values_mut().filter(|j| j.country == country && j.template.name == old) {
+                for job in self
+                    .recruitment
+                    .values_mut()
+                    .filter(|j| j.country == country && j.template.name == old)
+                {
                     job.template.name = template.name.clone();
                 }
                 for d in self
@@ -1561,8 +1569,15 @@ impl Warfare {
                             .filter(|e| e.archetype == archetype)
                     })
                     .collect();
-                let preference = self.countries[&tag].templates[&d.template].equipment_preferences.get(&archetype);
-                models.sort_by(|a, b| (Some(&b.id) == preference).cmp(&(Some(&a.id) == preference)).then_with(|| b.year.cmp(&a.year)).then_with(|| a.id.cmp(&b.id)));
+                let preference = self.countries[&tag].templates[&d.template]
+                    .equipment_preferences
+                    .get(&archetype);
+                models.sort_by(|a, b| {
+                    (Some(&b.id) == preference)
+                        .cmp(&(Some(&a.id) == preference))
+                        .then_with(|| b.year.cmp(&a.year))
+                        .then_with(|| a.id.cmp(&b.id))
+                });
                 for model in models {
                     if deficit == 0 {
                         break;

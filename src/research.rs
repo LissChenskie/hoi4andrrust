@@ -679,6 +679,8 @@ pub struct ResearchSlot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CountryResearch {
     #[serde(default)]
+    pub flags_authoritative: bool,
+    #[serde(default)]
     pub ideas_authoritative: bool,
     #[serde(default = "known_slots")]
     pub research_slots_known: bool,
@@ -712,6 +714,7 @@ fn known_slots() -> bool {
 impl CountryResearch {
     pub fn new(slot_count: usize, rules: &ResearchRules) -> Self {
         Self {
+            flags_authoritative: false,
             research_slots_known: true,
             ideas_authoritative: false,
             context: ResearchContext::default(),
