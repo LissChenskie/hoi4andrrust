@@ -8,7 +8,7 @@ default-run = "hoi4-mobile"
 
 [dependencies]
 macroquad = "0.4"
-image = { version = "0.25", default-features = false, features = ["bmp", "tga"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "tga", "png"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
