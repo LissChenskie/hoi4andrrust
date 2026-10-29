@@ -13,6 +13,7 @@ mod construction;
 mod construction_map;
 mod construction_ui;
 mod division_designer_ui;
+mod division_icons;
 mod logistics;
 mod mobile_army_ui;
 mod naval_carrier;
