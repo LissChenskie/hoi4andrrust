@@ -2520,9 +2520,14 @@ fn draw_map_viewer(
             let mut city_labels_drawn = 0usize;
             for marker_index in map.city_grid.visible(source_rect) {
                 let city = &map.city_markers[marker_index];
-                let capital = military.logistics.countries.iter()
-                    .find(|(_,c)| c.capital == Some(city.province_id));
-                if capital.is_none() && map.zoom < 6.0 { continue; }
+                let capital = military
+                    .logistics
+                    .countries
+                    .iter()
+                    .find(|(_, c)| c.capital == Some(city.province_id));
+                if capital.is_none() && map.zoom < 6.0 {
+                    continue;
+                }
                 if city.x < source_rect.x
                     || city.x > source_rect.x + source_rect.w
                     || city.y < source_rect.y
@@ -2535,8 +2540,16 @@ fn draw_map_viewer(
                 draw_circle(
                     x,
                     y,
-                    if capital.is_some() { 5.0 * label_scale } else { 3.0 * label_scale },
-                    if capital.is_some() { Color::from_rgba(253, 210, 65, 255) } else { Color::from_rgba(245, 224, 168, 255) },
+                    if capital.is_some() {
+                        5.0 * label_scale
+                    } else {
+                        3.0 * label_scale
+                    },
+                    if capital.is_some() {
+                        Color::from_rgba(253, 210, 65, 255)
+                    } else {
+                        Color::from_rgba(245, 224, 168, 255)
+                    },
                 );
                 draw_circle_lines(
                     x,
