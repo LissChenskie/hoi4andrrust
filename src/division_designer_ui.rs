@@ -492,7 +492,10 @@ pub fn draw(
         v.editing = None;
         v.scroll = 0.0;
     }
-    if ui::small_button("КОПИЯ", Rect::new(x + third + 4.0, y, third, 26.0), false) {
+    let copy_rect = Rect::new(x + third + 4.0, y, third, 26.0);
+    if v.editing.is_none() {
+        ui::disabled("КОПИЯ",copy_rect,"Сначала сохраните первый шаблон");
+    } else if ui::small_button("КОПИЯ",copy_rect,false) {
         if let Some(old) = v.editing.clone() {
             let name = unique_name(w, tag, &format!("{old} (копия)"));
             match w.copy_template(tag, &old, &name) {
@@ -563,6 +566,10 @@ pub fn draw(
         }
     }
     let name = v.draft.as_ref().unwrap().name.clone();
+    crate::division_icons::draw_template(
+        &v.draft.as_ref().unwrap().icon,
+        Rect::new(x + 2., y + 3., 23., 23.),
+    );
     if ui::small_button(
         &name,
         Rect::new(x + 30.0, y, width - 60.0, 27.0),
@@ -781,11 +788,12 @@ pub fn draw(
         }
     }
     let assign_button = Rect::new(x + half + 5.0, footer, half, 28.0);
-    if !saved_and_unchanged {
+    if !saved_and_unchanged || selected.is_empty() {
         ui::disabled(
             "Применить к выбранным",
             assign_button,
-            "Сначала сохраните изменения шаблона за армейский опыт",
+            if selected.is_empty() { "Сначала выделите дивизии" }
+            else { "Сначала сохраните изменения шаблона за армейский опыт" },
         );
     } else if ui::small_button("Применить к выбранным", assign_button, false) {
         let ids: Vec<_> = selected.iter().copied().collect();
