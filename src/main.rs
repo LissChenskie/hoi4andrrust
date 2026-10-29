@@ -40,6 +40,8 @@ mod military_data;
 mod military_history;
 mod military_model;
 mod operations;
+mod peace;
+mod peace_ui;
 mod production;
 mod production_ui;
 mod recruitment;
@@ -3104,6 +3106,10 @@ async fn main() {
             }
         }
         session.initialize_military(Path::new("data/hoi4"));
+        match session.peace.import_state_history(Path::new("data/hoi4"), start_date) {
+            Ok(states) => eprintln!("[peace] Imported rights history for {states} states"),
+            Err(error) => eprintln!("[peace] Historical rights: {error}"),
+        }
         session
             .military
             .use_research_registry(&research_catalogue, &session.research);
