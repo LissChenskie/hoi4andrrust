@@ -30,7 +30,7 @@ fn unique_name(w: &Warfare, tag: &str, base: &str) -> String {
     if !army.templates.contains_key(base) {
         return base.into();
     }
-    for i in 2.0.10000 {
+    for i in 2..10000 {
         let name = format!("{base} {i}");
         if !army.templates.contains_key(&name) {
             return name;
@@ -227,8 +227,8 @@ fn draw_composition(
     let step=cell+gap;
     let columns=w.catalogue.rules.regiment_columns.min(5);
     let rows=w.catalogue.rules.regiment_rows.min(5);
-    for col in 0.0.5 {
-        for row in 0.0.5 {
+    for col in 0..5 {
+        for row in 0..5 {
             let rect=Rect::new(left.x+col as f32*step,grid_top+row as f32*step,
                 cell,cell);
             if rect.bottom()<area.y || rect.y>area.bottom() {continue;}
@@ -242,7 +242,7 @@ fn draw_composition(
     let sx=if wide {left.x+5.*step+3.} else {left.x};
     ui::section("ПОДДЕРЖКА",sx,sy-25.,
         if wide {(left.right()-sx).max(26.)}else{left.w});
-    for row in 0.0.5 {
+    for row in 0..5 {
         let r=if wide {
             Rect::new(sx,sy+row as f32*step,(left.right()-sx-2.).min(84.).max(24.),cell)
         } else {
@@ -255,7 +255,7 @@ fn draw_composition(
     let reg_y=if wide {grid_top+5.*step+37.} else {sy+step+47.};
     if has_reg {
         ui::section("ПОЛКОВАЯ ПОДДЕРЖКА",left.x,reg_y-27.,left.w);
-        for col in 0.0.5 {
+        for col in 0..5 {
             let count=draft.line.iter().filter(|s|s.column==col).count();
             let active=count>=3;
             let r=Rect::new(left.x+col as f32*step,reg_y,cell,cell);
