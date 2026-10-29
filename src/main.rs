@@ -3107,7 +3107,10 @@ async fn main() {
             }
         }
         session.initialize_military(Path::new("data/hoi4"));
-        match session.peace.import_state_history(Path::new("data/hoi4"), start_date) {
+        match session
+            .peace
+            .import_state_history(Path::new("data/hoi4"), start_date)
+        {
             Ok(states) => eprintln!("[peace] Imported rights history for {states} states"),
             Err(error) => eprintln!("[peace] Historical rights: {error}"),
         }
@@ -3496,8 +3499,11 @@ async fn main() {
                     research_view.open,
                     &army_view,
                 );
-                let peace_overlay_active = peace_ui::active(peace_state, selected_country.as_deref());
-                if peace_overlay_active { game.paused = true; }
+                let peace_overlay_active =
+                    peace_ui::active(peace_state, selected_country.as_deref());
+                if peace_overlay_active {
+                    game.paused = true;
+                }
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(),
                     world,
@@ -3525,7 +3531,13 @@ async fn main() {
                     military,
                     &mut army_view,
                 );
-                peace_ui::draw(peace_state, world, military, selected_country.as_deref(), &mut peace_view);
+                peace_ui::draw(
+                    peace_state,
+                    world,
+                    military,
+                    selected_country.as_deref(),
+                    &mut peace_view,
+                );
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
