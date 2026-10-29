@@ -1567,11 +1567,26 @@ fn trade(
         TradeLaw::ClosedEconomy => "Закрытая экономика (0%)",
     };
     ui::label(
-        "Ресурсы за сутки: добыча / внутренний остаток / импорт",
-        Rect::new(x, y, width, 23.0),
+        "Ресурсы: добыча / внутренний остаток / импорт",
+        Rect::new(x, y, (width - 176.0).max(85.0), 23.0),
         12.0,
         ui::TEXT,
     );
+    let automatic = market.automatic_buyers.contains(tag);
+    if ui::small_button(
+        if automatic { "АВТОИМПОРТ: ВКЛ" } else { "АВТОИМПОРТ: ВЫКЛ" },
+        Rect::new(x + width - 174.0, y, 174.0, 25.0),
+        automatic,
+    ) {
+        if automatic {
+            market.automatic_buyers.remove(tag);
+            market.automatic_deals.retain(|d| d.buyer != tag);
+            h.notice = "Автоимпорт выключен; ручные договоры сохранены".into();
+        } else {
+            market.automatic_buyers.insert(tag.into());
+            h.notice = "Автоимпорт включён: дефицит производственных линий будет покрываться при наличии фабрик, ресурсов и маршрутов".into();
+        }
+    }
     let report = market.last.get(tag);
     let mut yy = y + 29.0;
     for (key, label) in MATERIALS {
@@ -1605,7 +1620,7 @@ fn trade(
         return;
     }
     ui::label(
-        &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received}"),
+        &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received} · авто: {}", market.automatic_deals.iter().filter(|d|d.buyer==tag).map(|d|d.factories).sum::<u32>()),
         Rect::new(x, yy + 4.0, width, 21.0),
         12.0,
         ui::GOLD,
