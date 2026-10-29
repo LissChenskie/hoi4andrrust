@@ -11,6 +11,9 @@ pub struct ProductionView {
     pub open: bool,
     pub selected_line: Option<u64>,
     pub selected_equipment: Option<Equipment>,
+    pub catalogue_open: bool,
+    pub catalogue_scroll: usize,
+    pub switch_target: Option<u64>,
     pub scroll: usize,
     pub notice: String,
 }
@@ -18,6 +21,7 @@ pub struct ProductionView {
 impl ProductionView {
     pub fn close(&mut self) {
         self.open = false;
+        self.catalogue_open = false;
     }
 }
 
@@ -26,7 +30,34 @@ pub fn bounds() -> Rect {
 }
 
 pub fn is_over_panel(point: Vec2, view: &ProductionView) -> bool {
-    view.open && bounds().contains(point)
+    view.open
+        && (bounds().contains(point) || (view.catalogue_open && catalogue_bounds().contains(point)))
+}
+
+fn catalogue_bounds() -> Rect {
+    let base = bounds();
+    let width = (screen_width() - 22.0).min(470.0).max(280.0);
+    let x = if screen_width() >= base.right() + width + 8.0 {
+        base.right() + 5.0
+    } else {
+        (screen_width() - width).max(0.0) / 2.0
+    };
+    Rect::new(x, base.y, width, base.h)
+}
+
+fn belongs(e: &crate::military_model::EquipmentDefinition, category: Equipment) -> bool {
+    match category {
+        Equipment::InfantryKit => e.archetype.contains("infantry"),
+        Equipment::SupportKit => e.archetype.contains("support"),
+        Equipment::Truck => e.archetype.contains("motorized") || e.archetype.contains("mechanized"),
+        Equipment::Aircraft => crate::air_warfare::is_aircraft(e),
+        Equipment::FieldEquipment => {
+            e.archetype.contains("artillery")
+                || e.archetype.contains("anti_tank")
+                || e.archetype.contains("anti_air")
+                || e.archetype.contains("tank")
+        }
+    }
 }
 
 fn compact_label(text: &str, width: f32, size: u16) -> String {
@@ -92,6 +123,8 @@ enum Action {
     Select(u64),
     Create(Equipment),
     Switch(u64, Equipment),
+    CreateModel(Equipment, String),
+    SwitchModel(u64, Equipment, String),
 }
 
 pub fn draw(
@@ -263,6 +296,29 @@ pub fn draw(
             10.0,
             ui::MUTED,
         );
+        if let Some(model) = &line.model {
+            if let Some(requirements) = military.catalogue.equipment_resources.get(model) {
+                let materials = requirements
+                    .iter()
+                    .filter(|(_, n)| **n > 0)
+                    .map(|(name, n)| format!("{name}:{n}"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let factor = snapshot
+                    .last_day_resource_factors
+                    .get(&line.id)
+                    .copied()
+                    .unwrap_or(1.);
+                ui::tooltip(
+                    row,
+                    "Материалы на завод и сутки",
+                    &format!(
+                        "{materials} | обеспечение {:.0}% | Shift и +/-: 5 заводов",
+                        factor * 100.
+                    ),
+                );
+            }
+        }
         ui::progress_bar(
             Rect::new(tx, row.y + 42.0, tw, 8.0),
             (line.efficiency / rules.efficiency_cap) as f32,
@@ -297,11 +353,12 @@ pub fn draw(
                 ),
                 false,
             ) {
+                let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                 action = Some(match i {
                     0 => Action::Up(line.id),
                     1 => Action::Down(line.id),
-                    2 => Action::AddFactories(line.id, -1),
-                    3 => Action::AddFactories(line.id, 1),
+                    2 => Action::AddFactories(line.id, if shift { -5 } else { -1 }),
+                    3 => Action::AddFactories(line.id, if shift { 5 } else { 1 }),
                     _ => Action::Remove(line.id),
                 });
             }
@@ -356,11 +413,13 @@ pub fn draw(
     let choice = view.selected_equipment.unwrap_or(Equipment::InfantryKit);
     let half = (list_w - 5.0) * 0.5;
     if ui::small_button(
-        "ДОБАВИТЬ ЛИНИЮ",
+        "ВЫБРАТЬ МОДЕЛЬ",
         Rect::new(list_x, footer_y + 52.0, half, 29.0),
         false,
     ) {
-        action = Some(Action::Create(choice));
+        view.catalogue_open = true;
+        view.switch_target = None;
+        view.catalogue_scroll = 0;
     }
     if ui::small_button(
         "ЗАМЕНИТЬ СНАРЯЖЕНИЕ",
@@ -368,7 +427,9 @@ pub fn draw(
         false,
     ) {
         if let Some(id) = view.selected_line {
-            action = Some(Action::Switch(id, choice));
+            view.catalogue_open = true;
+            view.switch_target = Some(id);
+            view.catalogue_scroll = 0;
         } else {
             view.notice = "Сначала выберите производственную линию".to_owned();
         }
@@ -414,6 +475,105 @@ pub fn draw(
         );
     }
 
+    if view.catalogue_open {
+        let area = catalogue_bounds();
+        ui::panel(area.x, area.y, area.w, area.h);
+        ui::header(area.x + 3., area.y + 3., area.w - 6., "МОДЕЛИ ТЕХНИКИ");
+        if ui::small_button(
+            "X",
+            Rect::new(area.right() - 36., area.y + 8., 25., 24.),
+            false,
+        ) {
+            view.catalogue_open = false;
+        } else if let Some(army) = military.countries.get(tag) {
+            ui::label(
+                &format!("{} | Только изученное и доступное", choice.label()),
+                Rect::new(area.x + 12., area.y + 45., area.w - 24., 26.),
+                12.,
+                ui::GOLD,
+            );
+            let mut models = military
+                .catalogue
+                .equipment
+                .values()
+                .filter(|e| belongs(e, choice))
+                .filter(|e| e.cost.is_finite() && e.cost > 0.0)
+                .collect::<Vec<_>>();
+            models.sort_by(|a, b| a.year.cmp(&b.year).then_with(|| a.id.cmp(&b.id)));
+            let row_h = 47.;
+            let inner = Rect::new(
+                area.x + 10.,
+                area.y + 78.,
+                area.w - 20.,
+                (area.h - 101.).max(40.),
+            );
+            let visible = ((inner.h / row_h).floor() as usize).max(1);
+            let max_scroll = models.len().saturating_sub(visible);
+            view.catalogue_scroll = view.catalogue_scroll.min(max_scroll);
+            if inner.contains(vec2(mouse_position().0, mouse_position().1)) {
+                let wheel = mouse_wheel().1;
+                if wheel > 0. {
+                    view.catalogue_scroll = view.catalogue_scroll.saturating_sub(1);
+                }
+                if wheel < 0. {
+                    view.catalogue_scroll = (view.catalogue_scroll + 2).min(max_scroll);
+                }
+            }
+            ui::scrollbar(inner, &mut view.catalogue_scroll, max_scroll, visible);
+            if models.is_empty() {
+                ui::paragraph(
+                    "В этой категории отсутствуют импортированные модели. Проверьте данные HOI4.",
+                    inner,
+                    12.,
+                    ui::MUTED,
+                );
+            }
+            for (i, model) in models
+                .iter()
+                .enumerate()
+                .skip(view.catalogue_scroll)
+                .take(visible)
+            {
+                let yy = inner.y + (i - view.catalogue_scroll) as f32 * row_h;
+                let row = Rect::new(inner.x + 3., yy, inner.w - 16., row_h - 3.);
+                let available = military
+                    .catalogue
+                    .equipment_available(&model.id, &army.modifiers);
+                ui::row_bg(row, false, i % 2 == 1);
+                let item = format!("{} ({}) · {:.2} ПМ", model.id, model.year, model.cost);
+                let label = compact_label(&item, row.w - 21., 12);
+                if available {
+                    if ui::small_button(&label, row, false) {
+                        action = Some(match view.switch_target {
+                            Some(id) => Action::SwitchModel(id, choice, model.id.clone()),
+                            None => Action::CreateModel(choice, model.id.clone()),
+                        });
+                        view.catalogue_open = false;
+                    }
+                } else {
+                    ui::label(
+                        &label,
+                        Rect::new(row.x + 5., row.y + 7., row.w - 10., 25.),
+                        12.,
+                        ui::MUTED,
+                    );
+                    ui::tooltip(
+                        row,
+                        "Модель недоступна",
+                        "Не изучена, модульная или запрещена текущими игровыми определениями",
+                    );
+                }
+                if let Some(resources) = military.catalogue.equipment_resources.get(&model.id) {
+                    let detail = resources
+                        .iter()
+                        .map(|(key, n)| format!("{key} {n}"))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    ui::tooltip(row, "Ресурсы на завод", &detail);
+                }
+            }
+        }
+    }
     if let Some(command) = action {
         let country = state.country_mut(tag);
         match command {
@@ -442,6 +602,31 @@ pub fn draw(
             }
             Action::Select(id) => {
                 view.selected_line = Some(id);
+            }
+            Action::CreateModel(equipment, model) => {
+                let permitted = military.countries.get(tag).is_some_and(|army| {
+                    military
+                        .catalogue
+                        .equipment_available(&model, &army.modifiers)
+                });
+                if permitted && country.lines.len() < 128 {
+                    view.selected_line = Some(country.create_model(&model, equipment, 1, rules));
+                    view.notice = format!("Начато производство {model}. Заводы: + / Shift +");
+                } else {
+                    view.notice = "Модель не изучена или достигнут лимит линий".into();
+                }
+            }
+            Action::SwitchModel(id, equipment, model) => {
+                let permitted = military.countries.get(tag).is_some_and(|army| {
+                    military
+                        .catalogue
+                        .equipment_available(&model, &army.modifiers)
+                });
+                if permitted && country.switch_model(id, &model, equipment, rules) {
+                    view.notice = format!("Линия переведена на {model}");
+                } else {
+                    view.notice = "Недоступная модель или линия".into();
+                }
             }
             Action::Create(equipment) => {
                 if country.lines.len() < 128 {
@@ -497,17 +682,7 @@ fn default_model(
                 .equipment_available(&e.id, &army.modifiers)
                 && e.cost > 0.0
         })
-        .filter(|e| match category {
-            Equipment::InfantryKit => e.archetype.contains("infantry"),
-            Equipment::SupportKit => e.archetype.contains("support"),
-            Equipment::Truck => e.archetype.contains("motorized"),
-            Equipment::Aircraft => crate::air_warfare::is_aircraft(e),
-            Equipment::FieldEquipment => {
-                e.archetype.contains("artillery")
-                    || e.archetype.contains("anti_tank")
-                    || e.archetype.contains("tank")
-            }
-        })
+        .filter(|e| belongs(e, category))
         .max_by_key(|e| (e.year, &e.id))
         .map(|e| e.id.clone())
 }

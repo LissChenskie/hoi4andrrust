@@ -280,6 +280,18 @@ fn effects(
                     c.fuel_capacity = c.fuel_capacity.max(n);
                 }
             }
+            "set_fuel_ratio" => {
+                if let Some(ratio) = entry
+                    .atom()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .filter(|r| r.is_finite() && (0.0..=1.0).contains(r))
+                {
+                    let minimum = warfare.logistics.rules.base_fuel_capacity;
+                    let c = warfare.logistics.countries.entry(tag.into()).or_default();
+                    c.fuel_capacity = c.fuel_capacity.max(minimum);
+                    c.fuel = ratio * c.fuel_capacity;
+                }
+            }
             "oob" | "set_oob" => {
                 if let Some(id) = entry.atom() {
                     oobs.clear();
@@ -642,6 +654,13 @@ pub fn initialize(
             }
         }
         for id in ideas {
+            warfare
+                .countries
+                .get_mut(&tag)
+                .unwrap()
+                .modifiers
+                .ideas
+                .insert(id.clone());
             if let Some(values) = idea_modifiers.get(&id) {
                 for (k, v) in values {
                     *warfare

@@ -146,6 +146,7 @@ pub struct Hud {
     pub minimap: bool,
     pub orders_layout: bool,
     pub map_palette: bool,
+    pub war_panel_open: bool,
     pub menu: bool,
     pub menu_was_paused: bool,
     pub reload_requested: bool,
@@ -180,6 +181,7 @@ impl Default for Hud {
             minimap: true,
             orders_layout: false,
             map_palette: false,
+            war_panel_open: false,
             menu: false,
             menu_was_paused: true,
             reload_requested: false,
@@ -217,6 +219,7 @@ impl Hud {
         a: &mut ArmyView,
     ) {
         self.map_palette = false;
+        self.war_panel_open = false;
         c.close();
         p.close();
         r.open = false;
@@ -296,6 +299,7 @@ impl Hud {
             l.map_modes(),
         ];
         if self.active == Some(Panel::Focus)
+            || self.war_panel_open
             || self.menu
             || self.detail.is_some()
             || self.map_palette
@@ -1567,11 +1571,30 @@ fn trade(
         TradeLaw::ClosedEconomy => "Закрытая экономика (0%)",
     };
     ui::label(
-        "Ресурсы за сутки: добыча / внутренний остаток / импорт",
-        Rect::new(x, y, width, 23.0),
+        "Ресурсы: добыча / внутренний остаток / импорт",
+        Rect::new(x, y, (width - 176.0).max(85.0), 23.0),
         12.0,
         ui::TEXT,
     );
+    let automatic = market.automatic_buyers.contains(tag);
+    if ui::small_button(
+        if automatic {
+            "АВТОИМПОРТ: ВКЛ"
+        } else {
+            "АВТОИМПОРТ: ВЫКЛ"
+        },
+        Rect::new(x + width - 174.0, y, 174.0, 25.0),
+        automatic,
+    ) {
+        if automatic {
+            market.automatic_buyers.remove(tag);
+            market.automatic_deals.retain(|d| d.buyer != tag);
+            h.notice = "Автоимпорт выключен; ручные договоры сохранены".into();
+        } else {
+            market.automatic_buyers.insert(tag.into());
+            h.notice = "Автоимпорт включён: дефицит производственных линий будет покрываться при наличии фабрик, ресурсов и маршрутов".into();
+        }
+    }
     let report = market.last.get(tag);
     let mut yy = y + 29.0;
     for (key, label) in MATERIALS {
@@ -1605,7 +1628,15 @@ fn trade(
         return;
     }
     ui::label(
-        &format!("Фабрики: импорт −{factories_spent} / экспорт +{factories_received}"),
+        &format!(
+            "Фабрики: импорт −{factories_spent} / экспорт +{factories_received} · авто: {}",
+            market
+                .automatic_deals
+                .iter()
+                .filter(|d| d.buyer == tag)
+                .map(|d| d.factories)
+                .sum::<u32>()
+        ),
         Rect::new(x, yy + 4.0, width, 21.0),
         12.0,
         ui::GOLD,
@@ -2870,7 +2901,7 @@ pub fn draw_modal(h: &mut Hud) -> Option<Action> {
 
 pub fn state_bounds() -> Rect {
     let l = Layout::current();
-    let height = 310.0f32.min(l.height - l.top - 55.0);
+    let height = 353.0f32.min(l.height - l.top - 55.0);
     Rect::new(
         0.0,
         l.height - l.bottom - height,
@@ -2878,7 +2909,13 @@ pub fn state_bounds() -> Rect {
         height,
     )
 }
-pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, province: u32) -> Vec<Action> {
+pub fn draw_state(
+    h: &mut Hud,
+    world: &World,
+    w: &Warfare,
+    peace: &crate::peace::PeaceSystem,
+    province: u32,
+) -> Vec<Action> {
     let r = state_bounds();
     let mut actions = Vec::new();
     let state = world.state_for_province(province);
@@ -2917,8 +2954,22 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, province: u32) -> Vec
         12.0,
         ui::GOLD,
     );
+    let vp = world
+        .geography
+        .provinces
+        .get(&province)
+        .map_or(0., |p| p.victory_points);
+    let capital = w
+        .logistics
+        .countries
+        .iter()
+        .find(|(_, c)| c.capital == Some(province))
+        .map(|(tag, _)| tag.as_str());
     ui::label(
-        &format!("Местность: {terrain} · Провинция {province}"),
+        &format!(
+            "{terrain} · P{province} · VP {vp:.0}{}",
+            capital.map_or(String::new(), |tag| format!(" · Столица {tag}"))
+        ),
         Rect::new(x, r.y + 114.0, width, 20.0),
         12.0,
         ui::MUTED,
@@ -2950,6 +3001,29 @@ pub fn draw_state(h: &mut Hud, world: &World, w: &Warfare, province: u32) -> Vec
         12.0,
         ui::GOLD,
     );
+    if let Some(state) = state {
+        let rights = peace.rights.get(&state.id);
+        let cores = rights
+            .map(|r| r.cores.iter().cloned().collect::<Vec<_>>().join(", "))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "нет импортированных прав".into());
+        let claims = rights
+            .map(|r| r.claims.iter().cloned().collect::<Vec<_>>().join(", "))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "—".into());
+        ui::label(
+            &format!("Национальные (core): {cores}"),
+            Rect::new(x, r.y + 254.0, width, 19.0),
+            11.0,
+            ui::GOLD,
+        );
+        ui::label(
+            &format!("Претензии (claims): {claims}"),
+            Rect::new(x, r.y + 274.0, width, 19.0),
+            11.0,
+            ui::MUTED,
+        );
+    }
     let b = Rect::new(x, r.bottom() - 40.0, (width - 5.0) * 0.6, 28.0);
     if ui::small_button("Строительство", b, false) {
         actions.push(Action::Open(Panel::Construction));

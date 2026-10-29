@@ -66,6 +66,7 @@ mod spatial_grid;
 mod state;
 mod ui_icons;
 mod ui_layout;
+mod war_overview_ui;
 mod warfare;
 mod world;
 
@@ -2335,6 +2336,7 @@ fn draw_map_viewer(
     game: &mut GameState,
     hud: &mut campaign_ui::Hud,
     military: &mut warfare::Warfare,
+    peace: &peace::PeaceSystem,
     army_view: &mut army_ui::ArmyView,
 ) -> Screen {
     army_view.orders_enabled = matches!(
@@ -2510,8 +2512,8 @@ fn draw_map_viewer(
                 )
                 .is_some_and(|r| r.contains(mouse)),
         );
-        // Show city markers from zoom 8.5; city names appear only at zoom 20.
-        if map.zoom >= 8.5 {
+        // Capital cities remain visible at strategic zoom; lower-value towns appear on zoom.
+        if map.zoom >= 1.5 {
             let label_scale = (map.zoom.sqrt() * 0.72).clamp(0.65, 1.25);
             // Text rendering is much more expensive than map sprites, especially on mobile GPUs.
             // Keep markers visible, but cap actual city-name labels per frame.
@@ -2519,6 +2521,14 @@ fn draw_map_viewer(
             let mut city_labels_drawn = 0usize;
             for marker_index in map.city_grid.visible(source_rect) {
                 let city = &map.city_markers[marker_index];
+                let capital = military
+                    .logistics
+                    .countries
+                    .iter()
+                    .find(|(_, c)| c.capital == Some(city.province_id));
+                if capital.is_none() && map.zoom < 6.0 {
+                    continue;
+                }
                 if city.x < source_rect.x
                     || city.x > source_rect.x + source_rect.w
                     || city.y < source_rect.y
@@ -2531,8 +2541,16 @@ fn draw_map_viewer(
                 draw_circle(
                     x,
                     y,
-                    3.0 * label_scale,
-                    Color::from_rgba(245, 224, 168, 255),
+                    if capital.is_some() {
+                        5.0 * label_scale
+                    } else {
+                        3.0 * label_scale
+                    },
+                    if capital.is_some() {
+                        Color::from_rgba(253, 210, 65, 255)
+                    } else {
+                        Color::from_rgba(245, 224, 168, 255)
+                    },
                 );
                 draw_circle_lines(
                     x,
@@ -2541,7 +2559,7 @@ fn draw_map_viewer(
                     1.0,
                     Color::from_rgba(25, 31, 38, 255),
                 );
-                if map.zoom >= 20.0
+                if (map.zoom >= 20.0 || (capital.is_some() && map.zoom >= 3.0))
                     && city.display_name
                     && city_labels_drawn < MAX_CITY_LABELS_PER_FRAME
                 {
@@ -2756,7 +2774,7 @@ fn draw_map_viewer(
     if hud.active.is_none() && army_view.selected.is_empty() && !army_view.deployment_pick {
         if let Some((province, _, _, _)) = *selected {
             let close = campaign_ui::state_bounds();
-            let actions = campaign_ui::draw_state(hud, world, military, province);
+            let actions = campaign_ui::draw_state(hud, world, military, peace, province);
             if hoi_ui::small_button(
                 "×",
                 Rect::new(close.right() - 34.0, close.y + 7.0, 26.0, 24.0),
@@ -3291,7 +3309,9 @@ async fn main() {
                     }
                 }
                 if is_key_pressed(KeyCode::Escape) {
-                    if hud.detail.take().is_some() {
+                    if hud.war_panel_open {
+                        hud.war_panel_open = false;
+                    } else if hud.detail.take().is_some() {
                     } else if hud.map_palette {
                         hud.map_palette = false;
                     } else if hud.menu {
@@ -3533,7 +3553,16 @@ async fn main() {
                     game,
                     &mut hud,
                     military,
+                    peace_state,
                     &mut army_view,
+                );
+                war_overview_ui::draw(
+                    &mut hud,
+                    world,
+                    military,
+                    peace_state,
+                    research_world,
+                    selected_country.as_deref(),
                 );
                 peace_ui::draw(
                     peace_state,

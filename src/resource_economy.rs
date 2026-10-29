@@ -20,6 +20,15 @@ pub enum TradeLaw {
     ClosedEconomy,
 }
 impl TradeLaw {
+    pub fn from_hoi4_idea(id: &str) -> Option<Self> {
+        match id {
+            "free_trade" => Some(Self::FreeTrade),
+            "export_focus" => Some(Self::ExportFocus),
+            "limited_exports" => Some(Self::LimitedExports),
+            "closed_economy" => Some(Self::ClosedEconomy),
+            _ => None,
+        }
+    }
     pub fn export_percentage(self) -> u32 {
         match self {
             Self::FreeTrade => 80,
@@ -102,10 +111,226 @@ pub struct ResourceEconomy {
     pub convoy_rules: TradeConvoyRules,
     pub laws: BTreeMap<String, TradeLaw>,
     pub deals: Vec<TradeDeal>,
+    /// Opt-in per country; manually placed agreements are never altered by automation.
+    pub automatic_buyers: std::collections::BTreeSet<String>,
+    pub automatic_deals: Vec<TradeDeal>,
     #[serde(default)]
     pub last: BTreeMap<String, CountryResources>,
 }
 impl ResourceEconomy {
+    /// Recompute the cheapest viable *approximate* factory-backed supply plan
+    /// against real equipment-line material demands. We do not invent resources,
+    /// routes, free factories or importers. Manual deals remain higher priority.
+    pub fn plan_automatic_trade(
+        &mut self,
+        world: &World,
+        warfare: &Warfare,
+        production: &crate::production::ProductionState,
+        policies: &BTreeMap<String, CountryConstructionPolicy>,
+        research: &crate::research::ResearchWorld,
+        rules: &crate::production::ProductionRules,
+    ) {
+        self.automatic_deals.clear();
+        if self.automatic_buyers.is_empty() {
+            return;
+        }
+        let mut deposits = BTreeMap::<String, BTreeMap<String, u32>>::new();
+        for (&state_id, resources) in &world.resources_by_state {
+            let Some(tag) = world.state_controller(state_id) else {
+                continue;
+            };
+            let infra = world
+                .states
+                .get(&state_id)
+                .map_or(0, |s| s.economy.infrastructure);
+            let gain = research
+                .country(tag)
+                .map_or(0., |c| c.modifier("resource_gain_efficiency"));
+            for (resource, &amount) in resources {
+                let quantity =
+                    (f64::from(amount) * (1. + f64::from(infra) * 0.2) * (1. + gain).max(0.))
+                        .floor()
+                        .clamp(0., u32::MAX as f64) as u32;
+                let entry = deposits
+                    .entry(tag.into())
+                    .or_default()
+                    .entry(resource.clone())
+                    .or_default();
+                *entry = entry.saturating_add(quantity);
+            }
+        }
+        let mut exports = BTreeMap::<(String, String), u32>::new();
+        for (tag, resources) in &deposits {
+            let percent = self
+                .laws
+                .get(tag)
+                .copied()
+                .unwrap_or_default()
+                .export_percentage();
+            for (resource, &amount) in resources {
+                exports.insert(
+                    (tag.clone(), resource.clone()),
+                    amount.saturating_mul(percent) / 100,
+                );
+            }
+        }
+        for deal in &self.deals {
+            if let Some(q) = exports.get_mut(&(deal.seller.clone(), deal.resource.clone())) {
+                *q = q.saturating_sub(deal.factories.saturating_mul(8));
+            }
+        }
+        let mut route_cache = BTreeMap::<(String, String), bool>::new();
+        for buyer in &self.automatic_buyers {
+            if !world.countries.contains_key(buyer) {
+                continue;
+            }
+            let Some(country) = production.country(buyer) else {
+                continue;
+            };
+            let Some(economy) = world.country_economy(buyer) else {
+                continue;
+            };
+            let mut requirements = BTreeMap::<String, u32>::new();
+            let allocations = country.allocations(economy.military_factories, rules);
+            for (line, allocation) in country.lines.iter().zip(allocations) {
+                if allocation.assigned == 0 || line.blocked_reason.is_some() {
+                    continue;
+                }
+                if let Some(need) = line
+                    .model
+                    .as_ref()
+                    .and_then(|model| warfare.catalogue.equipment_resources.get(model))
+                {
+                    for (resource, &quantity) in need {
+                        let entry = requirements.entry(resource.clone()).or_default();
+                        *entry = entry.saturating_add(quantity.saturating_mul(allocation.assigned));
+                    }
+                }
+            }
+            // Oil fuels the operational fleet and divisions even when it is
+            // not a direct factory ingredient. Do not create synthetic fuel.
+            if warfare
+                .logistics
+                .countries
+                .get(buyer)
+                .is_some_and(|c| c.fuel_capacity > 0. && c.fuel < c.fuel_capacity * 0.25)
+            {
+                requirements
+                    .entry("oil".into())
+                    .and_modify(|n| *n = (*n).max(8))
+                    .or_insert(8);
+            }
+            for (resource, need) in requirements {
+                let own = deposits
+                    .get(buyer)
+                    .and_then(|r| r.get(&resource))
+                    .copied()
+                    .unwrap_or(0);
+                let local_export = self
+                    .laws
+                    .get(buyer)
+                    .copied()
+                    .unwrap_or_default()
+                    .export_percentage();
+                let own_available = own.saturating_sub(own.saturating_mul(local_export) / 100);
+                let manual = self
+                    .deals
+                    .iter()
+                    .filter(|d| d.buyer == *buyer && d.resource == resource)
+                    .map(|d| d.factories.saturating_mul(8))
+                    .sum::<u32>();
+                let mut short = need.saturating_sub(own_available).saturating_sub(manual);
+                if short == 0 {
+                    continue;
+                }
+                let spent_manual = self
+                    .deals
+                    .iter()
+                    .filter(|d| d.buyer == *buyer)
+                    .map(|d| d.factories)
+                    .sum::<u32>();
+                let planned = self
+                    .automatic_deals
+                    .iter()
+                    .filter(|d| d.buyer == *buyer)
+                    .map(|d| d.factories)
+                    .sum::<u32>();
+                let free = crate::construction::country_capacity(
+                    world,
+                    buyer,
+                    policies.get(buyer).copied().unwrap_or_default(),
+                )
+                .map_or(0, |c| c.available)
+                .saturating_sub(spent_manual)
+                .saturating_sub(planned);
+                if free == 0 {
+                    continue;
+                }
+                let mut offers = exports
+                    .iter()
+                    .filter(|((tag, r), stock)| {
+                        tag != buyer && r == &resource && **stock > 0 && !warfare.at_war(buyer, tag)
+                    })
+                    .map(|((tag, _), stock)| (tag.clone(), *stock))
+                    .collect::<Vec<_>>();
+                offers.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+                let mut remaining_factories = free;
+                // At most four source routes per material: predictable mobile cost.
+                for (seller, _) in offers.into_iter().take(12) {
+                    if short == 0 || remaining_factories == 0 {
+                        break;
+                    }
+                    let route_ok = *route_cache
+                        .entry((buyer.clone(), seller.clone()))
+                        .or_insert_with(|| {
+                            !matches!(
+                                trade_routes::find_route(
+                                    world,
+                                    warfare,
+                                    buyer,
+                                    &seller,
+                                    &warfare.logistics.blocked_sea
+                                ),
+                                TradeRoute::Unavailable { .. }
+                            )
+                        });
+                    if !route_ok {
+                        continue;
+                    }
+                    let available = *exports
+                        .get(&(seller.clone(), resource.clone()))
+                        .unwrap_or(&0);
+                    let units = short
+                        .min(available)
+                        .min(remaining_factories.saturating_mul(8));
+                    if units == 0 {
+                        continue;
+                    }
+                    let factories = units.div_ceil(8);
+                    self.automatic_deals.push(TradeDeal {
+                        buyer: buyer.clone(),
+                        seller: seller.clone(),
+                        resource: resource.clone(),
+                        factories,
+                    });
+                    if let Some(n) = exports.get_mut(&(seller, resource.clone())) {
+                        *n = n.saturating_sub(units);
+                    }
+                    short = short.saturating_sub(units);
+                    remaining_factories = remaining_factories.saturating_sub(factories);
+                    if self
+                        .automatic_deals
+                        .iter()
+                        .filter(|d| d.buyer == *buyer && d.resource == resource)
+                        .count()
+                        >= 4
+                    {
+                        break;
+                    }
+                }
+            }
+        }
+    }
     pub fn set_deal(&mut self, world: &World, deal: TradeDeal) -> Result<(), String> {
         if deal.buyer == deal.seller
             || deal.factories == 0
@@ -261,7 +486,7 @@ impl ResourceEconomy {
                 construction::country_capacity(world, tag, policy).map_or(0, |c| c.available),
             );
         }
-        for deal in &self.deals {
+        for deal in self.deals.iter().chain(self.automatic_deals.iter()) {
             let rivals = if deal.buyer < deal.seller {
                 (deal.buyer.clone(), deal.seller.clone())
             } else {
