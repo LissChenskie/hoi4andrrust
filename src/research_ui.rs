@@ -261,15 +261,13 @@ fn draw_slots(
             79.0,
         );
         ui::row_bg(row, slot.active.is_some(), i % 2 == 1);
-        crate::ui_icons::draw(
-            crate::ui_icons::Icon::Research,
-            Rect::new(row.x + 12.0, row.y + 17.0, 37.0, 39.0),
-            if slot.active.is_some() {
-                ui::GOLD
-            } else {
-                ui::MUTED
-            },
-        );
+        let art = Rect::new(row.x+12.,row.y+17.,37.,39.);
+        let pictured = slot.active.as_ref().is_some_and(|a|
+            crate::hoi_assets::draw_technology(&a.tech_id,art));
+        if !pictured {
+            crate::ui_icons::draw(crate::ui_icons::Icon::Research,art,
+                if slot.active.is_some() {ui::GOLD} else {ui::MUTED});
+        }
         let tx = row.x + 64.0;
         let tw = row.w - 105.0;
         if let Some(a) = &slot.active {
@@ -642,13 +640,17 @@ pub fn draw(
             2.0,
             label_color(&tech.id, country, &view.available),
         );
+        let badge = Rect::new(area.x+4.,area.y+4.,(node_h-8.).min(41.),(node_h-8.).min(41.));
+        let pictured = crate::hoi_assets::draw_technology(&tech.id,badge);
+        let text_x = if pictured {badge.right()+5.} else {area.x+5.};
+        let text_w = (area.right()-text_x-4.).max(16.);
         draw_ui_text(
             &fit(
                 &tech.name,
-                area.w - 10.0,
+                text_w,
                 (((if compact { 10.0 } else { 11.0 }) * zoom).max(7.0)).ceil() as u16,
             ),
-            area.x + 5.0,
+            text_x,
             area.y + 17.0 * zoom,
             ((if compact { 10.0 } else { 11.0 }) * zoom).max(7.0),
             ui::TEXT,
@@ -667,10 +669,10 @@ pub fn draw(
                     },
                     format!("{:.0}д.", tech.research_cost * rules.base_tech_cost)
                 ),
-                area.w - 10.0,
+                text_w,
                 (9.0 * zoom).max(7.0).ceil() as u16,
             ),
-            area.x + 5.0,
+            text_x,
             area.y + 33.0 * zoom,
             (9.0 * zoom).max(7.0),
             label_color(&tech.id, country, &view.available),
@@ -679,11 +681,12 @@ pub fn draw(
             hit_area,
             &tech.name,
             &format!(
-                "{}\nID: {} · {}\n{}\nИконка: визуальная заглушка",
+                "{}\nID: {} · {}\n{}\nГрафика: {}",
                 tech.description,
                 tech.id,
                 tech.source,
-                effect_summary(tech)
+                effect_summary(tech),
+                if pictured {"оригинальная"} else {"не импортирована"}
             ),
         );
         if ui::inside(hit_area) {
