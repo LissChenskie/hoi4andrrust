@@ -2,11 +2,12 @@
 //! Only preview images under data/hoi4/ui are loaded; no proprietary images
 //! are committed with this independent Rust project.
 use macroquad::prelude::*;
-use std::{cell::RefCell, collections::HashMap};
+use std::{cell::{Cell,RefCell}, collections::HashMap};
 
 thread_local! {
-    static PREVIEWS: RefCell<HashMap<String,Option<Texture2D>>> =
+    static PREVIEWS: RefCell<HashMap<String,(Option<Texture2D>,u64)>> =
         RefCell::new(HashMap::new());
+    static ACCESS: Cell<u64> = const { Cell::new(0) };
 }
 fn safe(name: &str) -> bool {
     !name.is_empty()
@@ -23,14 +24,25 @@ fn path(kind: &str, key: &str) -> Option<String> {
 }
 fn get(kind: &str, key: &str) -> Option<Texture2D> {
     let file = path(kind, key)?;
+    let tick=ACCESS.with(|access| {
+        let value=access.get().wrapping_add(1);
+        access.set(value);
+        value
+    });
     PREVIEWS.with(|cell| {
         let mut previews = cell.borrow_mut();
-        if let Some(t) = previews.get(&file) {
-            return t.clone();
+        if let Some((texture,access)) = previews.get_mut(&file) {
+            *access=tick;
+            return texture.clone();
         }
-        // Bound GPU memory when visiting thousands of technology nodes.
-        if previews.len() >= 1900 {
-            return None;
+        // Bound GPU memory on older mobile devices. Evict least-recently-used
+        // icons instead of permanently disabling graphics after 320 lookups.
+        if previews.len() >= 320 {
+            if let Some(oldest) = previews.iter()
+                .min_by_key(|(_,(_,last))|*last)
+                .map(|(name,_)|name.clone()) {
+                previews.remove(&oldest);
+            }
         }
         let texture = image::open(&file).ok().and_then(|image| {
             let rgba = image.to_rgba8();
@@ -42,7 +54,7 @@ fn get(kind: &str, key: &str) -> Option<Texture2D> {
             t.set_filter(FilterMode::Linear);
             Some(t)
         });
-        previews.insert(file, texture.clone());
+        previews.insert(file, (texture.clone(),tick));
         texture
     })
 }
