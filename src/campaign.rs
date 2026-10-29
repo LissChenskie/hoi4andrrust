@@ -407,7 +407,8 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
         }
         Ok(())
     }
-    walk(b, cat, &mut BTreeSet::new(), &mut STEPS.clone(), 0)
+    let mut budget = STEPS;
+    walk(b, cat, &mut BTreeSet::new(), &mut budget, 0)
 }
 struct Journal<'a> {
     s: &'a GameSession,
@@ -539,14 +540,32 @@ impl<'a> Journal<'a> {
                     _ => return Err("Invalid always predicate".into()),
                 },
                 "has_global_flag" => self.globals.contains(atom(e)?),
+                "tag" | "original_tag" => {
+                    let tag = self.tag(c)?;
+                    let raw = atom(e)?;
+                    let target = if ["ROOT", "THIS", "FROM", "PREV"].contains(&raw) {
+                        match self.scope(raw, c)? {
+                            Scope::Country(t) => t,
+                            _ => return Err("Country comparison target required".into()),
+                        }
+                    } else {
+                        raw.to_owned()
+                    };
+                    if e.key == "tag" {
+                        tag == target
+                    } else {
+                        self.research(&tag).context.original_tag == target
+                    }
+                }
                 "has_state_flag" => {
+                    let flag = atom(e)?;
                     let Scope::State(id) = c.scope else {
                         return Err("State required".into());
                     };
                     self.state
                         .state_flags
                         .get(&id)
-                        .is_some_and(|f| f.contains(e.atom().unwrap_or("")))
+                        .is_some_and(|f| f.contains(flag))
                 }
                 "political_power" | "stability" | "war_support" => {
                     let t = self.tag(c)?;

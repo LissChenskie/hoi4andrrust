@@ -22,7 +22,7 @@ impl Share {
         v
     }
     fn float(self, n: &mut f64) -> f64 {
-        let v = *n * f64::from(self.numerator) / f64::from(self.denominator);
+        let v = *n * (f64::from(self.numerator) / f64::from(self.denominator));
         *n -= v;
         v
     }
@@ -406,7 +406,12 @@ impl GameSession {
             });
         }
         self.campaign.countries.insert(b.clone(), politics);
-        self.construction.entry(b.clone()).or_default();
+        let inherited = self.construction.get(a).map(|c| (c.policy, c.law));
+        let construction = self.construction.entry(b.clone()).or_default();
+        if let Some((policy, law)) = inherited {
+            construction.policy = policy;
+            construction.law = law;
+        }
         if let Some(law) = self.resources.laws.get(a).copied() {
             self.resources.laws.insert(b.clone(), law);
         }
