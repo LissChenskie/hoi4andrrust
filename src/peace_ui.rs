@@ -241,11 +241,18 @@ pub fn draw(
     let button_width = (wide - 30.) / 2.;
     if ui::small_button(
         "Отменить последнее",
-        Rect::new(x + 12., bottom + 24., button_width, 38.), false,
+        Rect::new(x + 12., bottom + 24., button_width, 38.),
+        false,
     ) {
-        view.notice = system.withdraw_latest_demand(c.id, player)
-            .map(|d|format!("Требование по штату {} отменено, {} очков возвращено",d.state,d.price))
-            .unwrap_or_else(|err|err);
+        view.notice = system
+            .withdraw_latest_demand(c.id, player)
+            .map(|d| {
+                format!(
+                    "Требование по штату {} отменено, {} очков возвращено",
+                    d.state, d.price
+                )
+            })
+            .unwrap_or_else(|err| err);
     }
     if ui::small_button(
         "Подписать мир",
