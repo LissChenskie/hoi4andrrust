@@ -23,6 +23,7 @@ pub struct DesignerView {
     support: bool,
     regimental: bool,
     picker: bool,
+    picker_scroll: usize,
 }
 fn unique_name(w: &Warfare, tag: &str, base: &str) -> String {
     let army = &w.countries[tag];
@@ -73,7 +74,7 @@ pub fn draw(
     let x = r.x;
     let width = r.w;
     let mut y = r.y;
-    let third = (width - 8.0) / 3.0;
+    let third = (width - 12.0) / 4.0;
     if ui::small_button("НОВЫЙ", Rect::new(x, y, third, 26.0), false) {
         v.draft = Some(DivisionTemplate {
             name: unique_name(w, tag, "Новый шаблон"),
@@ -98,9 +99,22 @@ pub fn draw(
             }
         }
     }
+    if ui::small_button("ОТКАТ",Rect::new(x + 2.0 * (third + 4.),y,third,26.),false) {
+        if let Some(saved) = v.editing.as_ref().and_then(|id|w.countries[tag].templates.get(id)) {
+            v.draft = Some(saved.clone());
+            *notice = "Несохранённые изменения отменены".into();
+        } else {
+            v.draft = Some(DivisionTemplate {
+                name: v.draft.as_ref().map_or("Новый шаблон".into(),|d|d.name.clone()),
+                icon: "infantry".into(), ..Default::default()
+            });
+            *notice = "Черновик очищен".into();
+        }
+        v.picker = false;
+    }
     if ui::small_button(
         "ЗНАЧОК",
-        Rect::new(x + 2.0 * (third + 4.0), y, third, 26.0),
+        Rect::new(x + 3.0 * (third + 4.0), y, third, 26.0),
         false,
     ) {
         let t = v.draft.as_mut().unwrap();
@@ -171,208 +185,26 @@ pub fn draw(
     let body = Rect::new(x, y, width, (r.bottom() - y - 70.0).max(1.0));
     let draft = v.draft.as_ref().unwrap().clone();
     let preview = w.catalogue.aggregate(&draft, &modifiers, None);
-    let mut total = if v.page == 0 { 440.0 } else { 560.0 };
-    if v.picker {
-        total = w.catalogue.units.len() as f32 * 35.0;
-    }
-    if ui::inside(body) {
+    let mut total = if v.page == 0 { 580.0 } else { 650.0 };
+    if ui::inside(body) && (v.page != 0 || !v.picker) {
         let (_, wheel) = mouse_wheel();
-        v.scroll = (v.scroll - wheel * 32.0).clamp(0.0, (total - body.h).max(0.0));
-        if is_mouse_button_pressed(MouseButton::Left) && !touches().is_empty() {
-            v.drag = Some(vec2(mouse_position().0, mouse_position().1));
-        }
+        v.scroll = (v.scroll - wheel * 36.).clamp(0.,(total - body.h).max(0.));
+    }
+    if ui::inside(body) && is_mouse_button_pressed(MouseButton::Left)
+        && !touches().is_empty() {
+        v.drag = Some(vec2(mouse_position().0, mouse_position().1));
     }
     if let Some(last) = v.drag {
         if is_mouse_button_down(MouseButton::Left) {
             let current = vec2(mouse_position().0, mouse_position().1);
-            v.scroll = (v.scroll + last.y - current.y).clamp(0.0, (total - body.h).max(0.0));
+            v.scroll = (v.scroll + last.y - current.y).clamp(0.,(total-body.h).max(0.));
             v.drag = Some(current);
-        } else {
-            v.drag = None;
-        }
+        } else { v.drag = None; }
     }
     let clip = ui::clip(body);
     let top = body.y - v.scroll;
-    if v.picker {
-        let options: Vec<_> = w
-            .catalogue
-            .units
-            .values()
-            .filter(|u| {
-                if v.support {
-                    u.group == "support"
-                        && if v.regimental {
-                            u.regimental
-                        } else {
-                            u.divisional
-                        }
-                } else {
-                    u.group != "support"
-                }
-            })
-            .collect();
-        if ui::small_button("← Назад к сетке", Rect::new(x, top, width, 28.0), false) {
-            v.picker = false;
-            v.scroll = 0.0;
-        }
-        for (i, u) in options.iter().enumerate() {
-            let row = Rect::new(x, top + 34.0 + i as f32 * 35.0, width, 30.0);
-            if !row.overlaps(&body) {
-                continue;
-            }
-            let mut changed = draft.clone();
-            if v.support {
-                let regiment = v.regimental.then_some(v.slot.0);
-                changed
-                    .support
-                    .retain(|s| !(s.regiment == regiment && s.row == v.slot.1));
-                changed.support.push(SupportSlot {
-                    unit: u.id.clone(),
-                    regiment,
-                    row: v.slot.1,
-                });
-            } else {
-                changed
-                    .line
-                    .retain(|s| !(s.column == v.slot.0 && s.row == v.slot.1));
-                changed.line.push(BattalionSlot {
-                    unit: u.id.clone(),
-                    column: v.slot.0,
-                    row: v.slot.1,
-                });
-            }
-            match w.catalogue.validate_template(&changed, &modifiers, true) {
-                Ok(()) => {
-                    if ui::small_button(w.catalogue.label(&u.id), row, false) {
-                        v.draft = Some(changed);
-                        v.picker = false;
-                        v.scroll = 0.0;
-                    }
-                }
-                Err(reason) => ui::disabled(w.catalogue.label(&u.id), row, &reason),
-            }
-        }
-    } else if v.page == 0 {
-        let columns = w.catalogue.rules.regiment_columns.min(12);
-        let rows = w.catalogue.rules.regiment_rows.min(12);
-        let supports = w.catalogue.rules.support_slots.min(12);
-        let cell = ((width - 8.0) / (columns + 1) as f32).min(42.0);
-        let start = top + 21.0;
-        ui::label(
-            "Боевые полки",
-            Rect::new(x, top, width, 20.0),
-            12.0,
-            ui::GOLD,
-        );
-        for c in 0..columns {
-            for row in 0..rows {
-                let id = draft
-                    .line
-                    .iter()
-                    .find(|s| s.column == c && s.row == row)
-                    .map_or("+", |s| s.unit.as_str());
-                if ui::small_button(
-                    w.catalogue.label(id),
-                    Rect::new(
-                        x + c as f32 * cell,
-                        start + row as f32 * cell,
-                        cell - 2.0,
-                        cell - 2.0,
-                    ),
-                    !v.support && v.slot == (c, row),
-                ) {
-                    v.slot = (c, row);
-                    v.support = false;
-                    v.regimental = false;
-                    v.picker = true;
-                    v.scroll = 0.0;
-                }
-            }
-        }
-        for row in 0..supports {
-            let id = draft
-                .support
-                .iter()
-                .find(|s| s.regiment.is_none() && s.row == row)
-                .map_or("+", |s| s.unit.as_str());
-            if ui::small_button(
-                w.catalogue.label(id),
-                Rect::new(
-                    x + columns as f32 * cell + 7.0,
-                    start + row as f32 * cell,
-                    cell - 2.0,
-                    cell - 2.0,
-                ),
-                v.support && !v.regimental && v.slot.1 == row,
-            ) {
-                v.slot.1 = row;
-                v.support = true;
-                v.regimental = false;
-                v.picker = true;
-                v.scroll = 0.0;
-            }
-        }
-        let reg_y = start + rows.max(supports) as f32 * cell + 9.0;
-        ui::label(
-            "Полковая поддержка",
-            Rect::new(x, reg_y, width, 20.0),
-            12.0,
-            ui::GOLD,
-        );
-        if w.catalogue.units.values().any(|u| u.regimental) {
-            for c in 0..columns {
-                let id = draft
-                    .support
-                    .iter()
-                    .find(|s| s.regiment == Some(c) && s.row == 0)
-                    .map_or("+", |s| s.unit.as_str());
-                if ui::small_button(
-                    w.catalogue.label(id),
-                    Rect::new(x + c as f32 * cell, reg_y + 25.0, cell - 2.0, cell - 2.0),
-                    v.regimental && v.slot == (c, 0),
-                ) {
-                    v.slot = (c, 0);
-                    v.support = true;
-                    v.regimental = true;
-                    v.picker = true;
-                    v.scroll = 0.0;
-                }
-            }
-        } else {
-            ui::disabled(
-                "Нет импортированных полковых рот",
-                Rect::new(x, reg_y + 24.0, width, 29.0),
-                "Нужны определения Regimental Support целевой версии",
-            );
-        }
-        let controls = reg_y + cell + 34.0;
-        if ui::small_button(
-            "Убрать выбранный компонент",
-            Rect::new(x, controls, width, 28.0),
-            false,
-        ) {
-            let t = v.draft.as_mut().unwrap();
-            if v.support {
-                let regiment = v.regimental.then_some(v.slot.0);
-                t.support
-                    .retain(|s| !(s.regiment == regiment && s.row == v.slot.1));
-            } else {
-                t.line
-                    .retain(|s| !(s.column == v.slot.0 && s.row == v.slot.1));
-            }
-        }
-        let role = draft.division_type.as_deref().unwrap_or("по составу");
-        if ui::small_button(
-            &format!("Тип: {}", w.catalogue.label(role)),
-            Rect::new(x, controls + 35.0, width, 28.0),
-            false,
-        ) {
-            v.draft.as_mut().unwrap().division_type = draft
-                .line
-                .iter()
-                .find(|s| s.column == v.slot.0 && s.row == v.slot.1)
-                .map(|s| s.unit.clone());
-        }
+    if v.page == 0 {
+        draw_composition(w, &draft, &modifiers, &preview, v, body, notice);
     } else {
         match &preview {
             Err(error) => ui::paragraph(error, Rect::new(x, top, width, 100.0), 13.0, ui::GOLD),
