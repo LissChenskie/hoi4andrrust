@@ -164,6 +164,29 @@ def main():
                 target = out/category/(key+".png")
                 if write_preview(source,target,frames):
                     counts["art_files"] += 1
+    # Prefer explicit icons declared by real technology/equipment definitions.
+    # A technology name is not always identical to its GFX sprite name.
+    for directory, folder_names, target_category in [
+        (game/"common"/"technologies", {"technologies"}, "research"),
+        (game/"common"/"units"/"equipment", {"equipments"}, "equipment"),
+    ]:
+        if not directory.is_dir(): continue
+        for filename in sorted(directory.rglob("*.txt")):
+            try: content = filename.read_text(encoding="utf-8-sig",errors="replace")
+            except OSError: continue
+            for container, body in blocks(content):
+                definitions = blocks(body) if container in folder_names else [(container,body)]
+                for object_id, definition in definitions:
+                    if not SAFE.fullmatch(object_id): continue
+                    reference = field(definition,"icon") or field(definition,"picture")
+                    if not reference: continue
+                    # HOI4 picture IDs sometimes omit the GFX_ prefix.
+                    options = [reference, "GFX_"+reference]
+                    matched = next((sprites[k] for k in options if k in sprites), None)
+                    if matched:
+                        sprite_file, frames, _ = matched
+                        if write_preview(sprite_file,out/target_category/(object_id+".png"),frames):
+                            counts["explicit_icons"] += 1
     # Flags: country tags and special scripted flag variants are kept by name.
     flag_dir = game/"gfx"/"flags"
     for path in sorted(flag_dir.glob("*")) if flag_dir.is_dir() else []:
