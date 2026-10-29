@@ -13,6 +13,8 @@ pub struct PeaceView {
     pub selected_state: Option<u32>,
     pub selected_states: BTreeSet<u32>,
     pub selected_recipient: usize,
+    /// Keep the selected puppet country when selecting further core states.
+    pub selected_recipient_country: Option<String>,
     pub scroll: usize,
     pub notice: String,
     pub last_conference: Option<u64>,
@@ -152,7 +154,6 @@ pub fn draw(
                 view.selected_states.insert(id);
             }
             view.selected_state = view.selected_states.iter().next().copied();
-            view.selected_recipient = 0;
         }
     }
     let rx = x + list_width + 2.;
@@ -167,7 +168,10 @@ pub fn draw(
             .collect::<Vec<_>>();
         recipients.sort();
         if !recipients.is_empty() {
-            view.selected_recipient %= recipients.len();
+            view.selected_recipient = view.selected_recipient_country.as_ref()
+                .and_then(|tag| recipients.iter().position(|r|r==tag))
+                .unwrap_or(view.selected_recipient.min(recipients.len()-1));
+            view.selected_recipient_country=recipients.get(view.selected_recipient).cloned();
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
         ui::label(
@@ -186,7 +190,12 @@ pub fn draw(
             ui::TEXT,
         );
         let note = match recipient.as_deref() {
-            Some(t) => format!("Получатель: {t}"),
+            Some(t) => {
+                let puppet = system.subjects.get(t).is_some()
+                    || c.demands.iter().any(|d|matches!(&d.action,
+                        PeaceAction::Puppet{country} if country==t));
+                format!("Получатель: {t}{}", if puppet { " · марионетка" } else { "" })
+            }
             None => "Нет core-получателя".into(),
         };
         ui::label(&note, Rect::new(rx, y + 175., rw, 25.), 12., ui::MUTED);
@@ -211,6 +220,7 @@ pub fn draw(
             view.selected_recipient = (view.selected_recipient + 1) % recipients.len();
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
+        view.selected_recipient_country = recipient.clone();
         let choices = [
             ("Аннексировать", Some(PeaceAction::Annex)),
             (
@@ -266,9 +276,6 @@ pub fn draw(
                         .submit_demand_batch(world, c.id, player, &targets, action)
                         .map(|n| format!("Штатов {} · -{n} очков", targets.len()))
                         .unwrap_or_else(|e| e);
-                    view.selected_states.retain(|id| {
-                        !targets.contains(id) || !c.demands.iter().any(|d| d.state == *id)
-                    });
                     view.selected_states.clear();
                     view.selected_state = None;
                 }
