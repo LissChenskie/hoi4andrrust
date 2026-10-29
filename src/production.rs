@@ -217,6 +217,44 @@ pub struct CountryProduction {
 }
 
 impl CountryProduction {
+    pub(crate) fn can_absorb(&self, p: &Self) -> bool {
+        self.next_id.checked_add(p.lines.len() as u64).is_some()
+            && p.model_stockpile.iter().all(|(k, n)| {
+                self.model_stockpile
+                    .get(k)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(*n)
+                    .is_some()
+            })
+            && p.stockpile.iter().all(|(k, n)| {
+                self.stockpile
+                    .get(k)
+                    .copied()
+                    .unwrap_or(0)
+                    .checked_add(*n)
+                    .is_some()
+            })
+    }
+    pub(crate) fn absorb(&mut self, p: Self) {
+        for (k, n) in p.model_stockpile {
+            *self.model_stockpile.entry(k).or_default() += n;
+        }
+        for (k, n) in p.stockpile {
+            *self.stockpile.entry(k).or_default() += n;
+        }
+        for mut l in p.lines {
+            let old = l.id;
+            self.next_id += 1;
+            l.id = self.next_id;
+            if let Some(f) = p.last_day_resource_factors.get(&old) {
+                self.last_day_resource_factors.insert(l.id, *f);
+            }
+            self.lines.push(l);
+        }
+        self.starting_data_applied = true;
+    }
+
     pub fn create(&mut self, equipment: Equipment, requested: u32, rules: &ProductionRules) -> u64 {
         self.next_id += 1;
         let id = self.next_id;

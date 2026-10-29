@@ -118,12 +118,8 @@ impl GameSession {
             );
         }
         let s = &mut data.session;
-        if s.clock.hour >= 24
-            || s.clock.date.month == 0
-            || s.clock.date.month > 12
-            || s.clock.date.day == 0
-            || s.clock.date.day > 31
-        {
+        s.campaign.validate(&s.world, s.clock.elapsed_hours)?;
+        if s.clock.hour >= 24 || !s.clock.date.is_valid() {
             return Err("Повреждён игровой календарь".into());
         }
         if s.world.provinces.keys().ne(self.world.provinces.keys())
@@ -173,10 +169,17 @@ impl GameSession {
             }
         }
         s.military.refresh_division_equipment();
-        s.military.logistics.validate(&self.world)?;
-        s.military.air.validate(&self.world, &s.military)?;
-        s.military.air.reindex();
         s.world.geography = std::mem::take(&mut self.world.geography);
+        let result = s
+            .military
+            .logistics
+            .validate(&s.world)
+            .and_then(|_| s.military.air.validate(&s.world, &s.military));
+        if let Err(e) = result {
+            self.world.geography = std::mem::take(&mut s.world.geography);
+            return Err(e);
+        }
+        s.military.air.reindex();
         s.military.command.data = self.military.command.data.clone();
         s.military.fronts.rebuild_after_restore(&s.world);
         let mut plans = std::mem::take(&mut s.military.plans);

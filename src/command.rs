@@ -193,6 +193,9 @@ pub struct CommandState {
     next_id: u64,
 }
 impl CommandState {
+    pub(crate) fn can_allocate(&self, n: u64) -> bool {
+        self.next_id.checked_add(n).is_some()
+    }
     fn id(&mut self) -> u64 {
         self.next_id = self.next_id.checked_add(1).expect("command ID exhausted");
         self.next_id
