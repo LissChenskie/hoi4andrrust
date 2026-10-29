@@ -692,10 +692,15 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                         .is_some_and(|c| c.country == tag)
                 }) {
                     let portrait = rows.rect(72.);
-                    if !crate::hoi_assets::portrait(id,
-                        Rect::new(portrait.x+6.,portrait.y+6.,48.,54.)) {
-                        crate::ui_icons::draw(crate::ui_icons::Icon::Officer,
-                            Rect::new(portrait.x+6.,portrait.y+6.,48.,54.),ui::GOLD);
+                    if !crate::hoi_assets::portrait(
+                        id,
+                        Rect::new(portrait.x + 6., portrait.y + 6., 48., 54.),
+                    ) {
+                        crate::ui_icons::draw(
+                            crate::ui_icons::Icon::Officer,
+                            Rect::new(portrait.x + 6., portrait.y + 6., 48., 54.),
+                            ui::GOLD,
+                        );
                     }
                     ui::paragraph(
                         &c.name,
