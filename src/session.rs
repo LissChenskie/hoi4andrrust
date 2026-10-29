@@ -35,6 +35,8 @@ pub struct GameSession {
     pub resources: ResourceEconomy,
     pub research: ResearchWorld,
     pub military: crate::warfare::Warfare,
+    #[serde(default)]
+    pub peace: crate::peace::PeaceSystem,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -66,6 +68,7 @@ impl GameSession {
             resources: ResourceEconomy::default(),
             research: ResearchWorld::default(),
             military: crate::warfare::Warfare::default(),
+            peace: crate::peace::PeaceSystem::default(),
         }
     }
 
@@ -320,6 +323,7 @@ impl GameSession {
         naval.tick_naval_combat(&self.world, &mut self.military, self.clock.elapsed_hours);
         naval.tick_voyages(&mut self.military, &mut self.world);
         self.military.naval = naval;
+        self.peace.tick(&mut self.world, &mut self.military, &self.research, self.clock.elapsed_hours);
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();
         }
