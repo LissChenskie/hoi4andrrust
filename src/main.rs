@@ -2579,6 +2579,46 @@ fn draw_map_viewer(
                 }
             }
         }
+        // Use the imported province geometry, naval-base levels and air-base
+        // levels for overlays. These are map labels, not new controls or
+        // additional simulated assets. Cap draw calls for mobile GPUs.
+        if map.zoom >= 3.0 {
+            let mut shown = 0usize;
+            for (&province, condition) in &military.conditions {
+                if condition.naval_base == 0 || shown >= 110 { continue; }
+                let Some(center) = world.geography.provinces.get(&province)
+                    .and_then(|p| p.center) else { continue };
+                let (cx,cy) = (center.x as f32,center.y as f32);
+                if !source_rect.contains(vec2(cx,cy)) { continue; }
+                let x = rect.x + (cx - source_rect.x) / source_rect.w * rect.w;
+                let y = rect.y + (cy - source_rect.y) / source_rect.h * rect.h;
+                let ships = military.naval.task_forces.values()
+                    .filter(|f| f.base == province).map(|f| f.ships.len()).sum::<usize>();
+                draw_rectangle(x-10.,y-7.,ships.gt(&0).then_some(42.).unwrap_or(27.),16.,
+                    Color::from_rgba(27,66,92,235));
+                draw_ui_text(&format!("П{}{}",condition.naval_base,
+                    if ships>0 {format!(":{ships}")} else {String::new()}),
+                    x-8.,y+5.,10.,WHITE);
+                shown+=1;
+            }
+            for (&province,&level) in &military.air.bases {
+                if level==0 || shown>=220 {continue;}
+                let Some(center) = world.geography.provinces.get(&province)
+                    .and_then(|p|p.center) else {continue};
+                let (cx,cy)=(center.x as f32,center.y as f32);
+                if !source_rect.contains(vec2(cx,cy)) {continue;}
+                let x=rect.x+(cx-source_rect.x)/source_rect.w*rect.w;
+                let y=rect.y+(cy-source_rect.y)/source_rect.h*rect.h;
+                let planes = military.air.wings.values()
+                    .filter(|w|w.base==province).map(|w|w.planes).sum::<u32>();
+                draw_rectangle(x+7.,y-19.,if planes>0 {50.} else {27.},16.,
+                    Color::from_rgba(61,71,95,235));
+                draw_ui_text(&format!("А{level}{}",
+                    if planes>0 {format!(":{planes}")} else {String::new()}),
+                    x+9.,y-7.,10.,WHITE);
+                shown+=1;
+            }
+        }
         if map.map_mode == MapMode::Resources {
             // HOI4-like resource badges are drawn in map space, so they follow pan and zoom.
             let scale = (map.zoom.sqrt() * 0.85).clamp(0.75, 1.35);
