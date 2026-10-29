@@ -32,6 +32,7 @@ mod battle_ui;
 mod frontline;
 mod history_conditions;
 mod hoi_ui;
+mod hoi_assets;
 mod land_combat;
 mod map_borders;
 mod map_camera;
