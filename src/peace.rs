@@ -616,6 +616,9 @@ impl PeaceSystem {
                 }
             }
         }
+        if matches!(&action, PeaceAction::Puppet { country } if country == claimant) {
+            return Err("A country cannot establish itself as its own puppet".into());
+        }
         let price = self.demand_price(world, state, claimant, &action)?;
         let c = self.conferences.get_mut(&conference_id).unwrap();
         let remaining = c
