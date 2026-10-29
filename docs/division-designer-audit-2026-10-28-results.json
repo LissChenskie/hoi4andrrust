@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "audit_date": "2026-10-28",
+  "report_saved": "2026-10-29",
+  "repository": "LissChenskie/hoi4andrrust",
+  "source_commit": "9f83d7c182024c39b49a156dde0f8d516d8f3074",
+  "source_tree": "050cf2540f9ab8ceb7bf685f04cdb56aaae8360a",
+  "requested_profile": "HOI4 1.19.3; exact parity unverified",
+  "gameplay_code_modified": false,
+  "independent_hoi4_golden_data": false,
+  "android_device_test": false,
+  "checks": {
+    "fmt": {
+      "exit_code": 0
+    },
+    "baseline": {
+      "exit_code": 0,
+      "passed": 379,
+      "failed": 0,
+      "groups": {
+        "library": 65,
+        "game": 304,
+        "exporter": 3,
+        "integration": 7
+      }
+    },
+    "diagnostics": {
+      "exit_code": 0,
+      "controls": 9,
+      "reproductions": 12,
+      "passed": 21,
+      "failed": 0,
+      "warning": "A reproduction PASS confirms the issue, not correctness."
+    }
+  },
+  "findings": [
+    {
+      "id": "DD1",
+      "priority": "P0",
+      "kind": "defect",
+      "title": "Новый пустой архетип обнуляет HP всей дивизии",
+      "file": "src/warfare.rs",
+      "line": 1612,
+      "observed": {
+        "hp_before": 25,
+        "hp_after": 0,
+        "men": 1000,
+        "rifles": 100,
+        "fighting": false
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD2",
+      "priority": "P1",
+      "kind": "defect",
+      "title": "Пополнение игнорирует предпочитаемую модель",
+      "file": "src/warfare.rs",
+      "line": 1546,
+      "observed": {
+        "preferred": "rifle_1",
+        "delivered": {
+          "rifle_2": 100
+        }
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD3",
+      "priority": "P1",
+      "kind": "resolver_inconsistency",
+      "title": "Бонус скорости техники не доходит до дивизии",
+      "file": "src/military_model.rs",
+      "line": 633,
+      "observed": {
+        "resolved_speed": 18,
+        "division_speed": 12
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD4",
+      "priority": "P1",
+      "kind": "unimplemented_support_effect",
+      "title": "Maintenance reliability_factor не применяется",
+      "file": "src/military_model.rs",
+      "line": 640,
+      "observed": {
+        "support_factor": 0.25,
+        "reliability_before": 0.8,
+        "reliability_after": 0.8
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD5",
+      "priority": "P1",
+      "kind": "unimplemented_modifier",
+      "title": "training_time_army_factor не меняет подготовку",
+      "file": "src/recruitment.rs",
+      "line": 55,
+      "observed": {
+        "modifier": -0.5,
+        "required_hours": 2160
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD6",
+      "priority": "P1",
+      "kind": "import_loss",
+      "title": "Технологический terrain modifier теряется при импорте",
+      "file": "src/military_data.rs",
+      "line": 446,
+      "observed": {
+        "imported_engineer_effect": {},
+        "forest_attack": 0.1
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD7",
+      "priority": "P1",
+      "kind": "identity_defect",
+      "title": "Набор после переименования воскрешает старый шаблон",
+      "file": "src/recruitment.rs",
+      "line": 287,
+      "observed": {
+        "templates_after_deployment": [
+          "Renamed",
+          "T"
+        ]
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD8",
+      "priority": "P1",
+      "kind": "resolver_inconsistency",
+      "title": "Стоимость IC использует сырые значения",
+      "file": "src/military_model.rs",
+      "line": 643,
+      "observed": {
+        "resolved_unit_ic": 0.5,
+        "template_ic": 100
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD9",
+      "priority": "P1",
+      "kind": "diff_defect",
+      "title": "Порядок Vec поддержки ошибочно считается изменением состава",
+      "file": "src/military_model.rs",
+      "line": 497,
+      "observed": {
+        "same_composition": true,
+        "error": "Regimental Support edit cost was not imported for this version"
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD10",
+      "priority": "P1",
+      "kind": "policy_inconsistency",
+      "title": "Save общего шаблона обходит ограничение Apply для боя",
+      "file": "src/warfare.rs",
+      "line": 1136,
+      "observed": {
+        "battle": 123,
+        "width_before": 2,
+        "width_after": 4
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD11",
+      "priority": "P1",
+      "kind": "ui_api_mismatch",
+      "title": "Применение при несохранённом черновике берёт старый состав",
+      "file": "src/division_designer_ui.rs",
+      "line": 528,
+      "observed": {
+        "preview_width": 4,
+        "applied_width": 2,
+        "physical_ui_test": false
+      },
+      "status": "reproduced"
+    },
+    {
+      "id": "DD12",
+      "priority": "P2",
+      "kind": "ui_model_mismatch",
+      "title": "Модель принимает невидимую в UI строку полковой поддержки",
+      "file": "src/division_designer_ui.rs",
+      "line": 327,
+      "observed": {
+        "accepted_row": 2,
+        "displayed_row": 0,
+        "physical_ui_test": false
+      },
+      "status": "reproduced"
+    }
+  ],
+  "resolved_preliminary": [
+    {
+      "id": "DD13",
+      "status": "fixed_upstream_before_final_audit",
+      "new_people": 990,
+      "total_people": 1000,
+      "experience": "Green",
+      "xp": 0.009
+    }
+  ],
+  "toolchain": {
+    "rust": "1.99.1",
+    "jobs": 1,
+    "optimization": 0,
+    "debug": 0,
+    "codegen_units": 1,
+    "incremental": false
+  },
+  "cargo_lock_sha256": "1794e46e2a170bed76ef2ea249e90b6572f3e1a5be6d05c6bc58c019741a0983",
+  "exact_hoi4_parity_score": null
+}
