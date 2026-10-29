@@ -254,6 +254,7 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
                     air.rules = r;
                 }
                 for (tag, mut c) in profile.countries {
+                    c.starting_fuel_explicit = true;
                     if c.capital.is_none() {
                         c.capital = logistics.countries.get(&tag).and_then(|c| c.capital);
                     }
