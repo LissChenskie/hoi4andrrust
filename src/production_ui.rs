@@ -246,10 +246,18 @@ pub fn draw(
         let allocated = allocations[index].assigned;
         let icon_x = row.x + 6.0;
         let image_rect = Rect::new(icon_x, row.y + 9.0, 42.0, 42.0);
-        let shown = line.model.as_deref()
-            .is_some_and(|id| crate::hoi_assets::draw_equipment(id,image_rect));
+        let shown = line
+            .model
+            .as_deref()
+            .is_some_and(|id| crate::hoi_assets::draw_equipment(id, image_rect));
         if !shown {
-            icon(line.equipment,icon_x,row.y+9.0,42.0,view.selected_line==Some(line.id));
+            icon(
+                line.equipment,
+                icon_x,
+                row.y + 9.0,
+                42.0,
+                view.selected_line == Some(line.id),
+            );
         }
         if let Some(reason) = &line.blocked_reason {
             ui::tooltip(row, "Производство приостановлено", reason);
@@ -562,12 +570,17 @@ pub fn draw(
                         "Не изучена, модульная или запрещена текущими игровыми определениями",
                     );
                 }
-                let picture = Rect::new(row.x+4.,row.y+3.,36.,row.h-6.);
-                if !crate::hoi_assets::draw_equipment(&model.id,picture) {
-                    crate::division_icons::draw(&model.archetype,&model.archetype,picture);
+                let picture = Rect::new(row.x + 4., row.y + 3., 36., row.h - 6.);
+                if !crate::hoi_assets::draw_equipment(&model.id, picture) {
+                    crate::division_icons::draw(&model.archetype, &model.archetype, picture);
                 }
                 if available {
-                    ui::label(&label,Rect::new(row.x+45.,row.y+7.,row.w-49.,25.),12.,ui::TEXT);
+                    ui::label(
+                        &label,
+                        Rect::new(row.x + 45., row.y + 7., row.w - 49., 25.),
+                        12.,
+                        ui::TEXT,
+                    );
                 }
                 if let Some(resources) = military.catalogue.equipment_resources.get(&model.id) {
                     let detail = resources
