@@ -307,6 +307,18 @@ fn effects(
                     oobs.push(id.into());
                 }
             }
+            "set_naval_oob" | "load_naval_oob" => {
+                if let Some(id) = entry.atom() {
+                    if entry.key == "set_naval_oob" { army.history_naval_oobs.clear(); }
+                    army.history_naval_oobs.push(id.into());
+                }
+            }
+            "set_air_oob" | "load_air_oob" => {
+                if let Some(id) = entry.atom() {
+                    if entry.key == "set_air_oob" { army.history_air_oobs.clear(); }
+                    army.history_air_oobs.push(id.into());
+                }
+            }
             "set_country_flag" => {
                 if let Some(flag) = entry.atom() {
                     army.modifiers.flags.insert(flag.into());
@@ -967,6 +979,8 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
                 tag,
                 serde_json::json!({
                     "history_source": army.history_source,
+                    "naval_oobs": army.history_naval_oobs,
+                    "air_oobs": army.history_air_oobs,
                     "core_population": army.core_population,
                     "recruitable_total": army.recruitable_total,
                     "available_manpower": army.manpower_pool,
