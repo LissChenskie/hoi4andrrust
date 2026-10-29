@@ -66,8 +66,8 @@ mod spatial_grid;
 mod state;
 mod ui_icons;
 mod ui_layout;
-mod warfare;
 mod war_overview_ui;
+mod warfare;
 mod world;
 
 use construction::{BuildingRules, ConstructionQueues};
@@ -3557,8 +3557,12 @@ async fn main() {
                     &mut army_view,
                 );
                 war_overview_ui::draw(
-                    &mut hud, world, military, peace_state,
-                    research_world, selected_country.as_deref(),
+                    &mut hud,
+                    world,
+                    military,
+                    peace_state,
+                    research_world,
+                    selected_country.as_deref(),
                 );
                 peace_ui::draw(
                     peace_state,
