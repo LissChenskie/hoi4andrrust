@@ -651,6 +651,7 @@ pub fn initialize(
             }
         }
         for id in ideas {
+            warfare.countries.get_mut(&tag).unwrap().modifiers.ideas.insert(id.clone());
             if let Some(values) = idea_modifiers.get(&id) {
                 for (k, v) in values {
                     *warfare
