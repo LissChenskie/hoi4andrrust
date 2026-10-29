@@ -64,7 +64,7 @@ fn slot_button(
     let selected = v.slot == position && v.support == support
         && v.regimental == regimental && v.picker;
     if !enabled {
-        ui::disabled("🔒",cell,
+        ui::disabled("—",cell,
             "Слот не открыт текущим количеством батальонов или правилами игры");
         return;
     }
@@ -244,7 +244,7 @@ fn draw_composition(
         if wide {(left.right()-sx).max(26.)}else{left.w});
     for row in 0..5 {
         let r=if wide {
-            Rect::new(sx,sy+row as f32*step,(left.right()-sx-2.).max(24.),cell)
+            Rect::new(sx,sy+row as f32*step,(left.right()-sx-2.).min(84.).max(24.),cell)
         } else {
             Rect::new(sx+row as f32*step,sy,cell,cell)
         };
@@ -424,7 +424,7 @@ pub fn draw(
     let body = Rect::new(x, y, width, (r.bottom() - y - 70.0).max(1.0));
     let draft = v.draft.as_ref().unwrap().clone();
     let preview = w.catalogue.aggregate(&draft, &modifiers, None);
-    let mut total = if v.page == 0 { 580.0 } else { 650.0 };
+    let total = if v.page == 0 { 580.0 } else { 650.0 };
     if ui::inside(body) && (v.page != 0 || !v.picker) {
         let (_, wheel) = mouse_wheel();
         v.scroll = (v.scroll - wheel * 36.).clamp(0.,(total - body.h).max(0.));
@@ -557,6 +557,8 @@ pub fn draw(
     }
     drop(clip);
     let current = v.draft.as_ref().unwrap().clone();
+    let saved_and_unchanged = !v.new_draft && v.editing.as_deref() == Some(current.name.as_str())
+        && w.countries[tag].templates.get(&current.name) == Some(&current);
     let cost = w.template_edit_cost(tag, v.editing.as_deref(), &current);
     let footer = r.bottom() - 64.0;
     let half = (width - 5.0) / 2.0;
@@ -596,27 +598,23 @@ pub fn draw(
             Err(e) => *notice = e,
         }
     }
-    if ui::small_button(
-        "Применить к выбранным",
-        Rect::new(x + half + 5.0, footer, half, 28.0),
-        false,
-    ) {
+    let assign_button = Rect::new(x + half + 5.0, footer, half, 28.0);
+    if !saved_and_unchanged {
+        ui::disabled("Применить к выбранным",assign_button,
+            "Сначала сохраните изменения шаблона за армейский опыт");
+    } else if ui::small_button("Применить к выбранным",assign_button,false) {
         let ids: Vec<_> = selected.iter().copied().collect();
-        *notice = w
-            .apply_template(tag, &ids, &current.name, production)
-            .map_or_else(
-                |e| e,
-                |_| "Шаблон назначен; недостающее оснащение запрошено".into(),
-            );
+        *notice = w.apply_template(tag, &ids, &current.name, production)
+            .map_or_else(|e|e, |_| "Шаблон назначен; пополнение со склада".into());
     }
-    if ui::small_button(
-        "В очередь подготовки",
-        Rect::new(x, footer + 34.0, width, 27.0),
-        false,
-    ) {
+    let recruitment_button=Rect::new(x, footer + 34.0, width, 27.0);
+    if !saved_and_unchanged {
+        ui::disabled("В очередь подготовки",recruitment_button,
+            "Сначала сохраните черновик шаблона");
+    } else if ui::small_button("В очередь подготовки",recruitment_button,false) {
         *notice = province
             .ok_or_else(|| "Выберите свою провинцию".into())
-            .and_then(|p| w.queue_recruitment(tag, &current.name, p, world, production))
-            .map_or_else(|e| e, |_| "Набор добавлен в очередь подготовки".into());
+            .and_then(|p|w.queue_recruitment(tag,&current.name,p,world,production))
+            .map_or_else(|e|e, |_| "Набор добавлен в очередь подготовки".into());
     }
 }
