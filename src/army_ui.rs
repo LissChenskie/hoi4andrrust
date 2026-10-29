@@ -211,6 +211,11 @@ pub fn bounds(view: &ArmyView) -> Rect {
     if view.orders_visible() {
         r.h = (crate::battle_plan_ui::toolbar_bounds().y - 46.0 - r.y).max(100.0);
     }
+    // The division template editor needs an actual grid, equipment list and
+    // inspection pane. Do not squeeze these into the narrow army sidebar.
+    if view.page == Page::Templates && view.open {
+        r.w = (screen_width() - 10.0).min(1140.0).max(1.0);
+    }
     r
 }
 pub fn is_over_panel(point: Vec2, view: &ArmyView) -> bool {
