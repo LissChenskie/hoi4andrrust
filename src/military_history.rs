@@ -601,18 +601,25 @@ pub fn initialize(
             // State files may patch province buildings in multiple dated
             // buildings blocks. Update only explicitly defined fields;
             // a later airbase change must never erase an existing port.
-            for building in h.iter().filter(|e| e.key == "buildings")
-                .filter_map(Entry::block) {
+            for building in h
+                .iter()
+                .filter(|e| e.key == "buildings")
+                .filter_map(Entry::block)
+            {
                 for province in building {
                     if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
                         let c = warfare.conditions.entry(id).or_default();
                         if let Some(value) = atom(b, "bunker").and_then(|s| s.parse::<f64>().ok()) {
                             c.fort_level = value.clamp(0., 100.) as u16;
                         }
-                        if let Some(value) = atom(b, "naval_base").and_then(|s| s.parse::<f64>().ok()) {
+                        if let Some(value) =
+                            atom(b, "naval_base").and_then(|s| s.parse::<f64>().ok())
+                        {
                             c.naval_base = value.clamp(0., 100.) as u16;
                         }
-                        if let Some(value) = atom(b, "supply_node").and_then(|s| s.parse::<f64>().ok()) {
+                        if let Some(value) =
+                            atom(b, "supply_node").and_then(|s| s.parse::<f64>().ok())
+                        {
                             c.supply_node = value > 0.;
                         }
                     }
