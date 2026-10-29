@@ -121,16 +121,17 @@ pub fn draw(
         view.command_scroll = view.command_scroll.min(max);
         for c in choices.iter().skip(view.command_scroll).take(rows) {
             let row = Rect::new(x, y, width, 32.0);
-            if ui::small_button(
-                &format!(
-                    "{} · ур. {} · А{} З{} П{} Л{}",
-                    c.name, c.skill, c.attack, c.defense, c.planning, c.logistics
-                ),
-                row,
-                false,
-            ) {
+            if ui::small_button("",row,false) {
                 assign(tag, w, view, Some(&c.id), marshal);
             }
+            let art=Rect::new(row.x+3.,row.y+2.,29.,row.h-4.);
+            if !crate::hoi_assets::portrait(&c.id,art) {
+                crate::ui_icons::draw(crate::ui_icons::Icon::Officer,art,ui::MUTED);
+            }
+            ui::label(
+                &format!("{} · ур. {} · А{} З{} П{} Л{}",
+                    c.name,c.skill,c.attack,c.defense,c.planning,c.logistics),
+                Rect::new(row.x+36.,row.y+7.,row.w-40.,20.),11.,ui::TEXT);
             ui::tooltip(
                 row,
                 &c.name,
