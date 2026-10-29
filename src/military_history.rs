@@ -278,6 +278,8 @@ fn effects(
                     let c = warfare.logistics.countries.entry(tag.into()).or_default();
                     c.fuel = n;
                     c.fuel_capacity = c.fuel_capacity.max(n);
+                    c.starting_fuel_explicit = true;
+                    c.starting_fuel_ratio = None;
                 }
             }
             "set_fuel_ratio" => {
@@ -290,6 +292,8 @@ fn effects(
                     let c = warfare.logistics.countries.entry(tag.into()).or_default();
                     c.fuel_capacity = c.fuel_capacity.max(minimum);
                     c.fuel = ratio * c.fuel_capacity;
+                    c.starting_fuel_explicit = true;
+                    c.starting_fuel_ratio = Some(ratio);
                 }
             }
             "oob" | "set_oob" => {
