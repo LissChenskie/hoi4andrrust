@@ -186,6 +186,11 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
         };
         let state = block(&es, "state").unwrap_or(&[]);
         let history = block(state, "history").unwrap_or(&[]);
+        let (dated_history, diagnostics) = crate::history_conditions::resolve(
+            history, "", &crate::military_model::MilitaryModifiers::default(), today
+        );
+        w.diagnostics.extend(diagnostics.into_iter()
+            .map(|d| format!("{}: airbase history: {d}", path.display())));
         if let Some(id) = atom(state, "id").and_then(|s| s.parse::<u32>().ok()) {
             let oil = block(state, "resources")
                 .map_or(0., |r| number(r, "oil", 0.))
@@ -194,7 +199,7 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
                 w.logistics.oil_by_state.insert(id, oil);
             }
         }
-        let level = block(history, "buildings")
+        let level = block(&dated_history, "buildings")
             .map_or(0., |b| number(b, "air_base", 0.))
             .clamp(0., 100.) as u16;
         if level == 0 {
@@ -204,7 +209,8 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
             .and_then(|s| s.parse::<u32>().ok())
             .and_then(|id| world.states.get(&id))
         {
-            if let Some(&p) = state.province_ids.first() {
+            if let Some(&p) = state.province_ids.iter().find(|&&p|
+                world.owner_of_province(p) == state.owner.as_deref()) {
                 w.air.bases.insert(p, level);
             }
         }
@@ -217,12 +223,14 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
         .countries
         .iter()
         .flat_map(|(tag, a)| {
-            a.history_oobs
-                .iter()
+            a.history_oobs.iter()
+                .chain(a.history_air_oobs.iter())
                 .map(move |oob| (tag.clone(), oob.clone()))
         })
         .collect();
+    let mut imported_air_oobs = std::collections::BTreeSet::new();
     for (tag, oob) in selected {
+        if !imported_air_oobs.insert((tag.clone(),oob.clone())) { continue; }
         if let Some(path) = unit_files
             .iter()
             .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str()))
@@ -337,6 +345,23 @@ pub(crate) fn import_air_oob(es: &[crate::pdx::Entry], tag: &str, world: &World,
                     .push(format!("{tag}: air OOB base {} is unresolved", base.key));
                 continue;
             };
+            // State-level air bases are placed at their selected OOB province.
+            // Never add a free level: reuse the imported base of the same state.
+            if !w.air.bases.contains_key(&id) && world.controller_of_province(id) == Some(tag) {
+                if let Some(state) = world.state_for_province(id) {
+                    if let Some((&representative, &level)) = w.air.bases.iter().find(|(p,_)|
+                        state.province_ids.contains(p)) {
+                        if !w.air.wings.values().any(|a| a.base==representative) {
+                            w.air.bases.remove(&representative);
+                        }
+                        w.air.bases.insert(id,level);
+                    }
+                }
+            }
+            if w.air.bases.get(&id).copied().unwrap_or(0) == 0 {
+                w.diagnostics.push(format!("{tag}: air wing base {id} has no imported air_base"));
+                continue;
+            }
             for wing in base.block().unwrap_or(&[]) {
                 let b = wing.block().unwrap_or(&[]);
                 let equipment = block(b, "equipment").unwrap_or(&[]);
