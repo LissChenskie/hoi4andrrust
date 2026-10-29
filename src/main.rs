@@ -40,6 +40,8 @@ mod military_data;
 mod military_history;
 mod military_model;
 mod operations;
+mod peace;
+mod peace_ui;
 mod production;
 mod production_ui;
 mod recruitment;
@@ -3041,6 +3043,7 @@ async fn main() {
     let mut production_view = production_ui::ProductionView::default();
     let mut army_view = army_ui::ArmyView::default();
     let mut hud = campaign_ui::Hud::default();
+    let mut peace_view = peace_ui::PeaceView::default();
     let mut production_rules;
     // Use the player's own versioned game files if present. Never redistribute
     // proprietary technology files or pretend demo nodes are the vanilla tree.
@@ -3108,6 +3111,13 @@ async fn main() {
             }
         }
         session.initialize_military(Path::new("data/hoi4"));
+        match session
+            .peace
+            .import_state_history(Path::new("data/hoi4"), start_date)
+        {
+            Ok(states) => eprintln!("[peace] Imported rights history for {states} states"),
+            Err(error) => eprintln!("[peace] Historical rights: {error}"),
+        }
         session
             .military
             .use_research_registry(&research_catalogue, &session.research);
@@ -3233,6 +3243,7 @@ async fn main() {
                             production_view = production_ui::ProductionView::default();
                             army_view = army_ui::ArmyView::default();
                             hud = campaign_ui::Hud::default();
+                            peace_view = peace_ui::PeaceView::default();
                             research_view = research_ui::ResearchView {
                                 notice: research_origin.clone(),
                                 ..Default::default()
@@ -3323,6 +3334,7 @@ async fn main() {
                     && hud.detail.is_none()
                     && !hud.map_palette
                     && !army_view.text_input_active()
+                    && !peace_ui::active(&session.peace, session.player_country.as_deref())
                 {
                     let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
                     for panel in
@@ -3464,6 +3476,7 @@ async fn main() {
                     resources: resource_state,
                     research: research_world,
                     military,
+                    peace: peace_state,
                     ..
                 } = &mut session;
                 let country = country_construction
@@ -3490,6 +3503,11 @@ async fn main() {
                     research_view.open,
                     &army_view,
                 );
+                let peace_overlay_active =
+                    peace_ui::active(peace_state, selected_country.as_deref());
+                if peace_overlay_active {
+                    game.paused = true;
+                }
                 let rendered_screen = draw_map_viewer(
                     map.as_mut(),
                     world,
@@ -3517,6 +3535,13 @@ async fn main() {
                     military,
                     &mut army_view,
                 );
+                peace_ui::draw(
+                    peace_state,
+                    world,
+                    military,
+                    selected_country.as_deref(),
+                    &mut peace_view,
+                );
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
@@ -3526,6 +3551,7 @@ async fn main() {
                     );
                     let time_controls_overlay = ui_layout::Layout::current().hud_contains(mouse);
                     let inside_map = rect.contains(mouse)
+                        && !peace_overlay_active
                         && !time_controls_overlay
                         && !hud.blocked(mouse)
                         && !hud_before_ui.iter().any(|r| r.contains(mouse))

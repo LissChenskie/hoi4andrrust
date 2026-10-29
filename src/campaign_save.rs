@@ -130,6 +130,7 @@ impl GameSession {
         crate::construction::initialize_builders(&s.world, &mut s.construction_queues);
         s.military.clean_references();
         s.military.validate_references(&s.world)?;
+        s.peace.validate(&s.world)?;
         for (id, state) in &s.world.states {
             if state.province_ids != self.world.states[id].province_ids {
                 return Err("Изменена география штатов".into());
