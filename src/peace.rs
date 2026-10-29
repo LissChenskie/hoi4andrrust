@@ -616,6 +616,9 @@ impl PeaceSystem {
                 }
             }
         }
+        if matches!(&action, PeaceAction::Puppet { country } if country == claimant) {
+            return Err("A country cannot establish itself as its own puppet".into());
+        }
         let price = self.demand_price(world, state, claimant, &action)?;
         let c = self.conferences.get_mut(&conference_id).unwrap();
         let remaining = c
@@ -635,6 +638,36 @@ impl PeaceSystem {
             price,
         });
         Ok(price)
+    }
+    /// Book a group of states as a single indivisible peace settlement.
+    /// Multiple states with the same national-rights recipient can form one
+    /// puppet, while a failure cannot leave only half its territory claimed.
+    pub fn submit_demand_batch(
+        &mut self,
+        world: &World,
+        conference_id: u64,
+        claimant: &str,
+        states: &BTreeSet<u32>,
+        action: PeaceAction,
+    ) -> Result<u64, String> {
+        if states.is_empty() {
+            return Err("Select at least one state".into());
+        }
+        let mut staged = self.clone();
+        let mut total = 0u64;
+        for &state in states {
+            total = total
+                .checked_add(staged.submit_demand(
+                    world,
+                    conference_id,
+                    claimant,
+                    state,
+                    action.clone(),
+                )?)
+                .ok_or("Conference price overflow")?;
+        }
+        *self = staged;
+        Ok(total)
     }
     /// Withdraw a previously reserved demand without changing territory.
     /// Only the author may reclaim its own points.
@@ -812,10 +845,10 @@ impl PeaceSystem {
                             "remove_core_of" => {
                                 rights.cores.remove(tag);
                             }
-                            "add_claim_by" => {
+                            "add_claim_by" | "add_claim_of" => {
                                 rights.claims.insert(tag.into());
                             }
-                            "remove_claim_by" => {
+                            "remove_claim_by" | "remove_claim_of" => {
                                 rights.claims.remove(tag);
                             }
                             _ => {}
@@ -907,6 +940,70 @@ mod tests {
         w.set_state_owner(2, Some("AAA"));
         assert!(peace.is_core(2, "BBB"));
         assert!(!peace.is_core(2, "AAA"));
+    }
+    #[test]
+    fn multiple_countries_have_independent_cores_on_the_same_state() {
+        let w = world();
+        let mut peace = PeaceSystem::default();
+        for country in ["AAA", "BBB", "UKR"] {
+            peace.add_core(&w, 2, country).unwrap();
+        }
+        assert_eq!(peace.rights[&2].cores.len(), 3);
+        peace.remove_core(2, "AAA");
+        assert!(peace.is_core(2, "BBB"));
+        assert!(peace.is_core(2, "UKR"));
+    }
+    #[test]
+    fn puppet_demands_for_multiple_core_states_are_atomic() {
+        let mut w = world();
+        let mut p = PeaceSystem::default();
+        for id in [1, 2] {
+            p.add_core(&w, id, "UKR").unwrap();
+        }
+        p.add_core(&w, 2, "BBB").unwrap();
+        let mut m = Warfare::default();
+        m.declare_war("AAA", "BBB", &w).unwrap();
+        for id in [3, 4] {
+            w.set_province_controller(id, Some("AAA"));
+        }
+        p.tick(&mut w, &mut m, &ResearchWorld::default(), 24);
+        let cid = *p.conferences.keys().next().unwrap();
+        let before = p.conferences[&cid].demands.len();
+        let both = BTreeSet::from([1, 2]);
+        assert!(
+            p.submit_demand_batch(
+                &w,
+                cid,
+                "AAA",
+                &both,
+                PeaceAction::Puppet {
+                    country: "UKR".into()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(p.conferences[&cid].demands.len(), before);
+        assert_eq!(
+            p.conferences[&cid].spent.get("AAA").copied().unwrap_or(0),
+            0
+        );
+        assert!(
+            p.submit_demand_batch(
+                &w,
+                cid,
+                "AAA",
+                &BTreeSet::from([2]),
+                PeaceAction::Puppet {
+                    country: "UKR".into()
+                }
+            )
+            .is_ok()
+        );
+        p.finalize(&mut w, &mut m, cid).unwrap();
+        assert_eq!(w.states[&2].owner.as_deref(), Some("UKR"));
+        assert_eq!(p.subjects.get("UKR").map(String::as_str), Some("AAA"));
+        assert!(p.is_core(2, "BBB"));
+        assert!(p.is_core(2, "UKR"));
     }
     #[test]
     fn faction_membership_is_not_an_automatic_declaration() {

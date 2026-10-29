@@ -88,6 +88,12 @@ pub struct CountryLogistics {
     pub capital: Option<u32>,
     pub fuel: f64,
     pub fuel_capacity: f64,
+    /// Explicit set_fuel or set_fuel_ratio from dated country history.
+    #[serde(default)]
+    pub starting_fuel_explicit: bool,
+    /// Preserve a scripted ratio until the final historical capacity is known.
+    #[serde(default)]
+    pub starting_fuel_ratio: Option<f64>,
     /// Fixed national capacity, excluding dynamically controlled fuel silos.
     /// None migrates existing profiles/saves on the first logistics tick.
     pub fuel_capacity_base: Option<f64>,
@@ -354,6 +360,8 @@ impl LogisticsState {
                 || c.fuel_capacity_base
                     .is_some_and(|n| !n.is_finite() || n < 0.)
                 || c.fuel > c.fuel_capacity
+                || c.starting_fuel_ratio
+                    .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
             {
                 return Err(format!("Invalid logistics country {tag}"));
             }

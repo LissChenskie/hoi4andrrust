@@ -6,11 +6,15 @@ use crate::peace::{ConferencePhase, PeaceAction, PeaceSystem};
 use crate::warfare::Warfare;
 use crate::world::World;
 use macroquad::prelude::*;
+use std::collections::BTreeSet;
 
 #[derive(Debug, Default)]
 pub struct PeaceView {
     pub selected_state: Option<u32>,
+    pub selected_states: BTreeSet<u32>,
     pub selected_recipient: usize,
+    /// Keep the selected puppet country when selecting further core states.
+    pub selected_recipient_country: Option<String>,
     pub scroll: usize,
     pub notice: String,
     pub last_conference: Option<u64>,
@@ -105,6 +109,7 @@ pub fn draw(
         })
         .map(|(id, _)| *id)
         .collect();
+    view.selected_states.retain(|id| states.contains(id));
     let available_rows = (((height - 345.) / 35.).floor() as usize).max(1);
     let visible = available_rows.min(11);
     let max_scroll = states.len().saturating_sub(visible);
@@ -137,10 +142,18 @@ pub fn draw(
         if ui::small_button(
             &txt,
             Rect::new(x + 12., yy, list_width - 24., 31.),
-            view.selected_state == Some(id),
+            view.selected_states.contains(&id),
         ) {
-            view.selected_state = Some(id);
-            view.selected_recipient = 0;
+            let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            if shift {
+                if !view.selected_states.remove(&id) {
+                    view.selected_states.insert(id);
+                }
+            } else {
+                view.selected_states.clear();
+                view.selected_states.insert(id);
+            }
+            view.selected_state = view.selected_states.iter().next().copied();
         }
     }
     let rx = x + list_width + 2.;
@@ -151,24 +164,62 @@ pub fn draw(
         let mut recipients = rights
             .cores
             .into_iter()
-            .filter(|tag| tag != player && tag.len() == 3)
+            .filter(|tag| tag.len() == 3)
             .collect::<Vec<_>>();
         recipients.sort();
         if !recipients.is_empty() {
-            view.selected_recipient %= recipients.len();
+            view.selected_recipient = view
+                .selected_recipient_country
+                .as_ref()
+                .and_then(|tag| recipients.iter().position(|r| r == tag))
+                .unwrap_or(view.selected_recipient.min(recipients.len() - 1));
+            view.selected_recipient_country = recipients.get(view.selected_recipient).cloned();
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
         ui::label(
-            &format!("Штат №{}", state_id),
+            &format!(
+                "Штатов выбрано: {} · {}",
+                view.selected_states.len(),
+                view.selected_states
+                    .iter()
+                    .take(4)
+                    .map(u32::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
             Rect::new(rx, y + 143., rw, 26.),
-            15.,
+            13.,
             ui::TEXT,
         );
         let note = match recipient.as_deref() {
-            Some(t) => format!("Получатель: {t}"),
+            Some(t) => {
+                let puppet = system.subjects.get(t).is_some()
+                    || c.demands.iter().any(|d| {
+                        matches!(&d.action,
+                        PeaceAction::Puppet{country} if country==t)
+                    });
+                format!(
+                    "Получатель: {t}{}",
+                    if puppet {
+                        " · марионетка"
+                    } else {
+                        ""
+                    }
+                )
+            }
             None => "Нет core-получателя".into(),
         };
         ui::label(&note, Rect::new(rx, y + 175., rw, 25.), 12., ui::MUTED);
+        let all_cores = system
+            .rights
+            .get(&state_id)
+            .map(|r| r.cores.iter().cloned().collect::<Vec<_>>().join(", "))
+            .unwrap_or_default();
+        ui::tooltip(
+            Rect::new(rx, y + 140., rw, 32.),
+            "Все национальные владельцы",
+            &all_cores,
+        );
         if ui::small_button("◀", Rect::new(rx, y + 203., 36., 30.), false) && !recipients.is_empty()
         {
             view.selected_recipient =
@@ -180,6 +231,7 @@ pub fn draw(
             view.selected_recipient = (view.selected_recipient + 1) % recipients.len();
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
+        view.selected_recipient_country = recipient.clone();
         let choices = [
             ("Аннексировать", Some(PeaceAction::Annex)),
             (
@@ -205,13 +257,38 @@ pub fn draw(
                 break;
             }
             if let Some(action) = action {
-                let cost = system.demand_price(world, state_id, player, &action).ok();
-                let title = format!("{} ({})", label, cost.unwrap_or(0));
+                let targets = if view.selected_states.is_empty() {
+                    BTreeSet::from([state_id])
+                } else {
+                    view.selected_states.clone()
+                };
+                let valid = targets.iter().all(|id| match &action {
+                    PeaceAction::Annex => true,
+                    PeaceAction::ReturnCore { country }
+                    | PeaceAction::Liberate { country }
+                    | PeaceAction::Puppet { country } => system.is_core(*id, country),
+                });
+                let price = if valid {
+                    targets.iter().try_fold(0u64, |sum, id| {
+                        system
+                            .demand_price(world, *id, player, &action)
+                            .ok()
+                            .and_then(|v| sum.checked_add(v))
+                    })
+                } else {
+                    None
+                };
+                let title = price.map_or_else(
+                    || format!("{label}: нет core на каждом штате"),
+                    |n| format!("{label}: {n} очк. ({} шт.)", targets.len()),
+                );
                 if ui::small_button(&title, Rect::new(rx, yy, rw, 32.), false) {
                     view.notice = system
-                        .submit_demand(world, c.id, player, state_id, action)
-                        .map(|n| format!("Требование добавлено: -{n} очков"))
+                        .submit_demand_batch(world, c.id, player, &targets, action)
+                        .map(|n| format!("Штатов {} · -{n} очков", targets.len()))
                         .unwrap_or_else(|e| e);
+                    view.selected_states.clear();
+                    view.selected_state = None;
                 }
             }
         }

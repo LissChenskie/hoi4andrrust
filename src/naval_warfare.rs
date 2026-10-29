@@ -878,7 +878,12 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
     );
     let mut out = NavalState::default();
     for (tag, army) in &warfare.countries {
-        for oob in &army.history_oobs {
+        let selected = army
+            .history_oobs
+            .iter()
+            .chain(army.history_naval_oobs.iter())
+            .collect::<std::collections::BTreeSet<_>>();
+        for oob in selected {
             let Some(path) = files
                 .iter()
                 .find(|p| p.file_stem().and_then(|s| s.to_str()) == Some(oob.as_str()))
@@ -893,66 +898,77 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                     .push(format!("{tag}: unparseable naval OOB {oob}"));
                 continue;
             };
-            for unit in root.entries.iter().filter(|e| e.key == "units") {
-                for fleet in unit
-                    .block()
-                    .unwrap_or(&[])
+            // HOI4 historical files contain both top-level fleet blocks and
+            // fleet blocks nested under units. Keep the exact selected OOBs.
+            let fleets = root.entries.iter().filter(|e| e.key == "fleet").chain(
+                root.entries
                     .iter()
-                    .filter(|e| e.key == "fleet")
-                {
-                    let f = fleet.block().unwrap_or(&[]);
-                    let fleet_base = atom(f, "naval_base").and_then(|v| v.parse::<u32>().ok());
-                    for task in f.iter().filter(|e| e.key == "task_force") {
-                        let t = task.block().unwrap_or(&[]);
-                        let base = atom(t, "location")
-                            .and_then(|v| v.parse::<u32>().ok())
-                            .or(fleet_base);
-                        let Some(base) = base else {
+                    .filter(|e| e.key == "units")
+                    .flat_map(|e| e.block().unwrap_or(&[]).iter())
+                    .filter(|e| e.key == "fleet"),
+            );
+            for fleet in fleets {
+                let f = fleet.block().unwrap_or(&[]);
+                let fleet_base = atom(f, "naval_base").and_then(|v| v.parse::<u32>().ok());
+                for task in f.iter().filter(|e| e.key == "task_force") {
+                    let t = task.block().unwrap_or(&[]);
+                    let base = atom(t, "location")
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .filter(|p| {
+                            warfare.conditions.get(p).is_some_and(|c| c.naval_base > 0)
+                                && world.controller_of_province(*p) == Some(tag.as_str())
+                        })
+                        .or(fleet_base);
+                    let Some(base) = base else {
+                        out.diagnostics
+                            .push(format!("{tag}: {oob}: naval task force missing base"));
+                        continue;
+                    };
+                    let mut ships = Vec::new();
+                    let records = t.iter().filter(|e| e.key == "ship").chain(
+                        t.iter()
+                            .filter(|e| e.key == "ships")
+                            .flat_map(|e| e.block().unwrap_or(&[]).iter())
+                            .filter(|e| e.key == "ship"),
+                    );
+                    for record in records {
+                        let b = record.block().unwrap_or(&[]);
+                        let Some(ship_data) = block(b, "equipment").and_then(|e| e.first()) else {
                             out.diagnostics
-                                .push(format!("{tag}: {oob}: naval task force missing base"));
+                                .push(format!("{tag}: ship missing equipment"));
                             continue;
                         };
-                        let mut ships = Vec::new();
-                        for record in t.iter().filter(|e| e.key == "ship") {
-                            let b = record.block().unwrap_or(&[]);
-                            let Some(ship_data) = block(b, "equipment").and_then(|e| e.first())
-                            else {
-                                out.diagnostics
-                                    .push(format!("{tag}: ship missing equipment"));
-                                continue;
-                            };
-                            let model = ship_data.key.as_str();
-                            let e = ship_data.block().unwrap_or(&[]);
-                            let amount = atom(e, "amount")
-                                .and_then(|s| s.parse::<u32>().ok())
-                                .unwrap_or(1);
-                            if amount != 1 {
-                                out.diagnostics
-                                    .push(format!("{tag}: {model}: ship amount must be 1"));
-                                continue;
-                            }
-                            if !is_ship_model(model, &warfare.catalogue) {
-                                out.diagnostics
-                                    .push(format!("{tag}: unsupported ship model {model}"));
-                                continue;
-                            }
-                            ships.push(NavalShip {
-                                name: atom(b, "name").unwrap_or(model).into(),
-                                model: model.into(),
-                                definition: atom(b, "definition").unwrap_or("").into(),
-                                variant: atom(e, "version_name").map(str::to_owned),
-                                strength: 1.0,
-                            });
-                        }
-                        if ships.is_empty() {
+                        let model = ship_data.key.as_str();
+                        let e = ship_data.block().unwrap_or(&[]);
+                        let amount = atom(e, "amount")
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(1);
+                        if amount != 1 {
+                            out.diagnostics
+                                .push(format!("{tag}: {model}: ship amount must be 1"));
                             continue;
                         }
-                        let name = atom(t, "name")
-                            .or_else(|| atom(f, "name"))
-                            .unwrap_or("Task Force");
-                        if let Err(e) = out.add_historical(tag, name, base, ships, world, warfare) {
-                            out.diagnostics.push(e);
+                        if !is_ship_model(model, &warfare.catalogue) {
+                            out.diagnostics
+                                .push(format!("{tag}: unsupported ship model {model}"));
+                            continue;
                         }
+                        ships.push(NavalShip {
+                            name: atom(b, "name").unwrap_or(model).into(),
+                            model: model.into(),
+                            definition: atom(b, "definition").unwrap_or("").into(),
+                            variant: atom(e, "version_name").map(str::to_owned),
+                            strength: 1.0,
+                        });
+                    }
+                    if ships.is_empty() {
+                        continue;
+                    }
+                    let name = atom(t, "name")
+                        .or_else(|| atom(f, "name"))
+                        .unwrap_or("Task Force");
+                    if let Err(e) = out.add_historical(tag, name, base, ships, world, warfare) {
+                        out.diagnostics.push(e);
                     }
                 }
             }

@@ -278,6 +278,8 @@ fn effects(
                     let c = warfare.logistics.countries.entry(tag.into()).or_default();
                     c.fuel = n;
                     c.fuel_capacity = c.fuel_capacity.max(n);
+                    c.starting_fuel_explicit = true;
+                    c.starting_fuel_ratio = None;
                 }
             }
             "set_fuel_ratio" => {
@@ -290,6 +292,8 @@ fn effects(
                     let c = warfare.logistics.countries.entry(tag.into()).or_default();
                     c.fuel_capacity = c.fuel_capacity.max(minimum);
                     c.fuel = ratio * c.fuel_capacity;
+                    c.starting_fuel_explicit = true;
+                    c.starting_fuel_ratio = Some(ratio);
                 }
             }
             "oob" | "set_oob" => {
@@ -301,6 +305,22 @@ fn effects(
             "load_oob" => {
                 if let Some(id) = entry.atom() {
                     oobs.push(id.into());
+                }
+            }
+            "set_naval_oob" | "load_naval_oob" => {
+                if let Some(id) = entry.atom() {
+                    if entry.key == "set_naval_oob" {
+                        army.history_naval_oobs.clear();
+                    }
+                    army.history_naval_oobs.push(id.into());
+                }
+            }
+            "set_air_oob" | "load_air_oob" => {
+                if let Some(id) = entry.atom() {
+                    if entry.key == "set_air_oob" {
+                        army.history_air_oobs.clear();
+                    }
+                    army.history_air_oobs.push(id.into());
                 }
             }
             "set_country_flag" => {
@@ -578,12 +598,31 @@ pub fn initialize(
                     }
                 }
             }
-            for province in block(&h, "buildings").unwrap_or(&[]) {
-                if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
-                    let c = warfare.conditions.entry(id).or_default();
-                    c.fort_level = number(b, "bunker", 0.0).clamp(0.0, 100.0) as u16;
-                    c.naval_base = number(b, "naval_base", 0.0).clamp(0.0, 100.0) as u16;
-                    c.supply_node = number(b, "supply_node", 0.0) > 0.0;
+            // State files may patch province buildings in multiple dated
+            // buildings blocks. Update only explicitly defined fields;
+            // a later airbase change must never erase an existing port.
+            for building in h
+                .iter()
+                .filter(|e| e.key == "buildings")
+                .filter_map(Entry::block)
+            {
+                for province in building {
+                    if let (Ok(id), Some(b)) = (province.key.parse::<u32>(), province.block()) {
+                        let c = warfare.conditions.entry(id).or_default();
+                        if let Some(value) = atom(b, "bunker").and_then(|s| s.parse::<f64>().ok()) {
+                            c.fort_level = value.clamp(0., 100.) as u16;
+                        }
+                        if let Some(value) =
+                            atom(b, "naval_base").and_then(|s| s.parse::<f64>().ok())
+                        {
+                            c.naval_base = value.clamp(0., 100.) as u16;
+                        }
+                        if let Some(value) =
+                            atom(b, "supply_node").and_then(|s| s.parse::<f64>().ok())
+                        {
+                            c.supply_node = value > 0.;
+                        }
+                    }
                 }
             }
         }
@@ -963,6 +1002,8 @@ pub fn import_report(warfare: &Warfare, date: GameDate) -> serde_json::Value {
                 tag,
                 serde_json::json!({
                     "history_source": army.history_source,
+                    "naval_oobs": army.history_naval_oobs,
+                    "air_oobs": army.history_air_oobs,
                     "core_population": army.core_population,
                     "recruitable_total": army.recruitable_total,
                     "available_manpower": army.manpower_pool,
