@@ -168,10 +168,12 @@ pub fn draw(
             .collect::<Vec<_>>();
         recipients.sort();
         if !recipients.is_empty() {
-            view.selected_recipient = view.selected_recipient_country.as_ref()
-                .and_then(|tag| recipients.iter().position(|r|r==tag))
-                .unwrap_or(view.selected_recipient.min(recipients.len()-1));
-            view.selected_recipient_country=recipients.get(view.selected_recipient).cloned();
+            view.selected_recipient = view
+                .selected_recipient_country
+                .as_ref()
+                .and_then(|tag| recipients.iter().position(|r| r == tag))
+                .unwrap_or(view.selected_recipient.min(recipients.len() - 1));
+            view.selected_recipient_country = recipients.get(view.selected_recipient).cloned();
         }
         let recipient = recipients.get(view.selected_recipient).cloned();
         ui::label(
@@ -192,9 +194,18 @@ pub fn draw(
         let note = match recipient.as_deref() {
             Some(t) => {
                 let puppet = system.subjects.get(t).is_some()
-                    || c.demands.iter().any(|d|matches!(&d.action,
-                        PeaceAction::Puppet{country} if country==t));
-                format!("Получатель: {t}{}", if puppet { " · марионетка" } else { "" })
+                    || c.demands.iter().any(|d| {
+                        matches!(&d.action,
+                        PeaceAction::Puppet{country} if country==t)
+                    });
+                format!(
+                    "Получатель: {t}{}",
+                    if puppet {
+                        " · марионетка"
+                    } else {
+                        ""
+                    }
+                )
             }
             None => "Нет core-получателя".into(),
         };
