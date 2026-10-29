@@ -640,16 +640,28 @@ impl PeaceSystem {
     /// Multiple states with the same national-rights recipient can form one
     /// puppet, while a failure cannot leave only half its territory claimed.
     pub fn submit_demand_batch(
-        &mut self, world: &World, conference_id: u64, claimant: &str,
-        states: &BTreeSet<u32>, action: PeaceAction,
+        &mut self,
+        world: &World,
+        conference_id: u64,
+        claimant: &str,
+        states: &BTreeSet<u32>,
+        action: PeaceAction,
     ) -> Result<u64, String> {
-        if states.is_empty() { return Err("Select at least one state".into()); }
+        if states.is_empty() {
+            return Err("Select at least one state".into());
+        }
         let mut staged = self.clone();
         let mut total = 0u64;
         for &state in states {
-            total = total.checked_add(staged.submit_demand(
-                world, conference_id, claimant, state, action.clone()
-            )?).ok_or("Conference price overflow")?;
+            total = total
+                .checked_add(staged.submit_demand(
+                    world,
+                    conference_id,
+                    claimant,
+                    state,
+                    action.clone(),
+                )?)
+                .ok_or("Conference price overflow")?;
         }
         *self = staged;
         Ok(total)
@@ -942,26 +954,53 @@ mod tests {
     fn puppet_demands_for_multiple_core_states_are_atomic() {
         let mut w = world();
         let mut p = PeaceSystem::default();
-        for id in [1,2] { p.add_core(&w, id, "UKR").unwrap(); }
+        for id in [1, 2] {
+            p.add_core(&w, id, "UKR").unwrap();
+        }
         p.add_core(&w, 2, "BBB").unwrap();
         let mut m = Warfare::default();
         m.declare_war("AAA", "BBB", &w).unwrap();
-        for id in [3,4] { w.set_province_controller(id, Some("AAA")); }
-        p.tick(&mut w,&mut m,&ResearchWorld::default(),24);
+        for id in [3, 4] {
+            w.set_province_controller(id, Some("AAA"));
+        }
+        p.tick(&mut w, &mut m, &ResearchWorld::default(), 24);
         let cid = *p.conferences.keys().next().unwrap();
         let before = p.conferences[&cid].demands.len();
-        let both = BTreeSet::from([1,2]);
-        assert!(p.submit_demand_batch(&w,cid,"AAA",&both,
-            PeaceAction::Puppet{country:"UKR".into()}).is_err());
-        assert_eq!(p.conferences[&cid].demands.len(),before);
-        assert_eq!(p.conferences[&cid].spent.get("AAA").copied().unwrap_or(0),0);
-        assert!(p.submit_demand_batch(&w,cid,"AAA",&BTreeSet::from([2]),
-            PeaceAction::Puppet{country:"UKR".into()}).is_ok());
-        p.finalize(&mut w,&mut m,cid).unwrap();
-        assert_eq!(w.states[&2].owner.as_deref(),Some("UKR"));
-        assert_eq!(p.subjects.get("UKR").map(String::as_str),Some("AAA"));
-        assert!(p.is_core(2,"BBB"));
-        assert!(p.is_core(2,"UKR"));
+        let both = BTreeSet::from([1, 2]);
+        assert!(
+            p.submit_demand_batch(
+                &w,
+                cid,
+                "AAA",
+                &both,
+                PeaceAction::Puppet {
+                    country: "UKR".into()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(p.conferences[&cid].demands.len(), before);
+        assert_eq!(
+            p.conferences[&cid].spent.get("AAA").copied().unwrap_or(0),
+            0
+        );
+        assert!(
+            p.submit_demand_batch(
+                &w,
+                cid,
+                "AAA",
+                &BTreeSet::from([2]),
+                PeaceAction::Puppet {
+                    country: "UKR".into()
+                }
+            )
+            .is_ok()
+        );
+        p.finalize(&mut w, &mut m, cid).unwrap();
+        assert_eq!(w.states[&2].owner.as_deref(), Some("UKR"));
+        assert_eq!(p.subjects.get("UKR").map(String::as_str), Some("AAA"));
+        assert!(p.is_core(2, "BBB"));
+        assert!(p.is_core(2, "UKR"));
     }
     #[test]
     fn faction_membership_is_not_an_automatic_declaration() {
