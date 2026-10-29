@@ -260,8 +260,12 @@ impl GameSession {
         // Trade law is loaded from the same historical ideas as country
         // military modifiers. Never make a nation a free exporter by default.
         for (tag, army) in &self.military.countries {
-            if let Some(law) = army.modifiers.ideas.iter()
-                .find_map(|id| crate::resource_economy::TradeLaw::from_hoi4_idea(id)) {
+            if let Some(law) = army
+                .modifiers
+                .ideas
+                .iter()
+                .find_map(|id| crate::resource_economy::TradeLaw::from_hoi4_idea(id))
+            {
                 self.resources.laws.entry(tag.clone()).or_insert(law);
             }
         }
