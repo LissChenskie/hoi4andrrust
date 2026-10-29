@@ -19,6 +19,11 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test original-game sprite and character reference parsing
+        run: python -m unittest discover -s tools/tests -p 'test_import_hoi4_ui_art.py'
       - name: Check Windows PowerShell 5.1 exporter invocation
         shell: powershell
         run: .\tools\tests\Test-Export-Hoi4Research.ps1
