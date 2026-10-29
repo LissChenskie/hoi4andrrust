@@ -360,7 +360,8 @@ impl LogisticsState {
                 || c.fuel_capacity_base
                     .is_some_and(|n| !n.is_finite() || n < 0.)
                 || c.fuel > c.fuel_capacity
-            || c.starting_fuel_ratio.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+                || c.starting_fuel_ratio
+                    .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
             {
                 return Err(format!("Invalid logistics country {tag}"));
             }
