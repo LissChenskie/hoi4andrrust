@@ -257,6 +257,14 @@ impl GameSession {
         let mut navy = std::mem::take(&mut self.military.naval);
         crate::naval_warfare::import_navy_leaders(root, &self.military, self.clock.date, &mut navy);
         self.military.naval = navy;
+        // Trade law is loaded from the same historical ideas as country
+        // military modifiers. Never make a nation a free exporter by default.
+        for (tag, army) in &self.military.countries {
+            if let Some(law) = army.modifiers.ideas.iter()
+                .find_map(|id| crate::resource_economy::TradeLaw::from_hoi4_idea(id)) {
+                self.resources.laws.entry(tag.clone()).or_insert(law);
+            }
+        }
         if let Some(speed) = self
             .military
             .catalogue
