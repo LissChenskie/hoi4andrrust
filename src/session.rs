@@ -384,6 +384,10 @@ impl GameSession {
                 (tag.clone(), policy)
             })
             .collect();
+        self.resources.plan_automatic_trade(
+            &self.world, &self.military, &self.production,
+            &policies, &self.research, production,
+        );
         self.resources
             .settle_campaign(&mut self.world, &policies, &self.military, &self.research);
         // The fleet's abstract campaign-level convoy encounters run after
