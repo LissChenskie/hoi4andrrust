@@ -925,10 +925,12 @@ pub fn import_naval_oob(root: &Path, world: &World, warfare: &Warfare) -> NavalS
                         continue;
                     };
                     let mut ships = Vec::new();
-                    let records = t.iter().filter(|e| e.key == "ship")
-                        .chain(t.iter().filter(|e| e.key == "ships")
+                    let records = t.iter().filter(|e| e.key == "ship").chain(
+                        t.iter()
+                            .filter(|e| e.key == "ships")
                             .flat_map(|e| e.block().unwrap_or(&[]).iter())
-                            .filter(|e| e.key == "ship"));
+                            .filter(|e| e.key == "ship"),
+                    );
                     for record in records {
                         let b = record.block().unwrap_or(&[]);
                         let Some(ship_data) = block(b, "equipment").and_then(|e| e.first()) else {
