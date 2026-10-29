@@ -494,6 +494,9 @@ pub fn scrollbar(content: Rect, first: &mut usize, max: usize, visible: usize) {
 
 /// Read only requested local flags; absent textures remain explicit placeholders.
 pub fn flag(tag: &str, rect: Rect) {
+    if crate::hoi_assets::draw("flags", tag, rect) {
+        return;
+    }
     FLAGS.with(|cell| {
         let mut flags = cell.borrow_mut();
         let texture = flags.entry(tag.into()).or_insert_with(|| {

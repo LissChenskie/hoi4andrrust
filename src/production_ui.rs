@@ -245,13 +245,20 @@ pub fn draw(
         ui::row_bg(row, view.selected_line == Some(line.id), index % 2 != 0);
         let allocated = allocations[index].assigned;
         let icon_x = row.x + 6.0;
-        icon(
-            line.equipment,
-            icon_x,
-            row.y + 9.0,
-            42.0,
-            view.selected_line == Some(line.id),
-        );
+        let image_rect = Rect::new(icon_x, row.y + 9.0, 42.0, 42.0);
+        let shown = line
+            .model
+            .as_deref()
+            .is_some_and(|id| crate::hoi_assets::draw_equipment(id, image_rect));
+        if !shown {
+            icon(
+                line.equipment,
+                icon_x,
+                row.y + 9.0,
+                42.0,
+                view.selected_line == Some(line.id),
+            );
+        }
         if let Some(reason) = &line.blocked_reason {
             ui::tooltip(row, "Производство приостановлено", reason);
         }
@@ -543,7 +550,7 @@ pub fn draw(
                 let item = format!("{} ({}) · {:.2} ПМ", model.id, model.year, model.cost);
                 let label = compact_label(&item, row.w - 21., 12);
                 if available {
-                    if ui::small_button(&label, row, false) {
+                    if ui::small_button("", row, false) {
                         action = Some(match view.switch_target {
                             Some(id) => Action::SwitchModel(id, choice, model.id.clone()),
                             None => Action::CreateModel(choice, model.id.clone()),
@@ -553,7 +560,7 @@ pub fn draw(
                 } else {
                     ui::label(
                         &label,
-                        Rect::new(row.x + 5., row.y + 7., row.w - 10., 25.),
+                        Rect::new(row.x + 44., row.y + 7., row.w - 49., 25.),
                         12.,
                         ui::MUTED,
                     );
@@ -561,6 +568,18 @@ pub fn draw(
                         row,
                         "Модель недоступна",
                         "Не изучена, модульная или запрещена текущими игровыми определениями",
+                    );
+                }
+                let picture = Rect::new(row.x + 4., row.y + 3., 36., row.h - 6.);
+                if !crate::hoi_assets::draw_equipment(&model.id, picture) {
+                    crate::division_icons::draw(&model.archetype, &model.archetype, picture);
+                }
+                if available {
+                    ui::label(
+                        &label,
+                        Rect::new(row.x + 45., row.y + 7., row.w - 49., 25.),
+                        12.,
+                        ui::TEXT,
                     );
                 }
                 if let Some(resources) = military.catalogue.equipment_resources.get(&model.id) {

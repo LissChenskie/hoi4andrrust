@@ -374,12 +374,19 @@ pub fn draw_selection(world: &World, tag: Option<&str>, w: &mut Warfare, view: &
     );
     let portrait = Rect::new(x, a.y + 66.0, 61.0, 72.0);
     ui::row_bg(portrait, false, false);
-    crate::ui_icons::draw(
-        crate::ui_icons::Icon::Officer,
-        Rect::new(x + 8.0, a.y + 73.0, 45.0, 54.0),
-        ui::MUTED,
-    );
     let army = crate::army_command_ui::selected_army(view, w);
+    let commander = army
+        .and_then(|id| w.command.armies.get(&id))
+        .and_then(|a| a.general.as_deref());
+    if !commander
+        .is_some_and(|id| crate::hoi_assets::portrait(id, Rect::new(x + 6., a.y + 69., 49., 64.)))
+    {
+        crate::ui_icons::draw(
+            crate::ui_icons::Icon::Officer,
+            Rect::new(x + 8., a.y + 73., 45., 54.),
+            ui::MUTED,
+        );
+    }
     let general = army
         .and_then(|id| w.command.armies.get(&id))
         .and_then(|a| a.general.as_ref())
