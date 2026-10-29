@@ -10,12 +10,11 @@ Images are saved to the ignored project's data/hoi4/ui folder as small PNGs.
 from __future__ import annotations
 import argparse
 import re
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 SAFE = re.compile(r"^[A-Za-z0-9_-]{1,120}$")
 SPRITE = re.compile(r"\bspriteType\s*=\s*\{", re.I)
-ASSIGN = re.compile(r"\b(?:name|texturefile)\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([\w./\\-]+))", re.I)
 CHAR = re.compile(r"\b([A-Za-z0-9_.-]+)\s*=\s*\{")
 IMG_EXT = {".dds", ".png", ".tga", ".bmp", ".jpg", ".jpeg"}
 
@@ -122,7 +121,7 @@ def main():
         ap.error("Expected the original game folders gfx/ and interface/ under --game")
     out = args.out.resolve()
     counts = Counter()
-    cache = {}
+    cache = OrderedDict()
     def write_preview(source: Path, destination: Path, frames=1):
         if destination.is_file(): return False
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +135,9 @@ def main():
                     image = image.crop((0,0,width,image.height)).convert("RGBA")
                     image.thumbnail((192,192),Image.Resampling.LANCZOS)
                     cache[key] = image.copy()
+                    if len(cache) > 32:
+                        cache.popitem(last=False)
+            cache.move_to_end(key)
             cache[key].save(destination,"PNG")
             return True
         except (OSError, ValueError, MemoryError):
@@ -187,14 +189,19 @@ def main():
                         if role in ("army", "civilian", "navy", "operative"):
                             name = field(content,"large") or field(content,"small")
                             if name: refs[role]=name
-                    sprite_name = refs.get("army") or refs.get("navy") or refs.get("civilian")
-                    if sprite_name and sprite_name in sprites:
-                        file, frames, _ = sprites[sprite_name]
+                    def resolve_portrait(name: str | None):
+                        if not name: return None
+                        if name in sprites: return sprites[name]
+                        file = source_path(game,name) if Path(name).suffix.lower() in IMG_EXT else None
+                        return (file,1,name) if file else None
+                    selected = resolve_portrait(refs.get("army") or refs.get("navy") or refs.get("civilian"))
+                    if selected:
+                        file, frames, _ = selected
                         if write_preview(file,out/"portraits"/(char_id+".png"),frames):
                             counts["commander_portraits"] += 1
-                    civilian_name = refs.get("civilian")
-                    if civilian_name in sprites:
-                        civilians[char_id]=sprites[civilian_name]
+                    civilian_image = resolve_portrait(refs.get("civilian"))
+                    if civilian_image:
+                        civilians[char_id] = civilian_image
     # Country portrait candidates: use explicit recruit_character references
     # where they resolve to civilian sprites. This is a historical candidate,
     # not a full dynamic ideology/party-leader selection algorithm.
