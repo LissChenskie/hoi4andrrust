@@ -385,8 +385,12 @@ impl GameSession {
             })
             .collect();
         self.resources.plan_automatic_trade(
-            &self.world, &self.military, &self.production,
-            &policies, &self.research, production,
+            &self.world,
+            &self.military,
+            &self.production,
+            &policies,
+            &self.research,
+            production,
         );
         self.resources
             .settle_campaign(&mut self.world, &policies, &self.military, &self.research);
