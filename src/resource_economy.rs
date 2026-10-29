@@ -20,6 +20,15 @@ pub enum TradeLaw {
     ClosedEconomy,
 }
 impl TradeLaw {
+    pub fn from_hoi4_idea(id: &str) -> Option<Self> {
+        match id {
+            "free_trade" => Some(Self::FreeTrade),
+            "export_focus" => Some(Self::ExportFocus),
+            "limited_exports" => Some(Self::LimitedExports),
+            "closed_economy" => Some(Self::ClosedEconomy),
+            _ => None,
+        }
+    }
     pub fn export_percentage(self) -> u32 {
         match self {
             Self::FreeTrade => 80,
