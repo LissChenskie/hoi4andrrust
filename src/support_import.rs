@@ -205,9 +205,14 @@ pub fn load(root: &Path, world: &World, w: &mut Warfare, today: GameDate) {
                 w.logistics.oil_by_state.insert(id, oil);
             }
         }
-        let level = block(&dated_history, "buildings")
-            .map_or(0., |b| number(b, "air_base", 0.))
-            .clamp(0., 100.) as u16;
+        let level = dated_history.iter()
+            .filter(|e| e.key == "buildings")
+            .filter_map(|e| e.block())
+            .filter_map(|b| atom(b, "air_base"))
+            .filter_map(|v| v.parse::<f64>().ok())
+            .last()
+            .unwrap_or(0.)
+            .clamp(0.,100.) as u16;
         if level == 0 {
             continue;
         }
