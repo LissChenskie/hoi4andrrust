@@ -159,11 +159,11 @@ pub fn draw(
         view.command_scroll = view.command_scroll.min(max);
         for c in choices.iter().skip(view.command_scroll).take(rows) {
             let row = Rect::new(x, y, width, 37.0);
-            let assignment = current_assignment(w, &c.id);
+            let assignment = current_assignment(w, &c.id).map(str::to_owned);
             let occupied = assignment.is_some();
             if ui::small_button("", row, occupied) {
                 if occupied {
-                    view.notice = format!("Сначала освободите командующего: {}", assignment.unwrap_or_default());
+                    view.notice = format!("Сначала освободите командующего: {}", assignment.as_deref().unwrap_or_default());
                 } else {
                     assign(tag, w, view, Some(&c.id), marshal);
                 }
