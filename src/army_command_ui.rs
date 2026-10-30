@@ -328,16 +328,11 @@ pub fn draw(
         }
     }
     y += 36.0;
-    let general = army
-        .general
-        .as_ref()
-        .and_then(|c| w.command.commanders.get(c))
-        .map_or("Назначить генерала", |c| c.name.as_str());
-    if ui::small_button(general, Rect::new(x, y, width, 31.0), false) {
+    if commander_tile(w, army.general.as_deref(), Rect::new(x, y, width, 88.), false) {
         view.commander_picker = Some(false);
         view.command_scroll = 0;
     }
-    y += 39.0;
+    y += 96.;
     let group = army.group.and_then(|id| w.command.groups.get(&id)).cloned();
     if let Some(group) = group {
         if ui::small_button(
@@ -351,18 +346,11 @@ pub fn draw(
             macroquad::miniquad::window::show_keyboard(true);
         }
         y += 26.0;
-        let marshal = group
-            .field_marshal
-            .as_ref()
-            .and_then(|c| w.command.commanders.get(c))
-            .map_or("Назначить фельдмаршала", |c| {
-                c.name.as_str()
-            });
-        if ui::small_button(marshal, Rect::new(x, y, width, 29.0), false) {
+        if commander_tile(w, group.field_marshal.as_deref(), Rect::new(x, y, width, 88.), true) {
             view.commander_picker = Some(true);
             view.command_scroll = 0;
         }
-        y += 36.0;
+        y += 95.;
         if ui::small_button("Выйти из группы", Rect::new(x, y, half, 27.0), false) {
             notice(
                 view,
@@ -642,6 +630,42 @@ pub fn draw(
         }
     }
 }
+/// A commander card connects the imported portrait, rank, skills and traits
+/// to the authoritative assignment action; it does not cache officer data.
+fn commander_tile(w: &Warfare, id: Option<&str>, rect: Rect, marshal: bool) -> bool {
+    let chosen = id.and_then(|id| w.command.commanders.get(id));
+    let pressed = ui::small_button("", rect, false);
+    let photo = Rect::new(rect.x + 5., rect.y + 5., 57., rect.h - 10.);
+    if !id.is_some_and(|id| crate::hoi_assets::portrait(id, photo)) {
+        crate::ui_icons::draw(crate::ui_icons::Icon::Officer, photo, ui::MUTED);
+    }
+    let x = photo.right() + 8.;
+    let width = (rect.right() - x - 5.).max(4.);
+    let role = if marshal { "ФЕЛЬДМАРШАЛ" } else { "ГЕНЕРАЛ" };
+    ui::label(role, Rect::new(x, rect.y + 4., width, 16.), 10., ui::GOLD);
+    if let Some(c) = chosen {
+        ui::label(&c.name, Rect::new(x, rect.y + 21., width, 20.), 14., ui::TEXT);
+        ui::label(
+            &format!("Ур. {}  ·  А{}  З{}  П{}  Л{}", c.skill, c.attack, c.defense, c.planning, c.logistics),
+            Rect::new(x, rect.y + 43., width, 17.), 11., ui::GOLD,
+        );
+        ui::label(
+            &format!("Опыт {:.1} · {} черт", c.experience, c.traits.len()),
+            Rect::new(x, rect.y + 63., width, 16.), 10., ui::MUTED,
+        );
+        ui::tooltip(rect, &c.name,
+            &format!("Атака {} · Защита {} · Планирование {} · Логистика {}\nЧерты: {}\nНажмите для замены командующего",
+                c.attack, c.defense, c.planning, c.logistics,
+                c.traits.iter().cloned().collect::<Vec<_>>().join(", ")));
+    } else {
+        ui::paragraph(
+            if marshal { "НАЗНАЧИТЬ ФЕЛЬДМАРШАЛА" } else { "НАЗНАЧИТЬ ГЕНЕРАЛА" },
+            Rect::new(x, rect.y + 22., width, 45.), 13., ui::GOLD,
+        );
+    }
+    pressed
+}
+
 fn assign(tag: &str, w: &mut Warfare, view: &mut ArmyView, id: Option<&str>, marshal: bool) {
     if let Some(army) = view.selected_army {
         let r = if marshal {
