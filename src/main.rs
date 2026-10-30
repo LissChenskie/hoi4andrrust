@@ -3396,6 +3396,7 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
+                session.flush_simulation_hooks(&research_catalogue, &research_rules);
                 if let Some((id, option)) = hud.event_request.take() {
                     hud.notice = session
                         .choose_campaign_event(id, option, &research_catalogue, &research_rules)

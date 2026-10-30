@@ -248,6 +248,15 @@ impl PeaceSystem {
         }) {
             return Err("Cannot call a country against its own faction".into());
         }
+        let missing = enemies
+            .iter()
+            .filter(|enemy| !military.at_war(member, enemy))
+            .count();
+        if military.script_transitions.len().saturating_add(missing) > 4096
+            || enemies.iter().any(|t| !world.countries.contains_key(t))
+        {
+            return Err("War transition capacity/participants invalid".into());
+        }
         let war = self.wars.get_mut(&war_id).unwrap();
         if side {
             war.attackers.insert(member.into());
@@ -256,7 +265,12 @@ impl PeaceSystem {
         }
         for enemy in enemies {
             if !military.at_war(member, &enemy) {
-                military.declare_war(member, &enemy, world)?;
+                let (attacker, defender) = if side {
+                    (member, enemy.as_str())
+                } else {
+                    (enemy.as_str(), member)
+                };
+                military.add_war_relation(attacker, defender, world, false)?;
             }
         }
         Ok(())
@@ -768,7 +782,7 @@ impl PeaceSystem {
                 } else {
                     (b.clone(), a.clone())
                 };
-                military.wars.remove(&key);
+                military.remove_war_relation(&key.0, &key.1);
             }
         }
         self.capitulated

@@ -31,6 +31,8 @@ pub struct Context {
     pub root: Scope,
     pub from: Option<Scope>,
     pub previous: Vec<Scope>,
+    #[serde(default)]
+    pub tokens: BTreeMap<String, String>,
 }
 impl Context {
     pub fn country(tag: &str) -> Self {
@@ -40,6 +42,7 @@ impl Context {
             root: s,
             from: None,
             previous: vec![],
+            tokens: BTreeMap::new(),
         }
     }
     fn enter(&self, s: Scope) -> Self {
@@ -67,6 +70,9 @@ pub enum Payload {
         #[serde(default)]
         hook: String,
         raw: Vec<Entry>,
+    },
+    HookBatch {
+        calls: Vec<on_actions::HookCall>,
     },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +183,10 @@ impl CampaignState {
                 && c.from.as_ref().is_none_or(scope)
                 && c.previous.len() <= 64
                 && c.previous.iter().all(scope)
+                && c.tokens.len() <= 128
+                && c.tokens.iter().all(|(k, v)| {
+                    !k.is_empty() && !v.is_empty() && k.len() <= 4096 && v.len() <= 4096
+                })
         };
         if self.next_id == 0
             || self.queue.len() + self.pending.len() > QUEUE
@@ -187,6 +197,15 @@ impl CampaignState {
         for (id, a) in &self.queue {
             if *id == 0 || *id != a.id || *id >= self.next_id || !ctx(&a.context) {
                 return Err("Invalid scheduled script".into());
+            }
+            if let Payload::HookBatch { calls } = &a.payload {
+                if calls.len() > 256
+                    || calls
+                        .iter()
+                        .any(|call| call.hook.is_empty() || !ctx(&call.context))
+                {
+                    return Err("Invalid saved transition hook batch".into());
+                }
             }
         }
         for (id, a) in &self.pending {
@@ -323,6 +342,8 @@ struct Journal<'a> {
     budget: usize,
     completing: BTreeSet<(String, String)>,
     decision_timers: BTreeMap<(String, String), (bool, Option<u64>)>,
+    deferred_hooks: std::collections::VecDeque<on_actions::HookCall>,
+    hook_depth: usize,
 }
 impl<'a> Journal<'a> {
     fn new(s: &'a GameSession, cat: &'a ResearchCatalogue, rules: &'a ResearchRules) -> Self {
@@ -340,10 +361,12 @@ impl<'a> Journal<'a> {
             budget: STEPS,
             completing: BTreeSet::new(),
             decision_timers: BTreeMap::new(),
+            deferred_hooks: Default::default(),
+            hook_depth: 0,
         }
     }
     fn step(&mut self, d: usize) -> Result<(), String> {
-        if d > 64 {
+        if d + self.hook_depth > 64 {
             return Err("Script recursion limit".into());
         }
         self.budget = self
@@ -594,6 +617,17 @@ impl<'a> Journal<'a> {
                         .collect();
                     self.conditions(&b, c, d + 1)?
                 }
+                "check_variable" => self.check_variable(e, c)?,
+                "has_government" => {
+                    let t = self.tag(c)?;
+                    let ideology = self
+                        .research(&t)
+                        .context
+                        .ideology
+                        .clone()
+                        .ok_or("Ruling ideology unknown")?;
+                    ideology == self.token_name(atom(e)?, c)?
+                }
                 "has_decision" | "has_active_mission" => {
                     let t = self.tag(c)?;
                     let id = atom(e)?;
@@ -689,7 +723,10 @@ impl<'a> Journal<'a> {
                 }
                 "has_global_flag" => self.globals.contains(atom(e)?),
                 "tag" | "original_tag" => {
-                    let tag = self.tag(c)?;
+                    let Scope::Country(tag) = &c.scope else {
+                        return Err("Country identity scope required".into());
+                    };
+                    let tag = tag.clone();
                     let raw = atom(e)?;
                     let target = if ["ROOT", "THIS", "FROM", "PREV"].contains(&raw) {
                         match self.scope(raw, c)? {
@@ -987,16 +1024,10 @@ impl<'a> Journal<'a> {
             "set_politics" => {
                 let t = self.tag(c)?;
                 let b = body(e)?;
-                let party = pdx::atom(b, "ruling_party").map(str::to_owned);
-                if party
-                    .as_ref()
-                    .is_some_and(|p| self.research(&t).context.ideology.as_ref() != Some(p))
-                    && ["on_ruling_party_change", "on_ruling_party_change_immediate"]
-                        .iter()
-                        .any(|key| self.cat.scripts.on_actions.contains_key(*key))
-                {
-                    return Err("Ruling-party change on-actions require native old_ideology_token/immediate dispatch support".into());
-                }
+                let party = pdx::atom(b, "ruling_party")
+                    .map(|raw| self.token_name(raw, c))
+                    .transpose()?;
+                let old_party = self.research(&t).context.ideology.clone();
                 let elections = match pdx::atom(b, "elections_allowed") {
                     None => None,
                     Some("yes") => Some(true),
@@ -1004,8 +1035,8 @@ impl<'a> Journal<'a> {
                     _ => return Err("elections_allowed requires bool".into()),
                 };
                 let r = self.research(&t);
-                if let Some(party) = party {
-                    r.context.ideology = Some(party);
+                if let Some(party) = &party {
+                    r.context.ideology = Some(party.clone());
                 }
                 if let Some(elections) = elections {
                     r.context.elections_allowed = Some(elections);
@@ -1023,6 +1054,9 @@ impl<'a> Journal<'a> {
                     if let Some(name) = pdx::atom(b, "long_name") {
                         names.1 = Some(name.into());
                     }
+                }
+                if party.is_some() && party != old_party {
+                    self.government_changed(&t, old_party.as_deref())?;
                 }
                 Ok(())
             }
@@ -1168,9 +1202,27 @@ impl<'a> Journal<'a> {
             | "multiply_variable"
             | "divide_variable" => {
                 let b = body(e)?;
-                let v = self.num(field(b, "value")?, c)?;
                 let t = self.tag(c)?;
                 let id = field(b, "var")?;
+                let raw = field(b, "value")?;
+                if let Some(value) = self.token_value(raw, c)? {
+                    if e.key != "set_variable" {
+                        return Err("Arithmetic on token variable".into());
+                    }
+                    let context = &mut self.research(&t).context;
+                    context.variables.remove(id);
+                    context.token_variables.insert(id.into(), value);
+                    return Ok(());
+                }
+                if e.key != "set_variable"
+                    && self.research(&t).context.token_variables.contains_key(id)
+                {
+                    return Err("Arithmetic on token variable".into());
+                }
+                let v = self.num(raw, c)?;
+                if e.key == "set_variable" {
+                    self.research(&t).context.token_variables.remove(id);
+                }
                 let vars = &mut self.research(&t).context.variables;
                 let old = vars.get(id).copied().unwrap_or(0.);
                 let n = match e.key.as_str() {
@@ -1409,6 +1461,7 @@ impl GameSession {
     ) -> Result<T, String> {
         let mut j = Journal::new(self, cat, rules);
         let result = f(&mut j)?;
+        j.flush_deferred_hooks()?;
         let Journal {
             state,
             research,
@@ -1601,6 +1654,16 @@ impl GameSession {
         self.campaign.last_hour = Some(h);
         self.expire_dynamic_modifiers();
         self.tick_on_actions(cat);
+        self.flush_simulation_hooks(cat, rules);
+        if !self.campaign.queue.values().any(|a| {
+            a.blocked.is_none()
+                && matches!(&a.payload, Payload::OnAction {hook, ..} if hook == "on_startup")
+        }) {
+            self.tick_decisions(cat, rules);
+        }
+    }
+    fn process_campaign_queue(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
+        let h = self.clock.elapsed_hours;
         for _ in 0..64 {
             let next = self
                 .campaign
@@ -1613,7 +1676,8 @@ impl GameSession {
             let r = match &a.payload {
                 Payload::Effects(b) => self.campaign_effects(&a.context, b, &a.source, cat, rules),
                 Payload::Event { id, raw } => self.fire_campaign_event(&a, id, raw, cat, rules),
-                Payload::CivilWar(p) => self.start_civil_war(p, rules),
+                Payload::CivilWar(p) => self.start_civil_war(p, cat, rules),
+                Payload::HookBatch { calls } => self.run_hook_batch(calls, cat, rules),
                 Payload::OnAction { raw, .. } => {
                     self.run_on_action(&a.context, raw, &a.source, cat, rules)
                 }
@@ -1628,12 +1692,6 @@ impl GameSession {
                     }
                 }
             }
-        }
-        if !self.campaign.queue.values().any(|a| {
-            a.blocked.is_none()
-                && matches!(&a.payload, Payload::OnAction {hook, ..} if hook == "on_startup")
-        }) {
-            self.tick_decisions(cat, rules);
         }
     }
     fn fire_campaign_event(

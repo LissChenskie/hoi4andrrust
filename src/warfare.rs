@@ -22,6 +22,22 @@ pub struct ProvinceConditions {
     pub attacker_air: AirSupport,
     pub defender_air: AirSupport,
 }
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum WarTransition {
+    Added {
+        attacker: String,
+        defender: String,
+        declared: bool,
+        entered_attacker: bool,
+        entered_defender: bool,
+    },
+    Ended {
+        a: String,
+        b: String,
+        peace_a: bool,
+        peace_b: bool,
+    },
+}
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
     #[serde(default)]
@@ -48,6 +64,8 @@ pub struct Warfare {
     pub next_recruitment_id: u64,
     pub battles: BTreeMap<u64, LandBattle>,
     pub wars: BTreeSet<(String, String)>,
+    #[serde(default)]
+    pub script_transitions: VecDeque<WarTransition>,
     pub military_access: BTreeSet<(String, String)>,
     pub strait_access: BTreeSet<(String, u32, u32)>,
     pub conditions: BTreeMap<u32, ProvinceConditions>,
@@ -98,6 +116,7 @@ impl Warfare {
             next_recruitment_id: 1,
             battles: BTreeMap::new(),
             wars: BTreeSet::new(),
+            script_transitions: VecDeque::new(),
             military_access: BTreeSet::new(),
             strait_access: BTreeSet::new(),
             conditions: BTreeMap::new(),
@@ -154,6 +173,18 @@ impl Warfare {
         }
     }
     pub fn validate_references(&self, world: &World) -> Result<(), String> {
+        for change in &self.script_transitions {
+            let (a, b) = match change {
+                WarTransition::Added {
+                    attacker, defender, ..
+                } => (attacker, defender),
+                WarTransition::Ended { a, b, .. } => (a, b),
+            };
+            if a == b || !world.countries.contains_key(a) || !world.countries.contains_key(b) {
+                return Err("Invalid saved war transition".into());
+            }
+        }
+
         if !self.command.identifiers_valid()
             || !self.fronts.identifiers_valid()
             || !self.plans.identifiers_valid()
@@ -290,16 +321,68 @@ impl Warfare {
         a != b && self.wars.contains(&Self::pair(a, b))
     }
     pub fn declare_war(&mut self, a: &str, b: &str, world: &World) -> Result<(), String> {
+        self.add_war_relation(a, b, world, true)
+    }
+    pub(crate) fn add_war_relation(
+        &mut self,
+        a: &str,
+        b: &str,
+        world: &World,
+        declared: bool,
+    ) -> Result<(), String> {
         if a == b || !world.countries.contains_key(a) || !world.countries.contains_key(b) {
             return Err("Invalid war participants".into());
         }
+        if self.at_war(a, b) {
+            return Ok(());
+        }
+        if self.script_transitions.len() >= 4096 {
+            return Err("Pending war transition capacity exceeded".into());
+        }
+        let entered_attacker = !self.wars.iter().any(|(x, y)| x == a || y == a);
+        let entered_defender = !self.wars.iter().any(|(x, y)| x == b || y == b);
         self.wars.insert(Self::pair(a, b));
+        self.script_transitions.push_back(WarTransition::Added {
+            attacker: a.into(),
+            defender: b.into(),
+            declared,
+            entered_attacker,
+            entered_defender,
+        });
         for p in self.plans.plans.values_mut() {
             p.control_revision = u64::MAX;
             p.last_review = 0;
         }
         self.notice(format!("{a} is at war with {b}"));
         Ok(())
+    }
+    pub(crate) fn record_civil_war_relation(&mut self, a: &str, b: &str) {
+        let entered_attacker = !self.wars.iter().any(|(x, y)| x == a || y == a);
+        let entered_defender = !self.wars.iter().any(|(x, y)| x == b || y == b);
+        if self.wars.insert(Self::pair(a, b)) {
+            self.script_transitions.push_back(WarTransition::Added {
+                attacker: a.into(),
+                defender: b.into(),
+                declared: false,
+                entered_attacker,
+                entered_defender,
+            });
+        }
+    }
+    pub(crate) fn remove_war_relation(&mut self, a: &str, b: &str) {
+        if !self.wars.remove(&Self::pair(a, b)) {
+            return;
+        }
+        let peace_a = !self.wars.iter().any(|(x, y)| x == a || y == a);
+        let peace_b = !self.wars.iter().any(|(x, y)| x == b || y == b);
+        if peace_a || peace_b {
+            self.script_transitions.push_back(WarTransition::Ended {
+                a: a.into(),
+                b: b.into(),
+                peace_a,
+                peace_b,
+            });
+        }
     }
     pub(crate) fn friendly(&self, country: &str, controller: &str) -> bool {
         country == controller

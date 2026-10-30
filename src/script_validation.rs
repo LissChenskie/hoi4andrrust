@@ -102,6 +102,47 @@ pub fn check_event(raw: &[Entry]) -> Result<(), String> {
     }
     Ok(())
 }
+/// Flatten possible on-action effects for structural checks only. Random
+/// entries become event references here; runtime still performs the real draw.
+pub fn on_action_dependencies(raw: &[Entry]) -> Result<Vec<Entry>, String> {
+    let mut result = Vec::new();
+    for e in raw {
+        if e.operator != "=" {
+            return Err("Invalid on-action operator".into());
+        }
+        match e.key.as_str() {
+            "effect" => result.extend_from_slice(body(e)?),
+            "random_events" => {
+                for entry in body(e)? {
+                    let weight = entry
+                        .key
+                        .parse::<u64>()
+                        .map_err(|_| "Invalid random event weight")?;
+                    if entry.operator != "=" {
+                        return Err("Invalid random event operator".into());
+                    }
+                    let id = atom(entry)?;
+                    if weight == 0 || id == "0" {
+                        continue;
+                    }
+                    result.push(Entry {
+                        key: "country_event".into(),
+                        operator: "=".into(),
+                        span: entry.span.clone(),
+                        value: Some(pdx::Value::Block(vec![Entry {
+                            key: "id".into(),
+                            operator: "=".into(),
+                            span: entry.span.clone(),
+                            value: Some(pdx::Value::Atom(id.into())),
+                        }])),
+                    });
+                }
+            }
+            key => return Err(format!("Unsupported on-action field {key}")),
+        }
+    }
+    Ok(result)
+}
 /// Country-scoped dynamic modifiers with real registered consumers only.
 pub fn dynamic_definition<'a>(cat: &'a ResearchCatalogue, id: &str) -> Result<&'a [Entry], String> {
     let raw = cat
@@ -280,10 +321,34 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
-                    "set_politics" => fields(
-                        e,
-                        &["ruling_party", "elections_allowed", "name", "long_name"],
-                    ),
+                    "set_politics" => {
+                        fields(
+                            e,
+                            &["ruling_party", "elections_allowed", "name", "long_name"],
+                        )?;
+                        if pdx::atom(body(e)?, "ruling_party").is_some() {
+                            for hook in [
+                                "on_ruling_party_change_immediate",
+                                "on_government_change",
+                                "on_ruling_party_change",
+                            ] {
+                                if seen.insert(format!("hook:{hook}")) {
+                                    for source in
+                                        cat.scripts.on_actions.get(hook).into_iter().flatten()
+                                    {
+                                        walk(
+                                            &on_action_dependencies(&source.raw)?,
+                                            cat,
+                                            seen,
+                                            budget,
+                                            d + 1,
+                                        )?;
+                                    }
+                                }
+                            }
+                        }
+                        Ok(())
+                    }
                     "set_popularities" => {
                         body(e)?;
                         Ok(())

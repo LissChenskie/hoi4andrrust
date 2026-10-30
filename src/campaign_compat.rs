@@ -12,7 +12,21 @@ pub fn periodic_hook(key: &str) -> bool {
     })
 }
 pub fn bound_hook(key: &str) -> bool {
-    key == "on_startup" || periodic_hook(key)
+    [
+        "on_startup",
+        "on_government_change",
+        "on_ruling_party_change",
+        "on_ruling_party_change_immediate",
+        "on_declare_war",
+        "on_war_relation_added",
+        "on_war",
+        "on_peace",
+        "on_civil_war_end_before_annexation",
+        "on_annex",
+        "on_civil_war_end",
+    ]
+    .contains(&key)
+        || periodic_hook(key)
 }
 fn effects(raw: &[pdx::Entry], cat: &ResearchCatalogue, blockers: &mut BTreeSet<String>) {
     if let Err(e) = script_validation::preflight(raw, cat) {
@@ -134,7 +148,7 @@ pub fn report(cat: &ResearchCatalogue) -> Value {
             hooks.push(json!({"id":id,"block":index,"source":block.source,"bound":bound_hook(id),"structural_candidate":blockers.is_empty(),"blockers":blockers,"supported":null,"tested":false,"parity_verified":false}));
         }
     }
-    json!({"schema":1,"fingerprint":cat.fingerprint,"decisions":decisions,"on_actions":hooks,"original_game_comparisons":0,"parity_verified":false,"limitations":["Structural candidates still require runtime facts, source-backed numerical inputs and original-engine comparisons", "Only country decisions/missions; targeted/state/character decisions and automatic AI choice are unimplemented", "Only startup/daily/weekly/monthly hooks are bound; other simulation hooks are explicit blockers in this inventory", "Authored Rust fixtures do not establish native timing, RNG or original-DLC coverage"]})
+    json!({"schema":1,"fingerprint":cat.fingerprint,"decisions":decisions,"on_actions":hooks,"original_game_comparisons":0,"parity_verified":false,"limitations":["Structural candidates still require runtime facts, source-backed numerical inputs and original-engine comparisons", "Only country decisions/missions; targeted/state/character decisions and automatic AI choice are unimplemented", "Startup/periodic, political, war-relation and typed civil-war hooks are bound; other simulation hooks remain explicit blockers", "Authored Rust fixtures do not establish native timing, RNG or original-DLC coverage"]})
 }
 
 #[cfg(test)]
@@ -163,7 +177,7 @@ mod tests {
                 },
             );
         }
-        for id in ["on_daily", "on_declare_war"] {
+        for id in ["on_daily", "on_capitulation"] {
             cat.scripts.on_actions.insert(
                 id.into(),
                 vec![ScriptSource {
@@ -185,7 +199,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|h| h["id"] == "on_declare_war"
+                .any(|h| h["id"] == "on_capitulation"
                     && h["bound"] == false
                     && h["structural_candidate"] == false)
         );

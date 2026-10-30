@@ -191,10 +191,21 @@ pub struct ResearchContext {
     pub rules: BTreeMap<String, String>,
     pub variables: BTreeMap<String, f64>,
     #[serde(default)]
+    pub token_variables: BTreeMap<String, String>,
+    #[serde(default)]
     pub template_units: Option<BTreeSet<String>>,
 }
 impl ResearchContext {
     pub fn validate_politics(&self) -> Result<(), String> {
+        if self.token_variables.iter().any(|(key, value)| {
+            key.is_empty()
+                || value.is_empty()
+                || key.len() > 4096
+                || value.len() > 4096
+                || self.variables.contains_key(key)
+        }) {
+            return Err("Invalid saved token variables".into());
+        }
         if let Some(p) = &self.party_popularities {
             if p.values()
                 .any(|v| !v.is_finite() || !(0.0..=1.).contains(v))

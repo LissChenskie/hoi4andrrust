@@ -115,6 +115,26 @@ pub(crate) fn effect_conditions(
                     }
                 }
             }
+        } else if e.key == "set_politics"
+            && e.block()
+                .is_some_and(|b| pdx::atom(b, "ruling_party").is_some())
+        {
+            for hook in [
+                "on_ruling_party_change_immediate",
+                "on_government_change",
+                "on_ruling_party_change",
+            ] {
+                if seen.insert(format!("hook:{hook}")) {
+                    for source in cat.scripts.on_actions.get(hook).into_iter().flatten() {
+                        match script_validation::on_action_dependencies(&source.raw) {
+                            Ok(raw) => effect_conditions(&raw, cat, out, seen, depth + 1),
+                            Err(e) => {
+                                out.insert(e);
+                            }
+                        }
+                    }
+                }
+            }
         } else if e.key == "add_dynamic_modifier" {
             if let Some(id) = e.block().and_then(|b| pdx::atom(b, "modifier")) {
                 if seen.insert(format!("dynamic:{id}")) {
@@ -284,6 +304,26 @@ pub(crate) fn dependencies(
                 }
             } else {
                 missing.insert(format!("{}: unresolved decision ID", e.key));
+            }
+        } else if e.key == "set_politics"
+            && e.block()
+                .is_some_and(|b| pdx::atom(b, "ruling_party").is_some())
+        {
+            for hook in [
+                "on_ruling_party_change_immediate",
+                "on_government_change",
+                "on_ruling_party_change",
+            ] {
+                if seen.insert(format!("hook:{hook}")) {
+                    for source in cat.scripts.on_actions.get(hook).into_iter().flatten() {
+                        match script_validation::on_action_dependencies(&source.raw) {
+                            Ok(raw) => dependencies(&raw, cat, missing, seen, depth + 1),
+                            Err(e) => {
+                                missing.insert(e);
+                            }
+                        }
+                    }
+                }
             }
         } else if e.key == "complete_national_focus" {
             if let Some(id) = e

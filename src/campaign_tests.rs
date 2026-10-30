@@ -421,7 +421,8 @@ fn civil_war_conserves_resources_and_rejects_duplicate_and_invalid_splits() {
                 ..Default::default()
             },
         );
-        s.start_civil_war(&p, &Default::default()).unwrap();
+        s.start_civil_war(&p, &Default::default(), &Default::default())
+            .unwrap();
         assert_eq!(
             s.production
                 .by_country
@@ -461,21 +462,28 @@ fn civil_war_conserves_resources_and_rejects_duplicate_and_invalid_splits() {
         assert_eq!(s.military.divisions[&2].country, "D01");
         s.military.validate_references(&s.world).unwrap();
         let before = snap(&s);
-        assert!(s.start_civil_war(&p, &Default::default()).is_err());
+        assert!(
+            s.start_civil_war(&p, &Default::default(), &Default::default())
+                .is_err()
+        );
         assert_eq!(snap(&s), before);
     }
     let mut s = fixture();
     let mut p = plan();
     p.divisions.clear();
     let before = snap(&s);
-    assert!(s.start_civil_war(&p, &Default::default()).is_err());
+    assert!(
+        s.start_civil_war(&p, &Default::default(), &Default::default())
+            .is_err()
+    );
     assert_eq!(snap(&s), before);
 }
 #[test]
 fn civil_war_either_victor_preserves_stock_and_colliding_production_ids() {
     for winner in ["A", "D01"] {
         let mut s = fixture();
-        s.start_civil_war(&plan(), &Default::default()).unwrap();
+        s.start_civil_war(&plan(), &Default::default(), &Default::default())
+            .unwrap();
         for tag in ["A", "D01"] {
             let p = s.production.country_mut(tag);
             p.create_model(
@@ -487,12 +495,16 @@ fn civil_war_either_victor_preserves_stock_and_colliding_production_ids() {
             p.lines[0].partial_ic = 0.25;
         }
         let before = snap(&s);
-        assert!(s.settle_civil_war("D01", winner).is_err());
+        assert!(
+            s.settle_civil_war("D01", winner, &Default::default(), &Default::default())
+                .is_err()
+        );
         assert_eq!(snap(&s), before);
         for p in [1, 2, 3] {
             s.world.set_province_controller(p, Some(winner));
         }
-        s.settle_civil_war("D01", winner).unwrap();
+        s.settle_civil_war("D01", winner, &Default::default(), &Default::default())
+            .unwrap();
         let p = s.production.country(winner).unwrap();
         assert_eq!(p.model_stockpile["rifle"], 101);
         assert_eq!(p.lines.len(), 2);
@@ -500,7 +512,10 @@ fn civil_war_either_victor_preserves_stock_and_colliding_production_ids() {
         assert_eq!(p.lines.iter().map(|l| l.partial_ic).sum::<f64>(), 0.5);
         assert!(s.military.divisions.values().all(|d| d.country == winner));
         s.military.validate_references(&s.world).unwrap();
-        assert!(s.settle_civil_war("D01", winner).is_err());
+        assert!(
+            s.settle_civil_war("D01", winner, &Default::default(), &Default::default())
+                .is_err()
+        );
     }
 }
 #[test]
@@ -691,7 +706,8 @@ fn civil_war_transfers_real_air_navy_training_and_construction_without_cloning()
         .consumer_goods_fraction = 0.2;
     let men =
         s.military.countries["A"].manpower_pool + u64::from(s.military.recruitment[&job].manpower);
-    s.start_civil_war(&p, &Default::default()).unwrap();
+    s.start_civil_war(&p, &Default::default(), &Default::default())
+        .unwrap();
     assert_eq!(s.military.air.wings[&1].country, "D01");
     assert_eq!(s.military.air.wings[&1].planes, 37);
     assert_eq!(s.military.naval.task_forces[&1].country, "D01");
@@ -946,7 +962,7 @@ fn active_dynamic_modifiers_require_explicit_split_inheritance_instead_of_leakin
     .unwrap();
     let before = snap(&s);
     assert!(
-        s.start_civil_war(&plan(), &Default::default())
+        s.start_civil_war(&plan(), &Default::default(), &Default::default())
             .unwrap_err()
             .contains("inheritance")
     );
@@ -1014,4 +1030,124 @@ fn independent_historical_dynamic_effect_replays_once_after_military_initializat
         s.campaign.dynamic_modifiers["A"]["authored"].expires,
         Some(48)
     );
+}
+
+fn hook_catalogue(raw: &str) -> ResearchCatalogue {
+    let mut cat = ResearchCatalogue::default();
+    for e in parse_pdx(raw).unwrap() {
+        cat.scripts
+            .on_actions
+            .entry(e.key.clone())
+            .or_default()
+            .push(crate::research_script::ScriptSource {
+                kind: "on_action".into(),
+                id: e.key.clone(),
+                source: "authored civil-war hooks".into(),
+                conditions: vec![],
+                effects: vec![],
+                raw: e.block().unwrap().to_vec(),
+            });
+    }
+    cat
+}
+#[test]
+fn typed_civil_war_calls_both_governments_and_before_after_annex_at_real_boundaries() {
+    let mut s = fixture();
+    s.research
+        .country_mut("A", 0, &Default::default())
+        .context
+        .ideology = Some("neutrality".into());
+    let cat = hook_catalogue(
+        "on_government_change={effect={set_country_flag=government_called}} on_ruling_party_change_immediate={effect={if={limit={check_variable={old_ideology_token=token:neutrality}} set_country_flag=old_parent_ideology}}} on_civil_war_end_before_annexation={effect={set_country_flag=before_annex FROM={add_equipment_to_stockpile={type=rifle amount=7}}}} on_annex={effect={if={limit={FROM={tag=D01}} set_country_flag=annexed_from_identity}}} on_civil_war_end={effect={set_country_flag=civil_end}}",
+    );
+    s.start_civil_war(&plan(), &cat, &Default::default())
+        .unwrap();
+    for t in ["A", "D01"] {
+        assert!(
+            s.research
+                .country(t)
+                .unwrap()
+                .flags
+                .contains("government_called")
+        );
+        assert!(
+            s.research
+                .country(t)
+                .unwrap()
+                .flags
+                .contains("old_parent_ideology")
+        );
+    }
+    for p in [1, 2, 3] {
+        s.world.set_province_controller(p, Some("A"));
+    }
+    s.settle_civil_war("D01", "A", &cat, &Default::default())
+        .unwrap();
+    assert_eq!(
+        s.production.country("A").unwrap().model_stockpile["rifle"],
+        108
+    );
+    for k in ["before_annex", "annexed_from_identity", "civil_end"] {
+        assert!(s.research.country("A").unwrap().flags.contains(k));
+    }
+    assert!(s.campaign.queue.values().all(|a| a.blocked.is_none()));
+}
+#[test]
+fn failed_pre_annex_callback_or_staged_overflow_cannot_reward_or_destroy_loser() {
+    for overflow in [false, true] {
+        let mut s = fixture();
+        let base = ResearchCatalogue::default();
+        s.start_civil_war(&plan(), &base, &Default::default())
+            .unwrap();
+        for p in [1, 2, 3] {
+            s.world.set_province_controller(p, Some("A"));
+        }
+        if overflow {
+            s.military.countries.get_mut("A").unwrap().manpower_pool = u64::MAX - 1;
+            s.military.countries.get_mut("D01").unwrap().manpower_pool = 1;
+        }
+        let cat = hook_catalogue(if overflow {
+            "on_civil_war_end_before_annexation={effect={add_political_power=9 add_manpower=1}} on_annex={effect={set_country_flag=post}}"
+        } else {
+            "on_civil_war_end_before_annexation={effect={add_political_power=9 divide_variable={var=zero value=0}}} on_annex={effect={set_country_flag=post}}"
+        });
+        let before = snap(&s);
+        assert!(
+            s.settle_civil_war("D01", "A", &cat, &Default::default())
+                .is_err()
+        );
+        assert_eq!(before, snap(&s));
+    }
+}
+#[test]
+fn post_annex_callback_failure_is_saved_and_not_repeated() {
+    let mut s = fixture();
+    let cat = hook_catalogue(
+        "on_annex={effect={add_political_power=17 divide_variable={var=zero value=0}}} on_civil_war_end={effect={set_country_flag=after}}",
+    );
+    s.start_civil_war(&plan(), &cat, &Default::default())
+        .unwrap();
+    for p in [1, 2, 3] {
+        s.world.set_province_controller(p, Some("A"));
+    }
+    s.settle_civil_war("D01", "A", &cat, &Default::default())
+        .unwrap();
+    assert!(s.campaign.inactive.contains("D01"));
+    let power = s.campaign.countries["A"].power;
+    assert_eq!(
+        s.campaign
+            .queue
+            .values()
+            .filter(|a| a.blocked.is_some())
+            .count(),
+        1
+    );
+    let bytes = serde_json::to_vec(&s).unwrap();
+    s = serde_json::from_slice(&bytes).unwrap();
+    s.flush_simulation_hooks(&cat, &Default::default());
+    assert_eq!(s.campaign.countries["A"].power, power);
+    assert!(!s.research.country("A").unwrap().flags.contains("after"));
+    s.campaign
+        .validate(&s.world, s.clock.elapsed_hours)
+        .unwrap();
 }

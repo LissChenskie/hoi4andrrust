@@ -424,6 +424,7 @@ impl GameSession {
             &self.research,
             self.clock.elapsed_hours,
         );
+        self.flush_simulation_hooks(catalogue, research);
         if self.world.control_revision != control_revision {
             self.refresh_research_building_slots();
         }

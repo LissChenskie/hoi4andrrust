@@ -298,9 +298,34 @@ impl GameSession {
     pub fn start_civil_war(
         &mut self,
         p: &SplitPlan,
+        cat: &crate::research::ResearchCatalogue,
         rules: &crate::research::ResearchRules,
     ) -> Result<(), String> {
         p.validate(self)?;
+        if self.military.script_transitions.len() >= 4096 {
+            return Err("Pending war transition capacity exceeded".into());
+        }
+        let old = self
+            .research
+            .country(&p.parent)
+            .and_then(|c| c.context.ideology.clone());
+        let mut calls = Vec::new();
+        for hook in [
+            "on_ruling_party_change_immediate",
+            "on_government_change",
+            "on_ruling_party_change",
+        ] {
+            for tag in [&p.parent, &p.rebel] {
+                let mut call = crate::campaign::on_actions::HookCall::country(hook, tag, None);
+                if let Some(old) = &old {
+                    call.context
+                        .tokens
+                        .insert("old_ideology_token".into(), old.clone());
+                }
+                calls.push(call);
+            }
+        }
+        let hook_job = self.reserve_hook_batch(calls, cat)?;
         let a = &p.parent;
         let b = &p.rebel;
         crate::construction::initialize_builders(&self.world, &mut self.construction_queues);
@@ -628,15 +653,13 @@ impl GameSession {
                 j.original_variant = Some(id.clone());
             }
         }
-        self.military.wars.insert(if a < b {
-            (a.clone(), b.clone())
-        } else {
-            (b.clone(), a.clone())
-        });
+        // Both tags are validated/created before this infallible relation insertion.
+        self.military.record_civil_war_relation(a, b);
         self.campaign
             .civil_wars
             .insert(b.clone(), (a.clone(), None));
         self.invalidate_civil_war(a, b);
+        self.finish_reserved_hook_batch(hook_job, cat, rules);
         Ok(())
     }
     fn invalidate_civil_war(&mut self, a: &str, b: &str) {
@@ -708,7 +731,13 @@ impl GameSession {
     }
     /// Conservative outcome policy, not a vanilla surrender threshold: require
     /// full occupation and an isolated civil war. Defunct tags retain historical identity.
-    pub fn settle_civil_war(&mut self, rebel: &str, winner: &str) -> Result<(), String> {
+    pub fn settle_civil_war(
+        &mut self,
+        rebel: &str,
+        winner: &str,
+        cat: &crate::research::ResearchCatalogue,
+        rules: &crate::research::ResearchRules,
+    ) -> Result<(), String> {
         let (parent, done) = self
             .campaign
             .civil_wars
@@ -840,6 +869,9 @@ impl GameSession {
             templates.insert(id.clone(), t);
             aliases.insert(name.clone(), id);
         }
+        let post_hooks = self.before_civil_annex(winner, loser, cat, rules)?;
+        // Include equipment granted by the pre-annex callback in the merger.
+        let incoming = self.production.country(loser).cloned().unwrap_or_default();
         crate::construction::initialize_builders(&self.world, &mut self.construction_queues);
         for id in states {
             self.world.states.get_mut(&id).unwrap().owner = Some(winner.into());
@@ -1080,7 +1112,7 @@ impl GameSession {
         self.campaign.focuses.active.remove(loser);
         self.campaign.inactive.insert(loser.into());
         self.campaign.civil_wars.get_mut(rebel).unwrap().1 = Some(winner.into());
-        self.military.wars.retain(|(a, b)| a != loser && b != loser);
+        self.military.remove_war_relation(winner, loser);
         self.military
             .military_access
             .retain(|(a, b)| a != loser && b != loser);
@@ -1089,6 +1121,7 @@ impl GameSession {
             self.player_country = Some(winner.into());
         }
         self.invalidate_civil_war(winner, loser);
+        self.finish_reserved_hook_batch(post_hooks, cat, rules);
         Ok(())
     }
 }
