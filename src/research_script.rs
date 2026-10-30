@@ -65,6 +65,26 @@ pub struct ResearchScripts {
     #[serde(default)]
     pub defines: BTreeMap<String, f64>,
 }
+/// Native set_popularities uses percentages; omitted ideologies have zero.
+pub fn popularities(b: &[Entry]) -> Result<BTreeMap<String, f64>, String> {
+    let mut values = BTreeMap::new();
+    let mut total = 0.;
+    for e in b {
+        let n = e
+            .atom()
+            .and_then(|n| n.parse::<f64>().ok())
+            .filter(|n| n.is_finite() && (0.0..=100.).contains(n))
+            .ok_or("Invalid party popularity")?;
+        if e.operator != "=" || values.insert(e.key.clone(), n / 100.).is_some() {
+            return Err("Duplicate/invalid popularity field".into());
+        }
+        total += n;
+    }
+    if (total - 100.).abs() > 1e-7 {
+        return Err("Party popularities must sum to 100".into());
+    }
+    Ok(values)
+}
 pub fn parse_date(s: &str) -> Option<GameDate> {
     let p: Vec<_> = s.split('.').collect();
     if p.len() < 3 || p.len() > 4 {
@@ -267,6 +287,18 @@ fn predicate(e: &Entry, c: &CountryResearch, d: u8) -> Option<bool> {
             }
         }
         "has_government" => Some(ctx.ideology.as_deref()? == raw?),
+        "has_elections" => yesno(ctx.elections_allowed),
+        key if ctx
+            .party_popularities
+            .as_ref()
+            .is_some_and(|p| p.contains_key(key)) =>
+        {
+            compare(
+                *ctx.party_popularities.as_ref()?.get(key)?,
+                &e.operator,
+                numeric(raw?, c)?,
+            )
+        }
         "is_in_faction" => yesno(ctx.faction.as_ref().map(|v| !v.is_empty())),
         "has_war" => yesno(ctx.at_war),
         "is_subject" => yesno(ctx.is_subject),
@@ -620,7 +652,18 @@ fn execute(
                 if let Some(s) = atom(nested, "ruling_party") {
                     c.context.ideology = Some(s.into());
                 }
+                if let Some(value) = atom(nested, "elections_allowed") {
+                    match value {
+                        "yes" => c.context.elections_allowed = Some(true),
+                        "no" => c.context.elections_allowed = Some(false),
+                        _ => defer(c, e, source, "Invalid elections_allowed"),
+                    }
+                }
             }
+            "set_popularities" => match popularities(nested) {
+                Ok(p) => c.context.party_popularities = Some(p),
+                Err(reason) => defer(c, e, source, &reason),
+            },
             "add_to_tech_sharing_group" | "remove_from_tech_sharing_group" => {
                 if let Some(id) = e.atom() {
                     if e.key.starts_with("add_") {
@@ -837,6 +880,7 @@ pub fn unsupported_predicates(entries: &[Entry]) -> BTreeSet<String> {
             | "has_idea"
             | "has_dlc"
             | "has_government"
+            | "has_elections"
             | "is_in_faction"
             | "has_war"
             | "is_subject"

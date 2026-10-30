@@ -720,3 +720,46 @@ fn civil_war_transfers_real_air_navy_training_and_construction_without_cloning()
     assert_eq!(s.construction_queues[&2][0].progress, 17.);
     assert_eq!(s.construction["D01"].policy.consumer_goods_fraction, 0.2);
 }
+
+#[test]
+fn political_setters_government_and_popularity_affect_real_conditions_atomically() {
+    let mut s = fixture();
+    let cat = ResearchCatalogue::default();
+    let rules = ResearchRules::default();
+    s.campaign.countries.get_mut("A").unwrap().power = None;
+    let b=parse_pdx("set_political_power=75 set_stability=0.8 set_war_support=0.6 set_popularities={democratic=30 neutrality=70} set_politics={ruling_party=democratic elections_allowed=no name=party_short long_name=party_long}").unwrap();
+    s.campaign_effects(&Context::country("A"), &b, "authored", &cat, &rules)
+        .unwrap();
+    assert_eq!(s.campaign.countries["A"].power, Some(75.));
+    assert!(s.campaign_conditions(&Context::country("A"),&parse_pdx("has_government=democratic has_elections=no has_stability>0.7 has_war_support>0.5 has_political_power>50 democratic>0.2").unwrap(),&cat,&rules).unwrap());
+    assert_eq!(
+        s.research.countries["A"].context.party_names["democratic"]
+            .0
+            .as_deref(),
+        Some("party_short")
+    );
+    let before = snap(&s);
+    assert!(
+        s.campaign_effects(
+            &Context::country("A"),
+            &parse_pdx("add_political_power=3 set_popularities={democratic=12 neutrality=70}")
+                .unwrap(),
+            "authored",
+            &cat,
+            &rules
+        )
+        .is_err()
+    );
+    assert_eq!(snap(&s), before);
+    // No fake election scheduler: unsupported timer changes still block.
+    assert!(
+        s.campaign_effects(
+            &Context::country("A"),
+            &parse_pdx("set_politics={last_election=1936.1.1 election_frequency=48}").unwrap(),
+            "authored",
+            &cat,
+            &rules
+        )
+        .is_err()
+    );
+}

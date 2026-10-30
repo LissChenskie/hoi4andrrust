@@ -275,6 +275,7 @@ struct Journal<'a> {
     retired: BTreeSet<String>,
     globals: BTreeSet<String>,
     budget: usize,
+    completing: BTreeSet<(String, String)>,
 }
 impl<'a> Journal<'a> {
     fn new(s: &'a GameSession, cat: &'a ResearchCatalogue, rules: &'a ResearchRules) -> Self {
@@ -290,6 +291,7 @@ impl<'a> Journal<'a> {
             retired: BTreeSet::new(),
             globals: s.research.global_flags.clone(),
             budget: STEPS,
+            completing: BTreeSet::new(),
         }
     }
     fn step(&mut self, d: usize) -> Result<(), String> {
@@ -430,6 +432,53 @@ impl<'a> Journal<'a> {
                         .collect();
                     self.conditions(&b, c, d + 1)?
                 }
+                "has_focus_tree" => {
+                    let t = self.tag(c)?;
+                    self.state
+                        .focuses
+                        .selected
+                        .get(&t)
+                        .ok_or("Focus tree not initialized")?
+                        .as_str()
+                        == atom(e)?
+                }
+                "focus_progress" => {
+                    let mut seen = BTreeSet::new();
+                    if body(e)?.iter().any(|e| {
+                        !["focus", "progress"].contains(&e.key.as_str())
+                            || !seen.insert(&e.key)
+                            || (e.key == "focus" && e.operator != "=")
+                    }) {
+                        return Err("Invalid/duplicate focus_progress field".into());
+                    }
+                    let t = self.tag(c)?;
+                    let raw = body(e)?;
+                    let id = field(raw, "focus")?;
+                    let test = raw
+                        .iter()
+                        .find(|e| e.key == "progress")
+                        .ok_or("Progress comparator missing")?;
+                    let progress = if self.research(&t).context.completed_focuses.contains(id) {
+                        1.
+                    } else {
+                        self.state
+                            .focuses
+                            .active
+                            .get(&t)
+                            .filter(|a| a.id == id)
+                            .map_or(0., |a| a.progress / a.required)
+                    };
+                    let target = self.num(atom(test)?, c)?;
+                    match test.operator.as_str() {
+                        ">" => progress > target,
+                        "<" => progress < target,
+                        ">=" => progress >= target,
+                        "<=" => progress <= target,
+                        "=" | "==" => progress == target,
+                        "!=" => progress != target,
+                        _ => return Err("Invalid focus progress comparison".into()),
+                    }
+                }
                 "has_completed_focus" => {
                     let t = self.tag(c)?;
                     self.research(&t)
@@ -480,7 +529,12 @@ impl<'a> Journal<'a> {
                         .get(&id)
                         .is_some_and(|f| f.contains(flag))
                 }
-                "political_power" | "stability" | "war_support" => {
+                "political_power"
+                | "has_political_power"
+                | "stability"
+                | "has_stability"
+                | "war_support"
+                | "has_war_support" => {
                     let t = self.tag(c)?;
                     let p = self
                         .state
@@ -488,8 +542,8 @@ impl<'a> Journal<'a> {
                         .get(&t)
                         .ok_or("Unknown political history")?;
                     let n = match e.key.as_str() {
-                        "political_power" => p.power,
-                        "stability" => p.stability,
+                        "political_power" | "has_political_power" => p.power,
+                        "stability" | "has_stability" => p.stability,
                         _ => p.war_support,
                     }
                     .ok_or("Unknown political value")?;
@@ -636,6 +690,86 @@ impl<'a> Journal<'a> {
                 self.state.to_mut().focuses.layout_trees.remove(&t);
                 Ok(())
             }
+            "complete_national_focus" => {
+                let t = self.tag(c)?;
+                let id = e
+                    .atom()
+                    .or_else(|| e.block().and_then(|b| pdx::atom(b, "focus")))
+                    .ok_or("Completed focus ID required")?
+                    .to_owned();
+                if self.research(&t).context.completed_focuses.contains(&id) {
+                    return Ok(());
+                }
+                if !self.completing.insert((t.clone(), id.clone())) {
+                    return Err(format!("Recursive completion of {id}"));
+                }
+                let src = self
+                    .cat
+                    .scripts
+                    .sources
+                    .get(&format!("focus:{id}"))
+                    .ok_or("Focus source missing")?;
+                self.execute(&src.effects, c, &src.source, d + 1)?;
+                self.research(&t)
+                    .context
+                    .completed_focuses
+                    .insert(id.clone());
+                if self
+                    .state
+                    .focuses
+                    .active
+                    .get(&t)
+                    .is_some_and(|f| f.id == id)
+                {
+                    self.state.to_mut().focuses.active.remove(&t);
+                }
+                self.state.to_mut().focuses.failures.remove(&t);
+                self.completing.remove(&(t, id));
+                Ok(())
+            }
+            "set_politics" => {
+                let t = self.tag(c)?;
+                let b = body(e)?;
+                let party = pdx::atom(b, "ruling_party").map(str::to_owned);
+                let elections = match pdx::atom(b, "elections_allowed") {
+                    None => None,
+                    Some("yes") => Some(true),
+                    Some("no") => Some(false),
+                    _ => return Err("elections_allowed requires bool".into()),
+                };
+                let r = self.research(&t);
+                if let Some(party) = party {
+                    r.context.ideology = Some(party);
+                }
+                if let Some(elections) = elections {
+                    r.context.elections_allowed = Some(elections);
+                }
+                if pdx::atom(b, "name").is_some() || pdx::atom(b, "long_name").is_some() {
+                    let party = r
+                        .context
+                        .ideology
+                        .clone()
+                        .ok_or("Ruling ideology unknown")?;
+                    let names = r.context.party_names.entry(party).or_default();
+                    if let Some(name) = pdx::atom(b, "name") {
+                        names.0 = Some(name.into());
+                    }
+                    if let Some(name) = pdx::atom(b, "long_name") {
+                        names.1 = Some(name.into());
+                    }
+                }
+                Ok(())
+            }
+            "set_popularities" => {
+                let t = self.tag(c)?;
+                let mut values = body(e)?.to_vec();
+                for v in &mut values {
+                    v.value = Some(crate::pdx::Value::Atom(self.num(atom(v)?, c)?.to_string()));
+                }
+                self.research(&t).context.party_popularities =
+                    Some(crate::research_script::popularities(&values)?);
+                Ok(())
+            }
             "load_focus_tree" => {
                 let t = self.tag(c)?;
                 let (id, keep) = if let Some(id) = e.atom() {
@@ -658,6 +792,35 @@ impl<'a> Journal<'a> {
                 if !tree.problems.is_empty() {
                     return Err(tree.problems.join("; "));
                 }
+                let allowed = tree.focuses.clone();
+                let copy = if let Some(raw) =
+                    e.block().and_then(|b| pdx::atom(b, "copy_completed_from"))
+                {
+                    let Scope::Country(from) = self.scope(raw, c)? else {
+                        return Err("Copy progress requires country scope".into());
+                    };
+                    let completed = self
+                        .research(&from)
+                        .context
+                        .completed_focuses
+                        .iter()
+                        .filter(|id| allowed.contains(*id))
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    let bypassed = self
+                        .state
+                        .focuses
+                        .bypassed
+                        .get(&from)
+                        .into_iter()
+                        .flatten()
+                        .filter(|id| allowed.contains(*id))
+                        .cloned()
+                        .collect::<BTreeSet<_>>();
+                    Some((completed, bypassed))
+                } else {
+                    None
+                };
                 if !keep {
                     let shared = self.cat.scripts.shared_focuses.clone();
                     self.research(&t)
@@ -667,6 +830,19 @@ impl<'a> Journal<'a> {
                     if let Some(b) = self.state.to_mut().focuses.bypassed.get_mut(&t) {
                         b.retain(|f| shared.contains(f));
                     }
+                }
+                if let Some((completed, bypassed)) = copy {
+                    self.research(&t)
+                        .context
+                        .completed_focuses
+                        .extend(completed);
+                    self.state
+                        .to_mut()
+                        .focuses
+                        .bypassed
+                        .entry(t.clone())
+                        .or_default()
+                        .extend(bypassed);
                 }
                 self.state.to_mut().focuses.active.remove(&t);
                 self.state
@@ -780,7 +956,12 @@ impl<'a> Journal<'a> {
                 *v = integral(*v, n)?;
                 Ok(())
             }
-            "add_political_power" | "add_stability" | "add_war_support" => {
+            "add_political_power"
+            | "add_stability"
+            | "add_war_support"
+            | "set_political_power"
+            | "set_stability"
+            | "set_war_support" => {
                 let t = self.tag(c)?;
                 let n = self.num(atom(e)?, c)?;
                 let p = self
@@ -790,15 +971,19 @@ impl<'a> Journal<'a> {
                     .get_mut(&t)
                     .ok_or("Political history unknown")?;
                 let v = match e.key.as_str() {
-                    "add_political_power" => &mut p.power,
-                    "add_stability" => &mut p.stability,
+                    "add_political_power" | "set_political_power" => &mut p.power,
+                    "add_stability" | "set_stability" => &mut p.stability,
                     _ => &mut p.war_support,
                 };
-                let next = v.ok_or("Political value unknown")? + n;
+                let next = if e.key.starts_with("set_") {
+                    n
+                } else {
+                    v.ok_or("Political value unknown")? + n
+                };
                 if !next.is_finite() {
                     return Err("Political overflow".into());
                 }
-                *v = Some(if e.key == "add_political_power" {
+                *v = Some(if e.key.ends_with("political_power") {
                     next
                 } else {
                     next.clamp(0., 1.)

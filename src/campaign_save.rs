@@ -119,6 +119,9 @@ impl GameSession {
         }
         let s = &mut data.session;
         s.campaign.validate(&s.world, s.clock.elapsed_hours)?;
+        for c in s.research.countries.values() {
+            c.context.validate_politics()?;
+        }
         if s.clock.hour >= 24 || !s.clock.date.is_valid() {
             return Err("Повреждён игровой календарь".into());
         }

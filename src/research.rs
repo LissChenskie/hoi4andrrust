@@ -178,6 +178,12 @@ pub struct ResearchContext {
     pub completed_focuses: BTreeSet<String>,
     pub ideas: BTreeSet<String>,
     pub ideology: Option<String>,
+    #[serde(default)]
+    pub elections_allowed: Option<bool>,
+    #[serde(default)]
+    pub party_names: BTreeMap<String, (Option<String>, Option<String>)>,
+    #[serde(default)]
+    pub party_popularities: Option<BTreeMap<String, f64>>,
     pub faction: Option<String>,
     pub at_war: Option<bool>,
     pub is_subject: Option<bool>,
@@ -186,6 +192,19 @@ pub struct ResearchContext {
     pub variables: BTreeMap<String, f64>,
     #[serde(default)]
     pub template_units: Option<BTreeSet<String>>,
+}
+impl ResearchContext {
+    pub fn validate_politics(&self) -> Result<(), String> {
+        if let Some(p) = &self.party_popularities {
+            if p.values()
+                .any(|v| !v.is_finite() || !(0.0..=1.).contains(v))
+                || (p.values().sum::<f64>() - 1.).abs() > 1e-7
+            {
+                return Err("Invalid saved party popularities".into());
+            }
+        }
+        Ok(())
+    }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeferredEffect {

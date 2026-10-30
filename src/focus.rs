@@ -1233,4 +1233,116 @@ pub(crate) mod tests {
             );
         }
     }
+    #[test]
+    fn forced_completion_runs_reward_before_history_once_and_stops_matching_job() {
+        let (mut s, mut cat, rules) = prepared();
+        source(
+            &mut cat,
+            "first",
+            "cost=1 select_effect={add_political_power=2} completion_reward={if={limit={NOT={has_completed_focus=first}} add_political_power=5}}",
+        );
+        s.begin_focus("A", "first", &cat, &rules).unwrap();
+        day(&mut s, &cat, &rules);
+        let script =
+            pdx::parse_pdx("complete_national_focus={focus=first use_side_message=yes}").unwrap();
+        s.campaign_effects(&Context::country("A"), &script, "authored", &cat, &rules)
+            .unwrap();
+        assert_eq!(s.campaign.countries["A"].power, Some(106.));
+        assert!(!s.campaign.focuses.active.contains_key("A"));
+        s.campaign_effects(&Context::country("A"), &script, "authored", &cat, &rules)
+            .unwrap();
+        assert_eq!(s.campaign.countries["A"].power, Some(106.));
+    }
+    #[test]
+    fn nested_completion_failure_and_recursion_rollback_whole_transaction() {
+        let (mut s, mut cat, rules) = prepared();
+        source(
+            &mut cat,
+            "first",
+            "cost=1 completion_reward={add_political_power=4 add_equipment_to_stockpile={type=missing amount=1}}",
+        );
+        let before = serde_json::to_value(&s.campaign).unwrap();
+        let b = pdx::parse_pdx("add_political_power=1 complete_national_focus=first").unwrap();
+        assert!(
+            s.campaign_effects(&Context::country("A"), &b, "authored", &cat, &rules)
+                .is_err()
+        );
+        assert_eq!(serde_json::to_value(&s.campaign).unwrap(), before);
+        assert!(
+            !s.research.countries["A"]
+                .context
+                .completed_focuses
+                .contains("first")
+        );
+        source(
+            &mut cat,
+            "first",
+            "cost=1 completion_reward={complete_national_focus=second}",
+        );
+        source(
+            &mut cat,
+            "second",
+            "cost=1 completion_reward={complete_national_focus=first}",
+        );
+        assert!(
+            s.campaign_effects(&Context::country("A"), &b, "authored", &cat, &rules)
+                .unwrap_err()
+                .contains("Recursive")
+        );
+        assert_eq!(serde_json::to_value(&s.campaign).unwrap(), before);
+    }
+    #[test]
+    fn native_focus_triggers_and_copy_progress_preserve_source_country() {
+        let (mut s, cat, rules) = prepared();
+        s.begin_focus("A", "first", &cat, &rules).unwrap();
+        day(&mut s, &cat, &rules);
+        let ctx = Context::country("A");
+        assert!(
+            s.campaign_conditions(
+                &ctx,
+                &pdx::parse_pdx("has_focus_tree=test focus_progress={focus=first progress>0.1}")
+                    .unwrap(),
+                &cat,
+                &rules
+            )
+            .unwrap()
+        );
+        let b = s.research.country_mut("B", 1, &rules);
+        b.context
+            .completed_focuses
+            .extend(["second".into(), "foreign".into()]);
+        s.campaign
+            .focuses
+            .bypassed
+            .insert("B".into(), BTreeSet::from(["second".into()]));
+        let mut ctx = ctx;
+        ctx.from = Some(crate::campaign::Scope::Country("B".into()));
+        s.campaign_effects(
+            &ctx,
+            &pdx::parse_pdx("load_focus_tree={tree=test copy_completed_from=FROM}").unwrap(),
+            "authored",
+            &cat,
+            &rules,
+        )
+        .unwrap();
+        assert!(
+            s.research.countries["A"]
+                .context
+                .completed_focuses
+                .contains("second")
+        );
+        assert!(
+            !s.research.countries["A"]
+                .context
+                .completed_focuses
+                .contains("foreign")
+        );
+        assert!(s.campaign.focuses.bypassed["A"].contains("second"));
+        assert!(
+            s.research.countries["B"]
+                .context
+                .completed_focuses
+                .contains("foreign")
+        );
+    }
 }

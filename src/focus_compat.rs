@@ -61,8 +61,16 @@ fn walk(
                 depth + 1,
                 budget,
             ),
-            "political_power" | "stability" | "war_support" | "has_state_flag"
-            | "has_capitulated" => {}
+            "political_power"
+            | "stability"
+            | "war_support"
+            | "has_state_flag"
+            | "has_capitulated"
+            | "has_political_power"
+            | "has_stability"
+            | "has_war_support"
+            | "has_focus_tree"
+            | "focus_progress" => {}
             k if e.block().is_some()
                 && (k.parse::<u32>().is_ok()
                     || k.len() == 3
@@ -97,6 +105,17 @@ fn effect_conditions(
                     Ok(b) => effect_conditions(&b, cat, out, seen, depth + 1),
                     Err(err) => {
                         out.insert(err);
+                    }
+                }
+            }
+        } else if e.key == "complete_national_focus" {
+            if let Some(id) = e
+                .atom()
+                .or_else(|| e.block().and_then(|b| pdx::atom(b, "focus")))
+            {
+                if seen.insert(format!("focus:{id}")) {
+                    if let Some(src) = cat.scripts.sources.get(&format!("focus:{id}")) {
+                        effect_conditions(&src.effects, cat, out, seen, depth + 1);
                     }
                 }
             }
@@ -196,7 +215,23 @@ fn dependencies(
         return;
     }
     for e in b {
-        if e.key == "country_event" {
+        if e.key == "complete_national_focus" {
+            if let Some(id) = e
+                .atom()
+                .or_else(|| e.block().and_then(|b| pdx::atom(b, "focus")))
+            {
+                if seen.insert(format!("focus:{id}")) {
+                    match cat.scripts.sources.get(&format!("focus:{id}")) {
+                        Some(src) => dependencies(&src.raw, cat, missing, seen, depth + 1),
+                        None => {
+                            missing.insert(format!("focus:{id}"));
+                        }
+                    }
+                }
+            } else {
+                missing.insert("complete_national_focus: unresolved ID".into());
+            }
+        } else if e.key == "country_event" {
             let id = e
                 .atom()
                 .or_else(|| e.block().and_then(|b| pdx::atom(b, "id")));

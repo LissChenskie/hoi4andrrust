@@ -176,11 +176,50 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
+                    "complete_national_focus" => {
+                        let id = if let Some(id) = e.atom() {
+                            id
+                        } else {
+                            fields(e, &["focus", "use_side_message", "originator_name"])?;
+                            field(body(e)?, "focus")?
+                        };
+                        if let Some(value) =
+                            e.block().and_then(|b| pdx::atom(b, "use_side_message"))
+                        {
+                            if !["yes", "no"].contains(&value) {
+                                return Err("use_side_message requires bool".into());
+                            }
+                        }
+                        let src = cat
+                            .scripts
+                            .sources
+                            .get(&format!("focus:{id}"))
+                            .ok_or_else(|| format!("Missing focus {id}"))?;
+                        if src
+                            .raw
+                            .iter()
+                            .any(|e| e.key.starts_with("completion_reward_joint_"))
+                        {
+                            return Err("Joint focus completion requires joint mechanics".into());
+                        }
+                        if seen.insert(format!("focus:{id}")) {
+                            walk(&src.effects, cat, seen, budget, d + 1)?;
+                        }
+                        Ok(())
+                    }
+                    "set_politics" => fields(
+                        e,
+                        &["ruling_party", "elections_allowed", "name", "long_name"],
+                    ),
+                    "set_popularities" => {
+                        body(e)?;
+                        Ok(())
+                    }
                     "load_focus_tree" => {
                         let id = if let Some(id) = e.atom() {
                             id
                         } else {
-                            fields(e, &["tree", "keep_completed"])?;
+                            fields(e, &["tree", "keep_completed", "copy_completed_from"])?;
                             field(body(e)?, "tree")?
                         };
                         if !cat.scripts.focus_trees.contains_key(id) {
@@ -192,6 +231,9 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                     | "add_political_power"
                     | "add_stability"
                     | "add_war_support"
+                    | "set_political_power"
+                    | "set_stability"
+                    | "set_war_support"
                     | "set_state_flag"
                     | "clr_state_flag"
                     | "retire_character"

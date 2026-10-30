@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `a816802e37cf5479ea88be9b1221323fb8a3bb09` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `7a46f245c8223248f99613aefc8b65276bbe7475` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -100,3 +100,13 @@ Checks: `cargo test --all-targets --locked`: 439 passed (74 library + 355 game +
 Limits: full effective stability composition from ruling-party popularity, war/characters and explicit difficulty selection is still incomplete; the ledger currently consumes stored stability plus existing registered national PP modifiers. No claim that all country's displayed original PP income matches. Initial zero-before-history semantics and formula ordering require final differential verification on the user's source version. Existing saves with unknown political balances are not silently reset; start a new campaign to import starting history or restore explicitly known values with set_political_power.
 
 Next: transactional complete_national_focus, native focus triggers/copy_completed_from, explicit political setters and set_politics; then source-backed decisions/dynamic modifiers.
+
+## Continuation: native focus/political effect dispatch
+
+Parent checkpoint: 7a46f245c8223248f99613aefc8b65276bbe7475. Added transactional `complete_national_focus` scalar/block: actual reward executes before marking completion, bypasses prerequisite/availability like an explicit completion command, stops only the matching active focus, rewards once, and rejects recursive completion. One nested failure rolls back the whole journal. Preflight and compatibility analysis follow the forced-completion reward transitively (including missing events/unknown predicates).
+
+Added native `has_focus_tree` and `focus_progress` triggers; `load_focus_tree.copy_completed_from` resolves real country scopes (including FROM), copies only matching target-tree history/bypass flags, leaves source intact and does not copy an active job or grant rewards. Added political set effects, has_political_power/has_stability/has_war_support aliases; `set_politics` supports ruling party, elections flag and party-name keys; `set_popularities` validates native percent totals and stores fractions for ideology-support triggers. has_elections reads actual state. Invalid popularities are rejected atomically; saves validate the new numeric context.
+
+Checked source: generated game effect/trigger documentation in CWTools and its schemas. Election timer fields are explicitly unsupported at runtime until elections/on_actions actually exist; characters are not silently appointed by changing an ideology string. This is not a full election/leader system. Party-specific dynamic references and full native political stability formulas still need expansion.
+
+Tests: cargo test --all-targets --locked: 443 passed (74 lib + 359 game + 3 exporter + 7 integration). Includes forced completion ordering/once behavior and active cancellation, nested failure and recursive rollback, native progress/tree predicates, copying FROM, actual government/popularity conditions and invalid popularity rollback. Next: real timed national dynamic modifiers with variable refresh, enable/remove triggers, expiry/save behavior and existing research/economy/military consumers; then decisions/missions and on_actions.
