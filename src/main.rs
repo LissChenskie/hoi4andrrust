@@ -55,6 +55,7 @@ pub use hoi4_mobile::research;
 pub use hoi4_mobile::research_data;
 pub use hoi4_mobile::research_script;
 mod campaign;
+mod focus;
 mod campaign_save;
 #[cfg(test)]
 mod campaign_tests;
