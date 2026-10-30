@@ -2958,6 +2958,7 @@ fn draw_map_viewer(
             production_view,
             production_rules,
             military,
+            resource_state,
         );
     }
     if research_view.open {
