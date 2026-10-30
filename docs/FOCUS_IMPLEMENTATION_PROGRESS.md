@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `7390122459799d7feb97ea0d9d9aa94a2311dc72` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -25,3 +25,11 @@ Baseline source checked against focus readiness gate and political handoff docum
 ## Next implementation
 
 B: preserve tree AST, resolve shared-focus descendants, report duplicate/missing/cyclic references and add import tests. Then implement source-backed lifecycle operations, graph UI and compatibility audit. Keep all unverified DLC mechanisms and unknown commands explicitly blocked. Never merge this branch into main without user authorization.
+
+## Stage B checkpoint
+
+Implemented shared root/descendant resolution without attaching foreign ordinary nodes, retained full tree AST and shared references, diagnosed duplicate IDs instead of overwriting, checked missing references, relative coordinates/conditional offsets with recursion/cycle limits, and reused existing localisation loader for focus/event text. Cache version 8 invalidates old compiled data. New headless module `focus_data.rs` is used by importer and will serve UI/audit.
+
+Checks: `cargo test --lib --locked`: 68 passed. Rust 1.99.1 installed locally. Cargo.lock required regeneration because the existing manifest enables PNG in image 0.25 but lock omitted that dependency; no manifest/dependency upgrades were requested. Original corpus count remains unavailable. Stage B does not certify all dynamic/DLC semantics.
+
+Next: contextual tree scores and lifecycle select/bypass/cancel/pause handling through existing campaign transactions. Import gain_focus static modifier before correcting PP accounting; never assume focus speed equals PP cost.

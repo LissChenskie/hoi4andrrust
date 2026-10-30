@@ -2,6 +2,7 @@
 pub mod command_data;
 pub mod defines;
 pub mod dependency_report;
+pub mod focus_data;
 pub mod game;
 pub mod pdx;
 pub mod research;

@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 7;
+const CACHE_VERSION: u32 = 8;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -81,6 +81,7 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("common/ideas", "txt"),
     ("common/characters", "txt"),
     ("common/national_focus", "txt"),
+    ("common/continuous_focus", "txt"),
     ("common/decisions", "txt"),
     ("common/on_actions", "txt"),
     ("events", "txt"),
@@ -293,6 +294,14 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                     .filter_map(Entry::block)
                     .filter_map(|b| atom(b, "id").map(str::to_owned))
                     .collect();
+                if scripts.focus_trees.contains_key(id) {
+                    scripts
+                        .focus_problems
+                        .entry(format!("tree:{id}"))
+                        .or_default()
+                        .push(format!("Duplicate tree ID at {path}:{}", tree.span.line));
+                    continue;
+                }
                 scripts.focus_trees.insert(
                     id.to_owned(),
                     FocusTreeRecord {
@@ -301,6 +310,14 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                         country: block(raw, "country").unwrap_or(&[]).to_vec(),
                         default: atom(raw, "default") == Some("yes"),
                         focuses,
+                        shared: raw
+                            .iter()
+                            .filter(|e| e.key == "shared_focus")
+                            .filter_map(Entry::atom)
+                            .map(str::to_owned)
+                            .collect(),
+                        raw: raw.to_vec(),
+                        problems: Vec::new(),
                     },
                 );
             }
@@ -314,6 +331,17 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                 let Some(id) = atom(raw, "id") else {
                     continue;
                 };
+                if e.key == "shared_focus" {
+                    scripts.shared_focuses.insert(id.into());
+                }
+                if scripts.sources.contains_key(&format!("focus:{id}")) {
+                    scripts
+                        .focus_problems
+                        .entry(format!("focus:{id}"))
+                        .or_default()
+                        .push(format!("Duplicate focus ID at {path}:{}", e.span.line));
+                    continue;
+                }
                 scripts.sources.insert(
                     format!("focus:{id}"),
                     ScriptSource {
@@ -685,6 +713,7 @@ impl ResearchDataset {
                 data.diagnostics.push(format!("{rel}: определение отдельной подсистемы сохранено; её игровой цикл не реализован"));
             }
         }
+        crate::focus_data::resolve_shared(&mut data.registry.scripts);
         for (rel, path) in files
             .iter()
             .filter(|(r, _)| r.starts_with("common/technologies/"))
@@ -1103,6 +1132,10 @@ fn apply_localisations(
         out.push_str(rest);
         out
     }
+    cat.scripts.localisation = translations
+        .iter()
+        .map(|(k, v)| (k.clone(), resolve(v, &translations, 0)))
+        .collect();
     for f in cat.folders.iter().chain(cat.folder_definitions.keys()) {
         if let Some(s) = translations.get(f) {
             cat.folder_names
@@ -1305,6 +1338,66 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn shared_roots_descendants_metadata_localisation_and_cache_survive_import() {
+        let f = Fixture::new();
+        f.put(
+            "common/technologies/a.txt",
+            "technologies={sample={research_cost=1}}",
+        );
+        f.put("common/national_focus/shared.txt", r#"
+            shared_focus={id=root x=2 y=0 cost=1}
+            shared_focus={id=child x=1 y=1 relative_position_id=root prerequisite={focus=root} cost=2}
+            shared_focus={id=foreign x=0 y=0 cost=1}
+            focus_tree={id=tree shared_focus=root country={factor=1}
+                initial_show_position={focus=child}
+                focus={id=own x=0 y=2 prerequisite={focus=child} cost=1}}
+        "#);
+        f.put(
+            "localisation/russian/focus_l_russian.yml",
+            "l_russian:\n root:0 \"Общее начало\"\n root_desc:0 \"Описание\"\n",
+        );
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let tree = &data.registry.scripts.focus_trees["tree"];
+        assert_eq!(
+            tree.focuses,
+            BTreeSet::from(["root".into(), "child".into(), "own".into()])
+        );
+        assert!(tree.problems.is_empty(), "{:?}", tree.problems);
+        assert!(block(&tree.raw, "initial_show_position").is_some());
+        assert_eq!(data.registry.scripts.localisation["root"], "Общее начало");
+        let pos = crate::focus_data::positions(tree, &data.registry.scripts, |_| Ok(true)).unwrap();
+        assert_eq!(pos["child"], (3., 1.));
+        let cached = ResearchDataset::load(&f.0, true).unwrap();
+        assert_eq!(
+            cached.registry.scripts.focus_trees["tree"].focuses,
+            tree.focuses
+        );
+    }
+    #[test]
+    fn duplicate_ids_and_missing_shared_references_are_not_silently_overwritten() {
+        let f = Fixture::new();
+        f.put(
+            "common/technologies/a.txt",
+            "technologies={sample={research_cost=1}}",
+        );
+        f.put("common/national_focus/test.txt", "shared_focus={id=a x=0} shared_focus={id=a x=99} focus_tree={id=t shared_focus=a shared_focus=missing}");
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let s = &data.registry.scripts;
+        assert_eq!(atom(&s.sources["focus:a"].raw, "x"), Some("0"));
+        assert!(
+            s.focus_trees["t"]
+                .problems
+                .iter()
+                .any(|p| p.contains("Duplicate"))
+        );
+        assert!(
+            s.focus_trees["t"]
+                .problems
+                .iter()
+                .any(|p| p.contains("missing"))
+        );
     }
     fn fixture() -> Fixture {
         let f = Fixture::new();

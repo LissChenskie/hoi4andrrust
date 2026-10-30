@@ -416,6 +416,7 @@ mod tests {
                 country: crate::pdx::parse_pdx("factor=0 modifier={add=10 tag=A}").unwrap(),
                 default: false,
                 focuses: BTreeSet::from(["first".into(), "second".into(), "bad".into()]),
+                ..Default::default()
             },
         );
         for (id, txt) in [
