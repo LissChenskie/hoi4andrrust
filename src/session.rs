@@ -141,6 +141,39 @@ impl GameSession {
             c.context.global_flags = self.research.global_flags.clone();
         }
         self.research.refresh_sharing(&data.registry);
+        // Only historically specified political starting values are admitted.
+        // Absent values remain unknown rather than defaulting to made-up stats.
+        for (tag, history) in &data.histories {
+            let (entries, warnings) = crate::history_conditions::resolve(
+                history, tag, &crate::military_model::MilitaryModifiers::default(),
+                self.clock.date);
+            self.military.diagnostics.extend(warnings.into_iter()
+                .map(|w|format!("{tag}: political history: {w}")));
+            let p = self.campaign.countries.entry(tag.clone()).or_default();
+            for e in entries {
+                let Some(value)=e.atom().and_then(|v|v.parse::<f64>().ok())
+                    .filter(|v|v.is_finite()) else {continue};
+                match e.key.as_str() {
+                    "set_political_power" => p.power=Some(value),
+                    "add_political_power" => {
+                        if let Some(old)=p.power {p.power=Some(old+value);}
+                    }
+                    "set_stability" => p.stability=Some(value.clamp(0.,1.)),
+                    "add_stability" => {
+                        if let Some(old)=p.stability {
+                            p.stability=Some((old+value).clamp(0.,1.));
+                        }
+                    }
+                    "set_war_support" => p.war_support=Some(value.clamp(0.,1.)),
+                    "add_war_support" => {
+                        if let Some(old)=p.war_support {
+                            p.war_support=Some((old+value).clamp(0.,1.));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         self.refresh_research_building_slots();
     }
     pub fn refresh_research_building_slots(&mut self) {
