@@ -121,6 +121,49 @@ pub fn history(b: &[Entry], cat: &ResearchCatalogue) -> Result<CountryPolitics, 
     }
     Ok(p)
 }
+/// Reuse the existing ordered dated-history resolver with real selected DLCs.
+/// Unresolved selectors must not turn a conditional PP award into a fake zero.
+pub fn resolved_history(
+    b: &[Entry],
+    tag: &str,
+    date: crate::game::GameDate,
+    cat: &ResearchCatalogue,
+    context: &crate::research::ResearchContext,
+) -> Result<CountryPolitics, String> {
+    fn has_dlc(b: &[Entry]) -> bool {
+        b.iter()
+            .any(|e| e.key == "has_dlc" || e.block().is_some_and(has_dlc))
+    }
+    if context.dlc_selection_unverified && has_dlc(b) {
+        return Err("Political history requires a verified DLC selection".into());
+    }
+    let initial = crate::military_model::MilitaryModifiers {
+        dlcs: context.dlcs.clone(),
+        ideas: cat.scripts.default_laws.values().cloned().collect(),
+        ..Default::default()
+    };
+    let (entries, warnings) =
+        crate::history_conditions::resolve_expanding(b, tag, &initial, date, &|e| match cat
+            .scripts
+            .effects
+            .get(&e.key)
+        {
+            Some(raw) => {
+                if context.dlc_selection_unverified && has_dlc(raw) {
+                    return Err("Scripted political history requires verified DLC selection".into());
+                }
+                hoi4_mobile::script_validation::instantiate(raw, e).map(Some)
+            }
+            None => Ok(None),
+        });
+    if !warnings.is_empty() {
+        return Err(format!(
+            "Unresolved political history: {}",
+            warnings.join("; ")
+        ));
+    }
+    history(&entries, cat)
+}
 impl GameSession {
     pub fn political_income(
         &self,
@@ -416,5 +459,52 @@ mod tests {
         assert_eq!(s.campaign.countries["A"].power, Some(100.));
         assert_eq!(s.campaign.focuses.active["A"].progress, 0.);
         assert!(s.campaign.politics.failures["A"].contains("define"));
+    }
+    #[test]
+    fn conditional_starting_power_uses_selected_dlc_and_unknown_guards_stay_unknown() {
+        let (_, mut cat) = prepared();
+        let mut ctx = crate::research::ResearchContext::default();
+        ctx.dlcs.insert("Test".into());
+        let b = pdx::parse_pdx(
+            "if={limit={has_dlc=Test} add_political_power=40} else={add_political_power=7}",
+        )
+        .unwrap();
+        assert_eq!(
+            resolved_history(&b, "A", crate::game::GameDate::START, &cat, &ctx)
+                .unwrap()
+                .power,
+            Some(40.)
+        );
+        ctx.dlcs.clear();
+        assert_eq!(
+            resolved_history(&b, "A", crate::game::GameDate::START, &cat, &ctx)
+                .unwrap()
+                .power,
+            Some(7.)
+        );
+        ctx.dlc_selection_unverified = true;
+        assert!(resolved_history(&b, "A", crate::game::GameDate::START, &cat, &ctx).is_err());
+        cat.scripts.effects.insert("startup".into(), b.clone());
+        assert!(
+            resolved_history(
+                &pdx::parse_pdx("startup=yes").unwrap(),
+                "A",
+                crate::game::GameDate::START,
+                &cat,
+                &ctx
+            )
+            .is_err()
+        );
+        assert!(
+            resolved_history(
+                &pdx::parse_pdx("if={limit={missing_start_fact=yes} add_political_power=40}")
+                    .unwrap(),
+                "A",
+                crate::game::GameDate::START,
+                &cat,
+                &Default::default()
+            )
+            .is_err()
+        );
     }
 }

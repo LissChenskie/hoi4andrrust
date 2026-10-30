@@ -143,18 +143,19 @@ impl GameSession {
         self.research.refresh_sharing(&data.registry);
         for tag in self.world.countries.keys() {
             let history = data.histories.get(tag).map(Vec::as_slice).unwrap_or(&[]);
-            let (entries, warnings) = crate::history_conditions::resolve(
+            let mut context = self
+                .research
+                .country(tag)
+                .map(|c| c.context.clone())
+                .unwrap_or_default();
+            context.dlc_selection_unverified = !data.installation.dlc_selection_verified;
+            match crate::politics::resolved_history(
                 history,
                 tag,
-                &Default::default(),
                 self.clock.date,
-            );
-            self.military.diagnostics.extend(
-                warnings
-                    .into_iter()
-                    .map(|w| format!("{tag}: political history: {w}")),
-            );
-            match crate::politics::history(&entries, &data.registry) {
+                &data.registry,
+                &context,
+            ) {
                 Ok(p) => {
                     self.campaign.countries.insert(tag.clone(), p);
                 }

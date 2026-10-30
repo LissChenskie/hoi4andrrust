@@ -1,7 +1,9 @@
 # National focus interpreter — recovery checkpoint
 
+Current state: daily PP ledger, native completion/political dispatch, and timed country dynamic modifiers are implemented. Next: Stage E decisions/missions + on_actions. Full original-game/DLC parity remains unverified.
+
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `0a0efcac1f9715dcdf591641cd670f7f7bcab4d7` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `4978fb9d2d858fa99fdcd20d58be313caa5bb0a2` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -126,3 +128,9 @@ Tests: `cargo test --all-targets --locked`: **451 passed**, 0 failed (75 lib + 3
 ### Next precise task
 
 Continue Stage E with **native decisions/missions and on_actions**, reusing the existing transactional journal and scheduler, with real PP payment, availability/recheck, completion/removal/timeout and persisted once-only processing. Then wire effective stability components, explicit difficulty/leader/advisor political modifiers, election timers and native dynamic-modifier civil-war inheritance using the user's exported source data. Do not reset old unknown PP balances, fabricate missing script outcomes, merge this branch into main, or claim complete DLC/native parity.
+
+## Final continuation regression: guarded political history
+
+Parent: 4978fb9d2d858fa99fdcd20d58be313caa5bb0a2. Political history now resolves with the selected DLC facts and source default laws using the existing ordered/dated resolver and parameterized scripted-effect expansion. An unverified DLC selection (including gates inside a scripted effect), unknown history predicate or unresolved expansion blocks the starting political balance explicitly instead of silently selecting a false branch and presenting zero as known. This remains conservative: unsupported historical selectors must be implemented before claiming a matching country balance.
+
+Final checks after this change: **452 Rust tests passed**, 0 failed (75 library + 367 game + 3 exporter + 7 integration); format/diff checks and Android aarch64 all-target Rust check passed. Clippy passed with warnings. Native input corpus counts, original-game differential scenarios and A51 device rendering/performance remain unavailable. No main merge, force push or history rewrite.
