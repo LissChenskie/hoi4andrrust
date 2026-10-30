@@ -60,6 +60,7 @@ mod campaign_save;
 mod campaign_tests;
 mod civil_war;
 mod focus;
+mod focus_ui;
 mod platform_storage;
 mod research_layout;
 mod research_ui;
@@ -3385,6 +3386,17 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
+                if let Some(req) = hud.focus_request.take() {
+                    hud.notice = match (session.player_country.as_deref(),req) {
+                        (Some(tag),focus_ui::Request::Begin(id)) =>
+                            session.begin_focus(tag,&id,&research_catalogue,&research_rules)
+                                .map(|_|format!("Фокус {id} запущен")).unwrap_or_else(|e|e),
+                        (Some(tag),focus_ui::Request::Cancel) =>
+                            session.cancel_focus(tag)
+                                .map(|_|"Фокус отменён".into()).unwrap_or_else(|e|e),
+                        (None,_) => "Страна не выбрана".into()
+                    };
+                }
                 if hud.save_requested {
                     hud.save_requested = false;
                     hud.notice = platform_storage::game_file("campaign-save.json")
@@ -3603,6 +3615,7 @@ async fn main() {
                     research: research_world,
                     military,
                     peace: peace_state,
+                    campaign: focus_campaign,
                     ..
                 } = &mut session;
                 let country = country_construction
@@ -3661,6 +3674,13 @@ async fn main() {
                     military,
                     peace_state,
                     &mut army_view,
+                );
+                focus_ui::draw(
+                    selected_country.as_deref(),
+                    research_world,
+                    focus_campaign,
+                    &research_catalogue,
+                    &mut hud,
                 );
                 war_overview_ui::draw(
                     &mut hud,
