@@ -76,6 +76,14 @@ impl SplitPlan {
             return Err("Country missing or rebel tag already registered".into());
         }
         if s.campaign
+            .decisions
+            .active
+            .get(&self.parent)
+            .is_some_and(|m| !m.is_empty())
+        {
+            return Err("Active decisions require an explicit civil-war inheritance policy".into());
+        }
+        if s.campaign
             .dynamic_modifiers
             .get(&self.parent)
             .is_some_and(|m| !m.is_empty())
@@ -1065,6 +1073,7 @@ impl GameSession {
             .pending
             .retain(|_, a| a.context.scope != crate::campaign::Scope::Country(loser.into()));
         self.campaign.dynamic_modifiers.remove(loser);
+        self.campaign.decisions.clear_country(loser);
         self.campaign.politics.last_day.remove(loser);
         self.campaign.politics.income.remove(loser);
         self.campaign.politics.failures.remove(loser);

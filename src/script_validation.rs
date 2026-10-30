@@ -196,6 +196,43 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
+                    "activate_mission" => {
+                        let id = atom(e)?;
+                        let record = crate::decision_data::definition(cat, id)?;
+                        if pdx::atom(&record.raw, "days_mission_timeout").is_none() {
+                            return Err(format!("{id} is not a mission"));
+                        }
+                        if seen.insert(format!("decision:{id}")) {
+                            for key in crate::decision_data::EFFECTS {
+                                walk(
+                                    pdx::block(&record.raw, key).unwrap_or(&[]),
+                                    cat,
+                                    seen,
+                                    budget,
+                                    d + 1,
+                                )?;
+                            }
+                        }
+                        Ok(())
+                    }
+                    "remove_mission" | "remove_decision" => {
+                        let id = atom(e)?;
+                        if !cat.scripts.decisions.contains_key(id) {
+                            return Err(format!("Missing decision {id}"));
+                        }
+                        Ok(())
+                    }
+                    "add_days_remove" | "add_days_mission_timeout" => fields(
+                        e,
+                        &[
+                            if e.key == "add_days_remove" {
+                                "decision"
+                            } else {
+                                "mission"
+                            },
+                            "days",
+                        ],
+                    ),
                     "mark_focus_tree_layout_dirty" => {
                         if atom(e)? != "yes" {
                             return Err("Layout invalidation requires yes".into());

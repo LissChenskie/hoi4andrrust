@@ -1,9 +1,9 @@
 # National focus interpreter — recovery checkpoint
 
-Current state: daily PP ledger, native completion/political dispatch, and timed country dynamic modifiers are implemented. Next: Stage E decisions/missions + on_actions. Full original-game/DLC parity remains unverified.
+Current state: Stage E country decisions/missions and startup/periodic on-actions implemented through the existing transactional campaign interpreter. UI integration and expanded compatibility reporting are in progress. Full original-game/DLC parity remains unverified.
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `4978fb9d2d858fa99fdcd20d58be313caa5bb0a2` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `0e2b382d1dd8fdb2bd1fc7918d2344cf0ba77a69` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -134,3 +134,18 @@ Continue Stage E with **native decisions/missions and on_actions**, reusing the 
 Parent: 4978fb9d2d858fa99fdcd20d58be313caa5bb0a2. Political history now resolves with the selected DLC facts and source default laws using the existing ordered/dated resolver and parameterized scripted-effect expansion. An unverified DLC selection (including gates inside a scripted effect), unknown history predicate or unresolved expansion blocks the starting political balance explicitly instead of silently selecting a false branch and presenting zero as known. This remains conservative: unsupported historical selectors must be implemented before claiming a matching country balance.
 
 Final checks after this change: **452 Rust tests passed**, 0 failed (75 library + 367 game + 3 exporter + 7 integration); format/diff checks and Android aarch64 all-target Rust check passed. Clippy passed with warnings. Native input corpus counts, original-game differential scenarios and A51 device rendering/performance remain unavailable. No main merge, force push or history rewrite.
+
+
+## Continuation: country decisions/missions and additive on-actions
+
+Parent checkpoint: 0e2b382d1dd8fdb2bd1fc7918d2344cf0ba77a69. Cache version 15 retains full decision/category AST, including missions with no complete_effect. Repeated on-action names and repeated effect blocks are additive in source load order instead of silently overwriting earlier definitions. Duplicate decision/category IDs are diagnosed and blocked.
+
+The existing journal now commits decision payment, history, timers, RNG and effect changes atomically. Country decisions have start-only allowed snapshots, live visibility/availability/custom-cost checks, actual PP payment, persistent active state, registered national modifiers, remove/cancel callbacks, cooldown and fire-only-once. Missions support activation gates or explicit activate_mission, automatic vs selectable completion, timeout, cancel, explicit no-reward removal and timer adjustments. Mission completion can transition to days_remove; remaining days are available as days_mission_timeout@ID/days_decision_timeout@ID, including inside the terminal callback. Removing an old job before its terminal callback permits a source script to reactivate the same mission safely. Failed callbacks retain a blocked job, grant no partial reward and never repeatedly debit PP. Blocked bonuses are detached; PP refuses income from a blocked active decision.
+
+Decision callbacks use a saved per-country/decision/phase seed by default (fixed_random_seed=no uses campaign RNG). This reproduces stable repeated outcomes, not the original binary's exact random sequence. Scripted starting/ending counters, defaults, allowed evaluation ordering, cancellation/expiry precedence and source timing still require differential tests on the user's version. Only positive integral or infinite (-1) durations are currently accepted; unsupported zero/fractional timers block explicitly. Targeted/state decisions, targeted modifiers, war preparation/notification fields, balance of power and automatic AI decision choice remain unsupported; no country/decision IDs are hardcoded. Civil-war splits reject active decisions until a native inheritance policy exists. Older saves without an allowed snapshot evaluate it on first use; matching original old-save snapshots cannot be reconstructed without evidence.
+
+On-actions: native on_startup runs once with no implicit country scope on a new campaign; on_daily/on_weekly/on_monthly and their _TAG forms enqueue every imported block in stable order. Dispatch markers, queue, blocked reasons and RNG survive saves. Random-event lists check real event triggers/fire-once and enqueue real existing campaign events; a 0 entry means no event. Hourly execution is bounded by the existing scheduler budget. The numeric weekly schedule and event eligibility/weight ordering remain unverified against the original engine. Other hooks (war, civil war, characters, political changes etc.) are retained but not bound to simulation yet. Changing ruling party with imported on_ruling_party_change hooks is explicitly blocked until immediate dispatch/old_ideology_token semantics exist.
+
+Source consulted: CWTools schema/generated effect docs, checked-out revision 297dd69c42aabe10078a8b7ab7f2d07ee631d4ef, https://github.com/cwtools/cwtools-hoi4-config . No third-party implementation or protected game content copied. This is a reconstruction, not native parity certification.
+
+Core checks before UI integration: cargo test --all-targets --locked: **467 passed**, zero failures (77 library + 380 game + 3 exporter + 7 integration). Regressions cover source/cache preservation, duplicate diagnostics, real payment/modifiers/removal, rollback, automatic/selectable missions, remaining timer values, cancellation, expiry/reactivation, save/once behavior, fixed RNG, startup scope, additive/periodic hooks and actual random-event dispatch. Android/final checks follow the UI/report checkpoint. No main merge or history rewrite.

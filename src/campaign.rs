@@ -13,10 +13,15 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet},
 };
+#[path = "decisions.rs"]
+pub mod decisions;
+#[path = "on_actions.rs"]
+pub mod on_actions;
 const STEPS: usize = 10000;
 const QUEUE: usize = 4096;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Scope {
+    Global,
     Country(String),
     State(u32),
 }
@@ -55,6 +60,7 @@ pub enum Payload {
     Effects(Vec<Entry>),
     Event { id: String, raw: Vec<Entry> },
     CivilWar(crate::civil_war::SplitPlan),
+    OnAction { raw: Vec<Entry> },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scheduled {
@@ -84,6 +90,8 @@ pub struct DynamicModifier {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CampaignState {
+    pub decisions: decisions::DecisionRuntime,
+    pub on_actions: on_actions::OnActionRuntime,
     #[serde(default)]
     pub focuses: crate::focus::FocusCampaign,
     #[serde(default)]
@@ -104,6 +112,8 @@ pub struct CampaignState {
 impl Default for CampaignState {
     fn default() -> Self {
         Self {
+            decisions: Default::default(),
+            on_actions: Default::default(),
             focuses: Default::default(),
             politics: Default::default(),
             dynamic_modifiers: Default::default(),
@@ -147,7 +157,10 @@ impl CampaignState {
         Ok(id)
     }
     pub fn validate(&self, w: &crate::world::World, hour: u64) -> Result<(), String> {
+        self.decisions.validate(w, hour)?;
+        self.on_actions.validate(w, hour)?;
         let scope = |s: &Scope| match s {
+            Scope::Global => true,
             Scope::Country(t) => w.countries.contains_key(t),
             Scope::State(i) => w.states.contains_key(i),
         };
@@ -302,6 +315,7 @@ struct Journal<'a> {
     globals: BTreeSet<String>,
     budget: usize,
     completing: BTreeSet<(String, String)>,
+    decision_timers: BTreeMap<(String, String), (bool, Option<u64>)>,
 }
 impl<'a> Journal<'a> {
     fn new(s: &'a GameSession, cat: &'a ResearchCatalogue, rules: &'a ResearchRules) -> Self {
@@ -318,6 +332,7 @@ impl<'a> Journal<'a> {
             globals: s.research.global_flags.clone(),
             budget: STEPS,
             completing: BTreeSet::new(),
+            decision_timers: BTreeMap::new(),
         }
     }
     fn step(&mut self, d: usize) -> Result<(), String> {
@@ -361,6 +376,30 @@ impl<'a> Journal<'a> {
             } else {
                 Err("Non-finite value".into())
             };
+        }
+        if let Some((kind, id)) = a.split_once('@') {
+            if ["days_mission_timeout", "days_decision_timeout"].contains(&kind) {
+                let t = self.tag(c)?;
+                let timer = self
+                    .decision_timers
+                    .get(&(t.clone(), id.into()))
+                    .copied()
+                    .or_else(|| {
+                        self.state
+                            .decisions
+                            .active
+                            .get(&t)
+                            .and_then(|m| m.get(id))
+                            .map(|j| (j.mission, j.deadline))
+                    })
+                    .ok_or("Decision timer not active")?;
+                if timer.0 != (kind == "days_mission_timeout") {
+                    return Err("Decision timer type mismatch".into());
+                }
+                return Ok(timer.1.map_or(-1., |h| {
+                    h.saturating_sub(self.s.clock.elapsed_hours) as f64 / 24.
+                }));
+            }
         }
         let raw = a.strip_prefix("var:").unwrap_or(a);
         let (name, fallback) = match raw.split_once('?') {
@@ -417,7 +456,8 @@ impl<'a> Journal<'a> {
                 .filter(|i| self.s.world.states.contains_key(i))
                 .map(Scope::State),
         };
-        x.ok_or_else(|| format!("Unknown scope {k}"))
+        x.filter(|s| !matches!(s, Scope::Global))
+            .ok_or_else(|| format!("Unknown scope {k}"))
     }
     fn refresh_dynamic(&mut self, t: &str) -> Result<(), String> {
         let active = self
@@ -546,6 +586,16 @@ impl<'a> Journal<'a> {
                         .cloned()
                         .collect();
                     self.conditions(&b, c, d + 1)?
+                }
+                "has_decision" | "has_active_mission" => {
+                    let t = self.tag(c)?;
+                    let id = atom(e)?;
+                    self.state
+                        .decisions
+                        .active
+                        .get(&t)
+                        .and_then(|m| m.get(id))
+                        .is_some_and(|job| job.mission == (e.key == "has_active_mission"))
                 }
                 "has_dynamic_modifier" => {
                     let t = self.tag(c)?;
@@ -748,6 +798,11 @@ impl<'a> Journal<'a> {
     }
     fn effect(&mut self, e: &Entry, c: &Context, source: &str, d: usize) -> Result<(), String> {
         match e.key.as_str() {
+            "activate_mission" => self.activate_mission(c, atom(e)?, d + 1),
+            "remove_mission" | "remove_decision" => {
+                self.remove_decision(c, atom(e)?, e.key == "remove_mission")
+            }
+            "add_days_remove" | "add_days_mission_timeout" => self.adjust_decision_timer(c, e),
             "hidden_effect" => self.execute(body(e)?, c, source, d + 1),
             "else" | "else_if" => Err("Orphan branch".into()),
             "random_list" => {
@@ -926,6 +981,15 @@ impl<'a> Journal<'a> {
                 let t = self.tag(c)?;
                 let b = body(e)?;
                 let party = pdx::atom(b, "ruling_party").map(str::to_owned);
+                if party
+                    .as_ref()
+                    .is_some_and(|p| self.research(&t).context.ideology.as_ref() != Some(p))
+                    && ["on_ruling_party_change", "on_ruling_party_change_immediate"]
+                        .iter()
+                        .any(|key| self.cat.scripts.on_actions.contains_key(*key))
+                {
+                    return Err("Ruling-party change on-actions require native old_ideology_token/immediate dispatch support".into());
+                }
                 let elections = match pdx::atom(b, "elections_allowed") {
                     None => None,
                     Some("yes") => Some(true),
@@ -1328,8 +1392,16 @@ impl GameSession {
         rules: &ResearchRules,
     ) -> Result<(), String> {
         preflight(b, cat)?;
+        self.campaign_transaction(cat, rules, |j| j.execute(b, ctx, source, 0))
+    }
+    fn campaign_transaction<T>(
+        &mut self,
+        cat: &ResearchCatalogue,
+        rules: &ResearchRules,
+        f: impl FnOnce(&mut Journal<'_>) -> Result<T, String>,
+    ) -> Result<T, String> {
         let mut j = Journal::new(self, cat, rules);
-        j.execute(b, ctx, source, 0)?;
+        let result = f(&mut j)?;
         let Journal {
             state,
             research,
@@ -1340,7 +1412,9 @@ impl GameSession {
             globals,
             ..
         } = j;
-        self.campaign = state.into_owned();
+        if let Cow::Owned(state) = state {
+            self.campaign = state;
+        }
         self.research.global_flags = globals;
         for (t, mut r) in research {
             r.revision = r.revision.saturating_add(1);
@@ -1391,7 +1465,8 @@ impl GameSession {
             d.ability_modifiers = a;
         }
         self.refresh_research_building_slots();
-        Ok(())
+        self.campaign.decisions.revision = self.campaign.decisions.revision.saturating_add(1);
+        Ok(result)
     }
     pub fn campaign_conditions(
         &self,
@@ -1518,6 +1593,7 @@ impl GameSession {
         }
         self.campaign.last_hour = Some(h);
         self.expire_dynamic_modifiers();
+        self.tick_on_actions(cat);
         for _ in 0..64 {
             let next = self
                 .campaign
@@ -1531,6 +1607,9 @@ impl GameSession {
                 Payload::Effects(b) => self.campaign_effects(&a.context, b, &a.source, cat, rules),
                 Payload::Event { id, raw } => self.fire_campaign_event(&a, id, raw, cat, rules),
                 Payload::CivilWar(p) => self.start_civil_war(p, rules),
+                Payload::OnAction { raw } => {
+                    self.run_on_action(&a.context, raw, &a.source, cat, rules)
+                }
             };
             match r {
                 Ok(()) => {
@@ -1543,6 +1622,7 @@ impl GameSession {
                 }
             }
         }
+        self.tick_decisions(cat, rules);
     }
     fn fire_campaign_event(
         &mut self,

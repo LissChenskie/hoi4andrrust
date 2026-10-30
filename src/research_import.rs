@@ -2,12 +2,14 @@
 use crate::game::GameDate;
 use crate::pdx::{self, Entry, atom, block, names, parse_pdx};
 use crate::research::*;
-use crate::research_script::{self, FocusTreeRecord, ResearchScripts, ScriptSource, SharingGroup};
+use crate::research_script::{
+    self, DecisionRecord, FocusTreeRecord, ResearchScripts, ScriptSource, SharingGroup,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 14;
+const CACHE_VERSION: u32 = 15;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -434,9 +436,47 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
         }
         "decision" => {
             for group in b {
+                if path.starts_with("common/decisions/categories/") {
+                    if let Some(raw) = group.block() {
+                        let record = DecisionRecord {
+                            source: format!("{path}:{}", group.span.line),
+                            raw: raw.to_vec(),
+                            ..Default::default()
+                        };
+                        match scripts.decision_categories.entry(group.key.clone()) {
+                            std::collections::btree_map::Entry::Vacant(e) => {
+                                e.insert(record);
+                            }
+                            std::collections::btree_map::Entry::Occupied(mut e) => {
+                                e.get_mut()
+                                    .problems
+                                    .push(format!("Duplicate category at {}", record.source));
+                            }
+                        }
+                    }
+                    continue;
+                }
                 for e in group.block().unwrap_or(&[]) {
                     if let Some(raw) = e.block() {
-                        if let Some(effects) = block(raw, "complete_effect") {
+                        let record = DecisionRecord {
+                            category: group.key.clone(),
+                            source: format!("{path}:{}", e.span.line),
+                            raw: raw.to_vec(),
+                            ..Default::default()
+                        };
+                        match scripts.decisions.entry(e.key.clone()) {
+                            std::collections::btree_map::Entry::Vacant(e) => {
+                                e.insert(record);
+                            }
+                            std::collections::btree_map::Entry::Occupied(mut e) => {
+                                e.get_mut()
+                                    .problems
+                                    .push(format!("Duplicate decision at {}", record.source));
+                                continue;
+                            }
+                        }
+                        {
+                            let effects = block(raw, "complete_effect").unwrap_or(&[]);
                             let mut conditions = block(raw, "visible").unwrap_or(&[]).to_vec();
                             conditions.extend_from_slice(block(raw, "available").unwrap_or(&[]));
                             scripts.sources.insert(
@@ -733,17 +773,24 @@ impl ResearchDataset {
             if rel.starts_with("common/on_actions/") {
                 for e in block(b, "on_actions").unwrap_or(b) {
                     if let Some(raw) = e.block() {
+                        let source = ScriptSource {
+                            kind: "on_action".into(),
+                            id: e.key.clone(),
+                            source: format!("{rel}:{}", e.span.line),
+                            conditions: Vec::new(),
+                            effects: raw
+                                .iter()
+                                .filter(|e| e.key == "effect")
+                                .flat_map(|e| e.block().unwrap_or(&[]).iter().cloned())
+                                .collect(),
+                            raw: raw.to_vec(),
+                        };
+                        let entries = scripts.on_actions.entry(e.key.clone()).or_default();
                         scripts.sources.insert(
-                            format!("on_action:{}", e.key),
-                            ScriptSource {
-                                kind: "on_action".into(),
-                                id: e.key.clone(),
-                                source: format!("{rel}:{}", e.span.line),
-                                conditions: Vec::new(),
-                                effects: block(raw, "effect").unwrap_or(&[]).to_vec(),
-                                raw: raw.to_vec(),
-                            },
+                            format!("on_action:{}:{}", e.key, entries.len()),
+                            source.clone(),
                         );
+                        entries.push(source);
                     }
                 }
             }
@@ -1226,6 +1273,11 @@ fn apply_localisations(
         text_keys(&src.raw, &mut needed);
     }
     needed.extend(cat.scripts.focus_trees.keys().cloned());
+    for (id, category) in &cat.scripts.decision_categories {
+        needed.insert(id.clone());
+        needed.insert(format!("{id}_desc"));
+        text_keys(&category.raw, &mut needed);
+    }
     // Resolve static aliases against the full dictionary, retain only texts the
     // imported focus/event UI can use. The unrelated world localisation corpus
     // must not become permanent Android heap overhead.
@@ -1436,6 +1488,67 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+    #[test]
+    fn decisions_missions_categories_and_additive_hooks_survive_cache() {
+        let f = Fixture::new();
+        f.put(
+            "common/technologies/a.txt",
+            "technologies={sample={research_cost=1}}",
+        );
+        f.put(
+            "common/decisions/categories/a.txt",
+            "industry={allowed={tag=AAA} visible={always=yes}}",
+        );
+        f.put("common/decisions/a.txt", "industry={build={cost=7 days_remove=3 complete_effect={add_political_power=1}} deadline={days_mission_timeout=4 available={always=no} timeout_effect={set_country_flag=missed}}}");
+        f.put("common/on_actions/a.txt", "on_actions={on_daily={effect={add_political_power=1} effect={add_political_power=2}} on_daily={effect={add_political_power=3}}}");
+        f.put(
+            "common/on_actions/b.txt",
+            "on_actions={on_daily={random_events={1=0}}}",
+        );
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let scripts = &data.registry.scripts;
+        assert_eq!(scripts.decisions.len(), 2);
+        assert_eq!(scripts.decisions["deadline"].category, "industry");
+        assert!(scripts.sources.contains_key("decision:deadline"));
+        assert_eq!(scripts.decision_categories.len(), 1);
+        assert_eq!(scripts.on_actions["on_daily"].len(), 3);
+        assert_eq!(scripts.on_actions["on_daily"][0].effects.len(), 2);
+        assert_eq!(
+            scripts
+                .sources
+                .values()
+                .filter(|s| s.kind == "on_action")
+                .count(),
+            3
+        );
+        let cached = ResearchDataset::load(&f.0, true).unwrap();
+        assert_eq!(cached.registry.scripts.decisions.len(), 2);
+        assert_eq!(cached.registry.scripts.on_actions["on_daily"].len(), 3);
+    }
+    #[test]
+    fn duplicate_decisions_and_categories_are_diagnosed() {
+        let f = Fixture::new();
+        f.put(
+            "common/technologies/a.txt",
+            "technologies={sample={research_cost=1}}",
+        );
+        f.put(
+            "common/decisions/categories/a.txt",
+            "c={} c={available={always=no}}",
+        );
+        f.put("common/decisions/a.txt", "c={d={cost=3} d={cost=4}}");
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        assert!(!data.registry.scripts.decisions["d"].problems.is_empty());
+        assert!(
+            !data.registry.scripts.decision_categories["c"]
+                .problems
+                .is_empty()
+        );
+        assert_eq!(
+            pdx::atom(&data.registry.scripts.decisions["d"].raw, "cost"),
+            Some("3")
+        );
     }
     #[test]
     fn shared_roots_descendants_metadata_localisation_and_cache_survive_import() {

@@ -40,6 +40,14 @@ pub struct FocusTreeRecord {
     pub problems: Vec<String>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DecisionRecord {
+    pub category: String,
+    pub source: String,
+    pub raw: Vec<Entry>,
+    #[serde(default)]
+    pub problems: Vec<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResearchScripts {
     #[serde(default)]
     pub laws_indexed: bool,
@@ -66,6 +74,13 @@ pub struct ResearchScripts {
     pub defines: BTreeMap<String, f64>,
     #[serde(default)]
     pub dynamic_modifiers: BTreeMap<String, Vec<Entry>>,
+    #[serde(default)]
+    pub decisions: BTreeMap<String, DecisionRecord>,
+    #[serde(default)]
+    pub decision_categories: BTreeMap<String, DecisionRecord>,
+    /// On-actions are additive across files and repeated blocks, in load order.
+    #[serde(default)]
+    pub on_actions: BTreeMap<String, Vec<ScriptSource>>,
 }
 /// Native set_popularities uses percentages; omitted ideologies have zero.
 pub fn popularities(b: &[Entry]) -> Result<BTreeMap<String, f64>, String> {

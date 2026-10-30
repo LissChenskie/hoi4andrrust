@@ -526,7 +526,7 @@ impl Warfare {
                 for values in c
                     .source_modifiers
                     .iter()
-                    .filter(|(key, _)| key.starts_with("dynamic:"))
+                    .filter(|(key, _)| key.starts_with("dynamic:") || key.starts_with("decision:"))
                     .map(|(_, values)| values)
                 {
                     for (key, value) in values {

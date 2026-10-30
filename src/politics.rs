@@ -180,6 +180,24 @@ impl GameSession {
         {
             return Err(format!("Dynamic modifier blocked: {error}"));
         }
+        if let Some(error) = self
+            .campaign
+            .decisions
+            .active
+            .get(tag)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .find_map(|j| j.blocked.as_ref())
+            .or_else(|| {
+                self.campaign
+                    .decisions
+                    .failures
+                    .get(tag)
+                    .and_then(|m| m.get("modifier_refresh"))
+            })
+        {
+            return Err(format!("Decision modifier/lifecycle blocked: {error}"));
+        }
         let country = self
             .research
             .country(tag)
