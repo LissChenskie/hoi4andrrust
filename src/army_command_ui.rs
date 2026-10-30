@@ -141,11 +141,13 @@ pub fn draw(
             .cloned()
             .collect();
         // Available officers first, then higher skill, preserving stable names.
-        choices.sort_by_key(|c| (
-            current_assignment(w, &c.id).is_some(),
-            std::cmp::Reverse(c.skill),
-            c.name.clone(),
-        ));
+        choices.sort_by_key(|c| {
+            (
+                current_assignment(w, &c.id).is_some(),
+                std::cmp::Reverse(c.skill),
+                c.name.clone(),
+            )
+        });
         let rows = ((body.bottom() - y - 36.0) / 40.0).max(0.0) as usize;
         let max = choices.len().saturating_sub(rows.max(1));
         if ui::inside(r) {
@@ -175,26 +177,44 @@ pub fn draw(
             ui::label(
                 &format!("{} · ур. {}", c.name, c.skill),
                 Rect::new(row.x + 38., row.y + 3., row.w - 43., 18.),
-                12., if occupied { ui::MUTED } else { ui::TEXT },
+                12.,
+                if occupied { ui::MUTED } else { ui::TEXT },
             );
             ui::label(
                 &assignment.map_or_else(
-                    || format!("А{}  З{}  П{}  Л{}", c.attack, c.defense, c.planning, c.logistics),
+                    || {
+                        format!(
+                            "А{}  З{}  П{}  Л{}",
+                            c.attack, c.defense, c.planning, c.logistics
+                        )
+                    },
                     |name| format!("Занят: {name}"),
                 ),
                 Rect::new(row.x + 38., row.y + 21., row.w - 43., 15.),
-                10., if occupied { ui::MUTED } else { ui::GOLD },
+                10.,
+                if occupied { ui::MUTED } else { ui::GOLD },
             );
             ui::tooltip(
-                row, &c.name,
-                &format!("{} · опыт {:.1}\nЧерты: {}",
-                    if occupied { "Уже назначен" } else { "Доступен" },
+                row,
+                &c.name,
+                &format!(
+                    "{} · опыт {:.1}\nЧерты: {}",
+                    if occupied {
+                        "Уже назначен"
+                    } else {
+                        "Доступен"
+                    },
                     c.experience,
-                    c.traits.iter().cloned().collect::<Vec<_>>().join(", ")),
+                    c.traits.iter().cloned().collect::<Vec<_>>().join(", ")
+                ),
             );
             y += 40.0;
         }
-        if ui::small_button("Назад", Rect::new(x, body.bottom() - 28.0, width, 27.0), false) {
+        if ui::small_button(
+            "Назад",
+            Rect::new(x, body.bottom() - 28.0, width, 27.0),
+            false,
+        ) {
             view.commander_picker = None;
         }
         return;
