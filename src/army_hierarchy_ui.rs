@@ -288,4 +288,24 @@ mod tests {
         );
         assert!(!hierarchy_rows(&state, "GER").contains(&HierarchyRow::Army(foreign)));
     }
+    #[test]
+    fn moving_army_to_group_keeps_theater_and_membership_consistent() {
+        let mut state = CommandState::default();
+        let lead = state.create_army("GER", "Lead", &[1]);
+        let group = state.create_group("GER", lead, "North").unwrap();
+        let other = state.create_army("GER", "Other", &[2, 3]);
+        let east = state.create_theater("GER", "East");
+        state.set_theater("GER", other, east).unwrap();
+        state.set_group("GER", other, Some(group)).unwrap();
+        assert_eq!(state.armies[&other].theater, state.groups[&group].theater);
+        assert_eq!(state.members(other).collect::<Vec<_>>(), vec![2, 3]);
+        assert_eq!(
+            hierarchy_rows(&state, "GER")
+                .iter()
+                .filter(|row| **row == HierarchyRow::Army(other))
+                .count(),
+            1
+        );
+    }
+
 }
