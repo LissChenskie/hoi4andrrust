@@ -992,6 +992,21 @@ impl ConstructionOrder {
         true
     }
 
+    /// Move a project to an arbitrary position in the national construction queue.
+    /// Other projects retain their relative order, and the project key is stable.
+    pub fn move_to(&mut self, key: ProjectRef, destination: usize) -> bool {
+        let Some(from) = self.lines.iter().position(|line| *line == key) else {
+            return false;
+        };
+        let to = destination.min(self.lines.len().saturating_sub(1));
+        if from == to {
+            return false;
+        }
+        let item = self.lines.remove(from);
+        self.lines.insert(to, item);
+        true
+    }
+
     /// Called BEFORE syncing after a queue removal. The remaining projects in
     /// that state shift indices; without this step priorities could drift.
     pub fn on_project_removed(&mut self, state_id: u32, index: usize) {
@@ -1011,6 +1026,26 @@ impl ConstructionOrder {
         } else {
             false
         }
+    }
+}
+
+#[cfg(test)]
+mod construction_queue_reorder_tests {
+    use super::{ConstructionOrder, ProjectRef};
+
+    #[test]
+    fn reordering_preserves_other_projects_and_bounds_indices() {
+        let a = ProjectRef { state_id: 1, project_index: 0 };
+        let b = ProjectRef { state_id: 2, project_index: 0 };
+        let c = ProjectRef { state_id: 1, project_index: 1 };
+        let mut order = ConstructionOrder { lines: vec![a, b, c] };
+        assert!(order.move_to(c, 0));
+        assert_eq!(order.lines, vec![c, a, b]);
+        assert!(order.move_to(c, usize::MAX));
+        assert_eq!(order.lines, vec![a, b, c]);
+        assert!(!order.move_to(c, 2));
+        assert!(!order.move_to(ProjectRef { state_id: 99, project_index: 0 }, 1));
+        assert_eq!(order.lines, vec![a, b, c]);
     }
 }
 
