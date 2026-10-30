@@ -1,7 +1,7 @@
 //! HOI4-inspired production management window. All values and controls are
 //! backed by real daily simulation in production.rs. Artwork is procedural.
 use crate::hoi_ui as ui;
-use crate::production::{CountryProduction, Equipment, ProductionRules, ProductionState};
+use crate::production::{Equipment, ProductionRules, ProductionState};
 use crate::world::World;
 use crate::{draw_ui_text, measure_ui_text};
 use macroquad::prelude::*;
@@ -23,6 +23,7 @@ impl ProductionView {
     pub fn close(&mut self) {
         self.open = false;
         self.catalogue_open = false;
+        self.drag_source = None;
     }
 }
 
@@ -36,19 +37,7 @@ pub fn bounds() -> Rect {
 }
 
 pub fn is_over_panel(point: Vec2, view: &ProductionView) -> bool {
-    view.open
-        && (bounds().contains(point) || (view.catalogue_open && catalogue_bounds().contains(point)))
-}
-
-fn catalogue_bounds() -> Rect {
-    let base = bounds();
-    let width = (screen_width() - 22.0).min(470.0).max(280.0);
-    let x = if screen_width() >= base.right() + width + 8.0 {
-        base.right() + 5.0
-    } else {
-        (screen_width() - width).max(0.0) / 2.0
-    };
-    Rect::new(x, base.y, width, base.h)
+    view.open && bounds().contains(point)
 }
 
 fn belongs(e: &crate::military_model::EquipmentDefinition, category: Equipment) -> bool {
@@ -294,9 +283,10 @@ pub fn draw(
             view.scroll = (view.scroll + 2).min(max_first);
         }
     }
-    ui::scrollbar(inner, &mut view.scroll, max_first, visible);
-    {
-        let _clip = ui::clip(inner);
+    if !(compact && view.catalogue_open) {
+        ui::scrollbar(inner, &mut view.scroll, max_first, visible);
+        {
+            let _clip = ui::clip(inner);
         for (index, line) in snapshot.lines.iter().enumerate()
             .skip(view.scroll).take(visible)
         {
@@ -403,12 +393,14 @@ pub fn draw(
             }
         }
     }
+    }
     if snapshot.lines.is_empty() {
         ui::paragraph("Нет производственных линий. Выберите изученную модель справа и создайте линию.",
             Rect::new(inner.x + 8., inner.y + 14., inner.w - 22., 70.),
             12., ui::MUTED);
     }
     // Drag handle only; ordinary taps on cards and +/- remain independent.
+    if !(compact && view.catalogue_open) {
     if let Some(id) = view.drag_source {
         if is_mouse_button_released(MouseButton::Left) {
             if inner.contains(mouse) && !snapshot.lines.is_empty() {
@@ -420,6 +412,8 @@ pub fn draw(
         } else if !is_mouse_button_down(MouseButton::Left) {
             view.drag_source = None;
         }
+    }
+
     }
 
     // The equipment catalogue is the second column on desktop and a separate
