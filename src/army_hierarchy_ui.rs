@@ -1,6 +1,11 @@
 //! Single HOI-style army command tree shared by desktop and touch inspectors.
 //! Uses the authoritative CommandState; there are no duplicate UI-owned units.
-use crate::{army_ui::ArmyView, command::{ArmyId, CommandState}, hoi_ui as ui, warfare::Warfare};
+use crate::{
+    army_ui::ArmyView,
+    command::{ArmyId, CommandState},
+    hoi_ui as ui,
+    warfare::Warfare,
+};
 use macroquad::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,16 +21,26 @@ pub fn hierarchy_rows(state: &CommandState, country: &str) -> Vec<HierarchyRow> 
     let mut rows = Vec::new();
     for theater in state.theaters.values().filter(|t| t.country == country) {
         rows.push(HierarchyRow::Theater(theater.id));
-        for group in state.groups.values().filter(|g| g.country == country && g.theater == theater.id) {
+        for group in state
+            .groups
+            .values()
+            .filter(|g| g.country == country && g.theater == theater.id)
+        {
             rows.push(HierarchyRow::Group(group.id));
             rows.extend(
-                state.armies.values()
-                    .filter(|a| a.country == country && a.theater == theater.id && a.group == Some(group.id))
+                state
+                    .armies
+                    .values()
+                    .filter(|a| {
+                        a.country == country && a.theater == theater.id && a.group == Some(group.id)
+                    })
                     .map(|a| HierarchyRow::Army(a.id)),
             );
         }
         rows.extend(
-            state.armies.values()
+            state
+                .armies
+                .values()
                 .filter(|a| a.country == country && a.theater == theater.id && a.group.is_none())
                 .map(|a| HierarchyRow::Army(a.id)),
         );
@@ -42,7 +57,12 @@ pub fn hierarchy_rows(state: &CommandState, country: &str) -> Vec<HierarchyRow> 
 pub fn draw(tag: &str, w: &Warfare, view: &mut ArmyView, rect: Rect) -> f32 {
     const ROW_HEIGHT: f32 = 44.0;
     let heading = Rect::new(rect.x, rect.y, rect.w, 32.);
-    ui::section("ТЕАТРЫ  /  ГРУППЫ  /  АРМИИ", heading.x, heading.y, heading.w);
+    ui::section(
+        "ТЕАТРЫ  /  ГРУППЫ  /  АРМИИ",
+        heading.x,
+        heading.y,
+        heading.w,
+    );
     if ui::small_button(
         if view.hierarchy_collapsed { "+" } else { "−" },
         Rect::new(rect.right() - 28., rect.y + 1., 27., 26.),
@@ -77,34 +97,108 @@ pub fn draw(tag: &str, w: &Warfare, view: &mut ArmyView, rect: Rect) -> f32 {
     );
     {
         let _clip = ui::clip(list);
-        for (index, entry) in entries.iter().skip(view.hierarchy_scroll).take(visible + 1).enumerate() {
-            let r = Rect::new(list.x, list.y + index as f32 * ROW_HEIGHT, list.w, ROW_HEIGHT - 3.);
-            let (selected, indent, title, detail, portrait, army_color, destination) = match *entry {
+        for (index, entry) in entries
+            .iter()
+            .skip(view.hierarchy_scroll)
+            .take(visible + 1)
+            .enumerate()
+        {
+            let r = Rect::new(
+                list.x,
+                list.y + index as f32 * ROW_HEIGHT,
+                list.w,
+                ROW_HEIGHT - 3.,
+            );
+            let (selected, indent, title, detail, portrait, army_color, destination) = match *entry
+            {
                 HierarchyRow::Theater(id) => {
                     let t = &w.command.theaters[&id];
-                    let count = w.command.armies.values().filter(|a| a.country == tag && a.theater == id).count();
-                    let target = w.command.armies.values().find(|a| a.country == tag && a.theater == id).map(|a| a.id);
-                    (false, 3., t.name.clone(), format!("{count} арм."), None, None, target)
+                    let count = w
+                        .command
+                        .armies
+                        .values()
+                        .filter(|a| a.country == tag && a.theater == id)
+                        .count();
+                    let target = w
+                        .command
+                        .armies
+                        .values()
+                        .find(|a| a.country == tag && a.theater == id)
+                        .map(|a| a.id);
+                    (
+                        false,
+                        3.,
+                        t.name.clone(),
+                        format!("{count} арм."),
+                        None,
+                        None,
+                        target,
+                    )
                 }
                 HierarchyRow::Group(id) => {
                     let g = &w.command.groups[&id];
-                    let armies: Vec<_> = w.command.armies.values().filter(|a| a.country == tag && a.group == Some(id)).collect();
+                    let armies: Vec<_> = w
+                        .command
+                        .armies
+                        .values()
+                        .filter(|a| a.country == tag && a.group == Some(id))
+                        .collect();
                     let target = armies.first().map(|a| a.id);
-                    let chosen = view.selected_army.is_some_and(|a| armies.iter().any(|other| other.id == a));
-                    let commander = g.field_marshal.as_deref().and_then(|id| w.command.commanders.get(id));
-                    (chosen, 12., g.name.clone(), format!("{} · {} арм.", commander.map_or("Без фельдмаршала", |c| c.name.as_str()), armies.len()), g.field_marshal.clone(), None, target)
+                    let chosen = view
+                        .selected_army
+                        .is_some_and(|a| armies.iter().any(|other| other.id == a));
+                    let commander = g
+                        .field_marshal
+                        .as_deref()
+                        .and_then(|id| w.command.commanders.get(id));
+                    (
+                        chosen,
+                        12.,
+                        g.name.clone(),
+                        format!(
+                            "{} · {} арм.",
+                            commander
+                                .map_or("Без фельдмаршала", |c| c.name.as_str()),
+                            armies.len()
+                        ),
+                        g.field_marshal.clone(),
+                        None,
+                        target,
+                    )
                 }
                 HierarchyRow::Army(id) => {
                     let a = &w.command.armies[&id];
-                    let commander = a.general.as_deref().and_then(|id| w.command.commanders.get(id));
+                    let commander = a
+                        .general
+                        .as_deref()
+                        .and_then(|id| w.command.commanders.get(id));
                     let count = members_by_army.get(&id).copied().unwrap_or(0);
-                    let cap = commander.and_then(|c| w.command.army_cap(c, id)).map_or("?", |c| if c == 0 { "∞" } else { "" });
+                    let cap = commander
+                        .and_then(|c| w.command.army_cap(c, id))
+                        .map_or("?", |c| if c == 0 { "∞" } else { "" });
                     let detail = if cap == "" {
-                        format!("{count}/{} див. · {}", commander.and_then(|c| w.command.army_cap(c, id)).unwrap_or(0), commander.map_or("Без генерала", |c| c.name.as_str()))
+                        format!(
+                            "{count}/{} див. · {}",
+                            commander
+                                .and_then(|c| w.command.army_cap(c, id))
+                                .unwrap_or(0),
+                            commander.map_or("Без генерала", |c| c.name.as_str())
+                        )
                     } else {
-                        format!("{count}/{cap} див. · {}", commander.map_or("Без генерала", |c| c.name.as_str()))
+                        format!(
+                            "{count}/{cap} див. · {}",
+                            commander.map_or("Без генерала", |c| c.name.as_str())
+                        )
                     };
-                    (view.selected_army == Some(id), 23., a.name.clone(), detail, a.general.clone(), Some(a.color), Some(id))
+                    (
+                        view.selected_army == Some(id),
+                        23.,
+                        a.name.clone(),
+                        detail,
+                        a.general.clone(),
+                        Some(a.color),
+                        Some(id),
+                    )
                 }
             };
             if ui::small_button("", r, selected) {
@@ -122,7 +216,13 @@ pub fn draw(tag: &str, w: &Warfare, view: &mut ArmyView, rect: Rect) -> f32 {
             }
             let px = r.x + indent + 4.;
             if let Some(rgb) = army_color {
-                draw_rectangle(px, r.y + 6., 3., r.h - 12., Color::from_rgba(rgb[0], rgb[1], rgb[2], 255));
+                draw_rectangle(
+                    px,
+                    r.y + 6.,
+                    3.,
+                    r.h - 12.,
+                    Color::from_rgba(rgb[0], rgb[1], rgb[2], 255),
+                );
             }
             let image = Rect::new(px + 5., r.y + 4., 30., 33.);
             if let Some(id) = portrait.as_deref() {
@@ -133,8 +233,18 @@ pub fn draw(tag: &str, w: &Warfare, view: &mut ArmyView, rect: Rect) -> f32 {
                 crate::ui_icons::draw(crate::ui_icons::Icon::Army, image, ui::GOLD);
             }
             let text_x = image.right() + 4.;
-            ui::label(&title, Rect::new(text_x, r.y + 3., (r.right() - text_x - 4.).max(4.), 16.), 12., if selected { ui::GOLD } else { ui::TEXT });
-            ui::label(&detail, Rect::new(text_x, r.y + 22., (r.right() - text_x - 4.).max(4.), 15.), 10., ui::MUTED);
+            ui::label(
+                &title,
+                Rect::new(text_x, r.y + 3., (r.right() - text_x - 4.).max(4.), 16.),
+                12.,
+                if selected { ui::GOLD } else { ui::TEXT },
+            );
+            ui::label(
+                &detail,
+                Rect::new(text_x, r.y + 22., (r.right() - text_x - 4.).max(4.), 15.),
+                10.,
+                ui::MUTED,
+            );
             ui::tooltip(r, &title, &detail);
         }
     }
