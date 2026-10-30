@@ -116,12 +116,17 @@ impl GameSession {
         ctx: Context,
         cat: &ResearchCatalogue,
     ) -> Result<(), String> {
-        let blocks = cat
+        let blocks: Vec<_> = cat
             .scripts
             .on_actions
             .get(hook)
             .map(Vec::as_slice)
-            .unwrap_or(&[]);
+            .unwrap_or(&[])
+            .iter()
+            .filter(|block| !self.campaign.queue.values().any(|a| a.blocked.is_some()
+                && a.context.scope == ctx.scope && a.source == block.source
+                && matches!(&a.payload, Payload::OnAction { hook: queued_hook, raw } if queued_hook == hook && raw == &block.raw)))
+            .collect();
         if self.campaign.queue.len() + self.campaign.pending.len() + blocks.len() > QUEUE {
             return Err("On-action queue capacity exceeded".into());
         }
@@ -139,6 +144,7 @@ impl GameSession {
                 ctx.clone(),
                 block.source.clone(),
                 Payload::OnAction {
+                    hook: hook.into(),
                     raw: block.raw.clone(),
                 },
             )?;
@@ -376,5 +382,32 @@ mod tests {
         s.campaign.last_hour = None;
         tick(&mut s, &cat, 24, 2);
         assert_eq!(s.campaign.queue.len(), 1);
+    }
+    #[test]
+    fn blocked_daily_handler_does_not_fill_the_queue_again_each_day() {
+        let (mut s, cat) = fixture("on_daily_A={effect={add_political_power=3} unknown_field=yes}");
+        for day in 1..20 {
+            tick(&mut s, &cat, day * 24, (day + 1) as u8);
+        }
+        assert_eq!(s.campaign.countries["A"].power, Some(100.));
+        assert_eq!(s.campaign.queue.len(), 1);
+        assert_eq!(s.campaign.on_actions.dispatched["on_daily_A:A"], 19 * 24);
+    }
+    #[test]
+    fn many_additive_startup_blocks_obey_budget_and_resume_without_duplication() {
+        let source = (0..70)
+            .map(|_| "on_startup={effect={every_country={limit={tag=A} add_political_power=1}}}")
+            .collect::<String>();
+        let (mut s, cat) = fixture(&source);
+        s.start_campaign_scripts(&cat, &Default::default()).unwrap();
+        assert_eq!(s.campaign.countries["A"].power, Some(164.));
+        assert_eq!(s.campaign.queue.len(), 6);
+        let bytes = serde_json::to_vec(&s).unwrap();
+        s = serde_json::from_slice(&bytes).unwrap();
+        tick(&mut s, &cat, 1, 1);
+        assert_eq!(s.campaign.countries["A"].power, Some(170.));
+        assert!(s.campaign.queue.is_empty());
+        s.start_campaign_scripts(&cat, &Default::default()).unwrap();
+        assert_eq!(s.campaign.countries["A"].power, Some(170.));
     }
 }

@@ -20,6 +20,8 @@ pub struct DecisionRuntime {
     pub cooldowns: BTreeMap<String, BTreeMap<String, u64>>,
     /// `allowed` is a campaign-start snapshot, not a dynamic availability test.
     pub allowed: BTreeMap<String, BTreeMap<String, bool>>,
+    pub initialized: BTreeSet<String>,
+    pub allowed_errors: BTreeMap<String, BTreeMap<String, String>>,
     pub seeds: BTreeMap<String, BTreeMap<String, u64>>,
     pub failures: BTreeMap<String, BTreeMap<String, String>>,
     pub last_day: Option<u64>,
@@ -47,6 +49,8 @@ impl DecisionRuntime {
                 .chain(self.seeds.keys())
                 .chain(self.used.keys())
                 .chain(self.failures.keys())
+                .chain(self.allowed_errors.keys())
+                .chain(self.initialized.iter())
                 .any(|t| !w.countries.contains_key(t))
         {
             return Err("Invalid decision runtime".into());
@@ -58,6 +62,8 @@ impl DecisionRuntime {
         self.used.remove(t);
         self.cooldowns.remove(t);
         self.allowed.remove(t);
+        self.initialized.remove(t);
+        self.allowed_errors.remove(t);
         self.seeds.remove(t);
         self.failures.remove(t);
         self.revision = self.revision.saturating_add(1);
@@ -68,6 +74,25 @@ fn flag(raw: &[Entry], k: &str, default: bool) -> bool {
 }
 impl Journal<'_> {
     fn decision_allowed(&mut self, tag: &str, id: &str) -> Result<bool, String> {
+        if self.state.decisions.initialized.contains(tag) {
+            if let Some(error) = self
+                .state
+                .decisions
+                .allowed_errors
+                .get(tag)
+                .and_then(|m| m.get(id))
+            {
+                return Err(error.clone());
+            }
+            return Ok(self
+                .state
+                .decisions
+                .allowed
+                .get(tag)
+                .and_then(|m| m.get(id))
+                .copied()
+                .unwrap_or(false));
+        }
         if let Some(value) = self
             .state
             .decisions
@@ -286,8 +311,10 @@ impl Journal<'_> {
                 .remove(id);
         }
         // Native explicit removal ignores fire_only_once and starts no cooldown.
-        if let Some(used) = self.state.to_mut().decisions.used.get_mut(&t) {
-            used.remove(id);
+        if !mission {
+            if let Some(used) = self.state.to_mut().decisions.used.get_mut(&t) {
+                used.remove(id);
+            }
         }
         if let Some(c) = self.state.to_mut().decisions.cooldowns.get_mut(&t) {
             c.remove(id);
@@ -653,17 +680,31 @@ impl GameSession {
             .cloned()
             .collect();
         for t in tags {
-            for id in cat.scripts.decisions.keys() {
-                let r = self.campaign_transaction(cat, rules, |j| j.decision_allowed(&t, id));
-                if let Err(e) = r {
-                    self.campaign
-                        .decisions
-                        .failures
-                        .entry(t.clone())
-                        .or_default()
-                        .insert(id.clone(), e);
-                }
+            if self.campaign.decisions.initialized.contains(&t) {
+                continue;
             }
+            // Eligibility has no rewards; evaluate all definitions in ONE journal
+            // per country and retain only true IDs plus explicit unknowns.
+            let _ = self.campaign_transaction(cat, rules, |j| {
+                for id in cat.scripts.decisions.keys() {
+                    j.budget = STEPS;
+                    if let Err(e) = j.decision_allowed(&t, id) {
+                        j.state
+                            .to_mut()
+                            .decisions
+                            .allowed_errors
+                            .entry(t.clone())
+                            .or_default()
+                            .insert(id.clone(), e);
+                    }
+                }
+                let state = &mut j.state.to_mut().decisions;
+                if let Some(allowed) = state.allowed.get_mut(&t) {
+                    allowed.retain(|_, value| *value);
+                }
+                state.initialized.insert(t.clone());
+                Ok(())
+            });
         }
     }
     pub fn tick_decisions(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
@@ -677,6 +718,7 @@ impl GameSession {
         {
             return;
         }
+        self.initialize_decisions(cat, rules);
         let day = self.clock.elapsed_hours / 24;
         let daily = self.campaign.decisions.last_day.is_none_or(|d| d < day);
         if daily {
@@ -693,7 +735,9 @@ impl GameSession {
             let ids: Vec<_> = if daily {
                 cat.scripts
                     .decisions
-                    .keys()
+                    .iter()
+                    .filter(|(_, record)| pdx::atom(&record.raw, "days_mission_timeout").is_some())
+                    .map(|(id, _)| id)
                     .chain(
                         self.campaign
                             .decisions
@@ -723,19 +767,38 @@ impl GameSession {
                     .active
                     .get(&t)
                     .is_some_and(|m| m.contains_key(&id))
-                    && self
+                    && self.campaign.decisions.initialized.contains(&t)
+                    && !self
                         .campaign
                         .decisions
                         .allowed
                         .get(&t)
-                        .and_then(|m| m.get(&id))
-                        == Some(&false)
+                        .is_some_and(|m| m.contains_key(&id))
+                    && !self
+                        .campaign
+                        .decisions
+                        .allowed_errors
+                        .get(&t)
+                        .is_some_and(|m| m.contains_key(&id))
                 {
                     continue;
                 }
                 let result = self.campaign_transaction(cat, rules, |j| {
                     j.update_decision(&Context::country(&t), &id, daily)
                 });
+                if result.is_ok()
+                    && !self
+                        .campaign
+                        .decisions
+                        .active
+                        .get(&t)
+                        .and_then(|m| m.get(&id))
+                        .is_some_and(|job| job.blocked.is_some())
+                {
+                    if let Some(failures) = self.campaign.decisions.failures.get_mut(&t) {
+                        failures.remove(&id);
+                    }
+                }
                 if let Err(e) = result {
                     self.campaign
                         .decisions
@@ -759,9 +822,15 @@ impl GameSession {
                 }
             }
             if daily {
-                if let Err(e) = self.campaign_transaction(cat, rules, |j| {
+                let refresh = self.campaign_transaction(cat, rules, |j| {
                     j.refresh_decision_modifiers(&Context::country(&t))
-                }) {
+                });
+                if refresh.is_ok() {
+                    if let Some(failures) = self.campaign.decisions.failures.get_mut(&t) {
+                        failures.remove("modifier_refresh");
+                    }
+                }
+                if let Err(e) = refresh {
                     self.campaign
                         .decisions
                         .failures
@@ -1030,6 +1099,60 @@ mod tests {
         );
         assert_eq!(before, serde_json::to_value(&s).unwrap());
     }
+    #[test]
+    fn unknown_allowed_is_visible_as_blocked_and_denied_snapshot_survives_new_flags() {
+        let (mut s, cat) = fixture(
+            "denied={allowed={has_country_flag=later} complete_effect={add_political_power=10}} unknown={allowed={unknown_predicate=yes} complete_effect={add_political_power=10}} ok={cost=5}",
+        );
+        s.initialize_decisions(&cat, &Default::default());
+        assert!(s.campaign.decisions.initialized.contains("A"));
+        let snapshot = serde_json::to_vec(&s).unwrap();
+        s = serde_json::from_slice(&snapshot).unwrap();
+        run(&mut s, &cat, "set_country_flag=later").unwrap();
+        assert!(select(&mut s, &cat, "denied").is_err());
+        let before = serde_json::to_value(&s).unwrap();
+        let rows = s.decision_rows("A", &cat, &Default::default());
+        assert!(rows.iter().all(|row| row.id != "denied"));
+        let unknown = rows.iter().find(|row| row.id == "unknown").unwrap();
+        assert!(!unknown.selectable);
+        assert!(unknown.status.contains("unknown_predicate"));
+        assert!(rows.iter().find(|row| row.id == "ok").unwrap().selectable);
+        assert_eq!(before, serde_json::to_value(&s).unwrap());
+    }
+    #[test]
+    fn blocked_lifecycle_cannot_reattach_stale_modifiers_and_missing_definition_is_diagnosed() {
+        let (mut s, mut cat) = fixture(
+            "d={days_remove=1 modifier={political_power_gain=7} remove_effect={divide_variable={var=zero value=0}}}",
+        );
+        select(&mut s, &cat, "d").unwrap();
+        assert_eq!(
+            s.research
+                .country("A")
+                .unwrap()
+                .modifier("political_power_gain"),
+            7.
+        );
+        tick(&mut s, &cat, 24);
+        assert!(s.campaign.decisions.active["A"]["d"].blocked.is_some());
+        assert_eq!(
+            s.research
+                .country("A")
+                .unwrap()
+                .modifier("political_power_gain"),
+            0.
+        );
+        tick(&mut s, &cat, 48);
+        assert_eq!(
+            s.research
+                .country("A")
+                .unwrap()
+                .modifier("political_power_gain"),
+            0.
+        );
+        cat.scripts.decisions.clear();
+        tick(&mut s, &cat, 72);
+        assert!(s.campaign.decisions.failures["A"]["d"].contains("Missing decision"));
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1066,7 +1189,12 @@ impl GameSession {
                 .active
                 .get(t)
                 .and_then(|m| m.get(id));
-            if active.is_none() && j.decision_allowed(t, id).is_ok_and(|a| !a) {
+            let allowed = if active.is_none() {
+                j.decision_allowed(t, id)
+            } else {
+                Ok(true)
+            };
+            if allowed == Ok(false) {
                 continue;
             }
             let mut row = DecisionRow {
@@ -1082,9 +1210,21 @@ impl GameSession {
                 row.description.clear();
             }
             let result = (|| -> Result<bool, String> {
+                if !allowed? {
+                    return Ok(false);
+                }
                 decision_data::definition(cat, id)?;
                 j.preflight_decision(record)?;
                 if active.is_none() && pdx::atom(&record.raw, "days_mission_timeout").is_some() {
+                    if let Some(error) = self
+                        .campaign
+                        .decisions
+                        .failures
+                        .get(t)
+                        .and_then(|m| m.get(id))
+                    {
+                        return Err(error.clone());
+                    }
                     return Ok(false);
                 }
                 if active.is_none() && !j.decision_visible(record, &ctx)? {

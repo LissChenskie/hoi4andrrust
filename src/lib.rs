@@ -1,4 +1,5 @@
 //! Headless research/import APIs shared by the game and the local data exporter.
+pub mod campaign_compat;
 pub mod command_data;
 pub mod decision_data;
 pub mod defines;

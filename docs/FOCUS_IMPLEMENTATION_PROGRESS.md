@@ -1,9 +1,9 @@
 # National focus interpreter — recovery checkpoint
 
-Current state: Stage E country decisions/missions and startup/periodic on-actions implemented through the existing transactional campaign interpreter. UI integration and expanded compatibility reporting are in progress. Full original-game/DLC parity remains unverified.
+Current state: Stage E country decisions/missions and startup/periodic on-actions implemented, connected to the actual game panel, and covered by a conservative campaign-script audit. Full original-game/DLC parity remains unverified.
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `0e2b382d1dd8fdb2bd1fc7918d2344cf0ba77a69` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `1f7a3b4423845e90ac8562ac511c6966f6c41569` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -149,3 +149,20 @@ On-actions: native on_startup runs once with no implicit country scope on a new 
 Source consulted: CWTools schema/generated effect docs, checked-out revision 297dd69c42aabe10078a8b7ab7f2d07ee631d4ef, https://github.com/cwtools/cwtools-hoi4-config . No third-party implementation or protected game content copied. This is a reconstruction, not native parity certification.
 
 Core checks before UI integration: cargo test --all-targets --locked: **467 passed**, zero failures (77 library + 380 game + 3 exporter + 7 integration). Regressions cover source/cache preservation, duplicate diagnostics, real payment/modifiers/removal, rollback, automatic/selectable missions, remaining timer values, cancellation, expiry/reactivation, save/once behavior, fixed RNG, startup scope, additive/periodic hooks and actual random-event dispatch. Android/final checks follow the UI/report checkpoint. No main merge or history rewrite.
+
+
+## Final Stage E checkpoint: application wiring, UI, audit and bounded persistence
+
+Parent: 1f7a3b4423845e90ac8562ac511c6966f6c41569. A new campaign invokes startup scripts only after country selection; restoring a save does not replay startup. The live Decisions panel now has cached localized country decisions/mission rows with actual PP cost, status/remaining hours, source conditions/unknown blockers, paginated browsing and actual simulation requests. Events remain a separate tab; blocked scheduled scripts, including global startup blocks, are visible there. Rendering/readiness queries cannot mutate the campaign; a same-hour journal revision invalidates the view after flags/payment/events change. UI layout/touch/device behavior has not been visually verified.
+
+Additional correctness/performance fixes: allowed snapshots retain only eligible IDs and explicit unknown errors after a country is initialized, rather than every foreign false predicate; eligibility is computed in one read/evaluation journal per country, with independent predicate budgets. Only missions and active decisions are considered by periodic lifecycle updates. Unknown allowed predicates disable the UI row explicitly. Blocked jobs cannot reattach old bonuses during modifier refresh. Missing active definitions are diagnosed. A failing daily hook retains one blocked queue item per source block/country instead of appending the same failure every day. Startup blocks beyond the scheduler's hourly budget resume before mission processing. Explicit mission removal preserves mission fire-only-once history; explicit remove_decision retains its native bypass behavior. Native differential ordering for these semantics is still unverified.
+
+`cargo run --bin hoi4-research -- audit data/hoi4` now also writes **campaign-script-compatibility-report.json**. It distinguishes definitions, structural candidates, missing/unknown script dependencies and bound versus unbound hooks. Imported content is always supported=null, tested=false, parity_verified=false until actual evidence exists. Focus dependency traversal follows activated missions and their conditional/effect/event dependencies instead of hiding transitive blockers.
+
+CLI audit was actually run on `/tmp/hoi4-focus-fixture`: **authored fixture only**, 3 decision definitions (2 structural candidates and 1 targeted/state blocker), 2 on-action blocks (daily bound; war hook unbound). These are not the user's installation counts. No original assets/scripts were imported or committed.
+
+Final checks: **473 Rust tests passed**, zero failures (78 library + 385 game + 3 exporter + 7 integration); `cargo fmt --all -- --check`, `git diff --check`, `cargo check --all-targets --target aarch64-linux-android --locked`, and `cargo clippy --all-targets --locked` passed. Clippy has existing/style warnings; the codebase is not warning-free. Verification used the same temporary opt-level=0/debug=0 environment overrides; Cargo profiles are unchanged. This is an Android Rust compile, not APK linking, device rendering or an A51 performance measurement.
+
+### Next precise task after this checkpoint
+
+Bind political-change hooks with correct immediate/deferred order and old_ideology_token scope, then actual war/civil-war/state-control hooks at their existing simulation transitions. Add native targeted decisions/state missions and explicit civil-war inheritance before claiming those DLC chains run. Continue effective stability/difficulty/leader consumers and election timers as separate mechanics; keep all unsupported fields/errors visible. Full original-version integration still requires the user's verified local source export and source/engine differential scenarios; none have been fabricated. Continue on this feature branch, never merge main or rewrite history without explicit authorization.

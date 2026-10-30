@@ -58,9 +58,16 @@ pub struct CountryPolitics {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Payload {
     Effects(Vec<Entry>),
-    Event { id: String, raw: Vec<Entry> },
+    Event {
+        id: String,
+        raw: Vec<Entry>,
+    },
     CivilWar(crate::civil_war::SplitPlan),
-    OnAction { raw: Vec<Entry> },
+    OnAction {
+        #[serde(default)]
+        hook: String,
+        raw: Vec<Entry>,
+    },
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scheduled {
@@ -1607,7 +1614,7 @@ impl GameSession {
                 Payload::Effects(b) => self.campaign_effects(&a.context, b, &a.source, cat, rules),
                 Payload::Event { id, raw } => self.fire_campaign_event(&a, id, raw, cat, rules),
                 Payload::CivilWar(p) => self.start_civil_war(p, rules),
-                Payload::OnAction { raw } => {
+                Payload::OnAction { raw, .. } => {
                     self.run_on_action(&a.context, raw, &a.source, cat, rules)
                 }
             };
@@ -1622,7 +1629,12 @@ impl GameSession {
                 }
             }
         }
-        self.tick_decisions(cat, rules);
+        if !self.campaign.queue.values().any(|a| {
+            a.blocked.is_none()
+                && matches!(&a.payload, Payload::OnAction {hook, ..} if hook == "on_startup")
+        }) {
+            self.tick_decisions(cat, rules);
+        }
     }
     fn fire_campaign_event(
         &mut self,

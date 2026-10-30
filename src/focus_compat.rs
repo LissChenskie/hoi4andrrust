@@ -10,7 +10,12 @@ use crate::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
-fn predicates(b: &[Entry], cat: &ResearchCatalogue, out: &mut BTreeSet<String>, depth: usize) {
+pub(crate) fn predicates(
+    b: &[Entry],
+    cat: &ResearchCatalogue,
+    out: &mut BTreeSet<String>,
+    depth: usize,
+) {
     walk(b, cat, out, depth, &mut 10000);
 }
 fn walk(
@@ -72,6 +77,7 @@ fn walk(
             | "has_focus_tree"
             | "focus_progress"
             | "has_dynamic_modifier" => {}
+            "has_decision" | "has_active_mission" => {}
             k if e.block().is_some()
                 && (k.parse::<u32>().is_ok()
                     || k.len() == 3
@@ -88,7 +94,7 @@ fn walk(
         }
     }
 }
-fn effect_conditions(
+pub(crate) fn effect_conditions(
     b: &[Entry],
     cat: &ResearchCatalogue,
     out: &mut BTreeSet<String>,
@@ -115,6 +121,25 @@ fn effect_conditions(
                     if let Some(raw) = cat.scripts.dynamic_modifiers.get(id) {
                         for key in ["enable", "remove_trigger"] {
                             predicates(pdx::block(raw, key).unwrap_or(&[]), cat, out, 0);
+                        }
+                    }
+                }
+            }
+        } else if e.key == "activate_mission" {
+            if let Some(id) = e.atom() {
+                if seen.insert(format!("decision:{id}")) {
+                    if let Some(record) = cat.scripts.decisions.get(id) {
+                        for key in crate::decision_data::CONDITIONS {
+                            predicates(pdx::block(&record.raw, key).unwrap_or(&[]), cat, out, 0);
+                        }
+                        for key in crate::decision_data::EFFECTS {
+                            effect_conditions(
+                                pdx::block(&record.raw, key).unwrap_or(&[]),
+                                cat,
+                                out,
+                                seen,
+                                depth + 1,
+                            );
                         }
                     }
                 }
@@ -214,7 +239,7 @@ fn effect_conditions(
         }
     }
 }
-fn dependencies(
+pub(crate) fn dependencies(
     b: &[Entry],
     cat: &ResearchCatalogue,
     missing: &mut BTreeSet<String>,
@@ -238,6 +263,27 @@ fn dependencies(
                 id => {
                     missing.insert(format!("dynamic_modifier:{}", id.unwrap_or("<dynamic>")));
                 }
+            }
+        } else if [
+            "activate_mission",
+            "remove_mission",
+            "remove_decision",
+            "has_decision",
+            "has_active_mission",
+        ]
+        .contains(&e.key.as_str())
+        {
+            if let Some(id) = e.atom() {
+                if seen.insert(format!("decision:{id}")) {
+                    match cat.scripts.decisions.get(id) {
+                        Some(record) => dependencies(&record.raw, cat, missing, seen, depth + 1),
+                        None => {
+                            missing.insert(format!("decision:{id}"));
+                        }
+                    }
+                }
+            } else {
+                missing.insert(format!("{}: unresolved decision ID", e.key));
             }
         } else if e.key == "complete_national_focus" {
             if let Some(id) = e
@@ -407,7 +453,7 @@ pub fn report(data: &ResearchDataset) -> Value {
         "eof_terminated_sources":data.eof_terminated_sources,
         "continuous_focuses":cat.scripts.sources.values().filter(|s|s.kind=="continuous_focus").map(|s|json!({"id":s.id,"source":s.source,"parsed":true,"supported":false,"tested":false,"parity_verified":false,"blocker":"Continuous focus lifecycle and modifier removal not implemented"})).collect::<Vec<_>>(),
         "tree_diagnostics":cat.scripts.focus_trees.iter().map(|(id,t)|(id,&t.problems)).collect::<std::collections::BTreeMap<_,_>>(),
-        "limitations":["supported=null means runtime evidence unavailable, not full support", "Authored unit tests are not tests of imported proprietary focuses", "Continuous/joint focuses, decisions/missions and DLC-specific mechanics need additional runtime implementations", "Dynamic localisation and source speed modifiers remain unverified"]})
+        "limitations":["supported=null means runtime evidence unavailable, not full support", "Authored unit tests are not tests of imported proprietary focuses", "Continuous/joint focuses, targeted decisions and DLC-specific mechanics need additional runtime implementations", "See campaign-script-compatibility-report.json for country decision/missions and bound/unbound on-actions", "Dynamic localisation and source speed modifiers remain unverified"]})
 }
 
 #[cfg(test)]

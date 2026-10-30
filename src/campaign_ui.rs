@@ -172,6 +172,8 @@ pub struct Hud {
     pub focus_view: crate::focus_ui::View,
     pub focus_request: Option<crate::focus_ui::Request>,
     pub event_request: Option<(u64, usize)>,
+    pub decision_request: Option<String>,
+    pub decision_view: crate::campaign_events_ui::View,
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -211,6 +213,8 @@ impl Default for Hud {
             focus_view: Default::default(),
             focus_request: None,
             event_request: None,
+            decision_request: None,
+            decision_view: Default::default(),
         }
     }
 }

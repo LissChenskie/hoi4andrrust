@@ -371,6 +371,10 @@ fn compile(root: &Path) -> Result<(), String> {
         &root.join("focus-compatibility-report.json"),
         &hoi4_mobile::focus_compat::report(&data),
     )?;
+    atomic_json(
+        &root.join("campaign-script-compatibility-report.json"),
+        &hoi4_mobile::campaign_compat::report(&data.registry),
+    )?;
     let report = data.audit(root);
     atomic_json(&root.join("research-report.json"), &report)?;
     let sources = data.write_review_sources(root)?;

@@ -3352,6 +3352,11 @@ async fn main() {
                     match start_session(scenario_choice) {
                         Ok(mut fresh) => {
                             fresh.player_country = country_choice.clone();
+                            if let Err(e) =
+                                fresh.start_campaign_scripts(&research_catalogue, &research_rules)
+                            {
+                                hud.notice = format!("Скрипты старта: {e}");
+                            }
                             session = fresh;
                             production_rules = production::ProductionRules::from_defines(
                                 &session.military.catalogue.literal_defines,
@@ -3395,6 +3400,17 @@ async fn main() {
                     hud.notice = session
                         .choose_campaign_event(id, option, &research_catalogue, &research_rules)
                         .map(|_| "Решение события исполнено".into())
+                        .unwrap_or_else(|e| e);
+                }
+                if let Some(id) = hud.decision_request.take() {
+                    hud.notice = session
+                        .player_country
+                        .clone()
+                        .ok_or_else(|| "Страна не выбрана".to_string())
+                        .and_then(|tag| {
+                            session.select_decision(&tag, &id, &research_catalogue, &research_rules)
+                        })
+                        .map(|_| format!("Принято: {id}"))
                         .unwrap_or_else(|e| e);
                 }
                 if let Some(req) = hud.focus_request.take() {
@@ -3636,6 +3652,10 @@ async fn main() {
                     );
                 }
                 hud.politics = session.politics_display(&research_catalogue);
+                if hud.active == Some(Panel::Decisions) {
+                    hud.decision_view
+                        .refresh(&session, &research_catalogue, &research_rules);
+                }
                 let GameSession {
                     world,
                     clock: game,
