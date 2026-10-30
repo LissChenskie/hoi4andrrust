@@ -365,7 +365,7 @@ fn compile(root: &Path) -> Result<(), String> {
     let data = ResearchDataset::load(root, false)?;
     // A deterministic, source-labelled inventory for DLC focus/event/decision
     // work. This never claims missing game mechanics have been implemented.
-    let deps = hoi4_mobile::research_import::content_dependency_report(&data);
+    let deps = hoi4_mobile::dependency_report::report(&data);
     atomic_json(&root.join("content-dependencies.json"), &deps)?;
     let report = data.audit(root);
     atomic_json(&root.join("research-report.json"), &report)?;
