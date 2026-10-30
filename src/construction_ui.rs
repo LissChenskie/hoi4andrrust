@@ -19,6 +19,8 @@ pub struct ConstructionView {
     pub first_visible_row: usize,
     /// Clicking a building switches from the full queue to map placement.
     pub map_placement: bool,
+    /// Active queue-icon drag (also works with a touch pointer).
+    pub dragging_project: Option<ProjectRef>,
 }
 
 impl Default for ConstructionView {
@@ -29,6 +31,7 @@ impl Default for ConstructionView {
             focused_state: None,
             first_visible_row: 0,
             map_placement: false,
+            dragging_project: None,
         }
     }
 }
@@ -37,6 +40,7 @@ impl ConstructionView {
     pub fn close(&mut self) {
         self.open = false;
         self.map_placement = false;
+        self.dragging_project = None;
     }
 }
 
@@ -366,7 +370,14 @@ pub fn draw(
     }
 
     let list_y = area.y + 211.0;
-    let list_bottom = area.y + area.h - if narrow { 31.0 } else { 50.0 };
+    let detail_height = if view.focused_state.is_some() {
+        if narrow { 61.0 } else { 84.0 }
+    } else {
+        0.0
+    };
+    let list_bottom = area.y + area.h
+        - if narrow { 31.0 } else { 50.0 }
+        - detail_height;
     let list_h = (list_bottom - list_y).max(10.0);
     draw_rectangle(
         list_x,
@@ -465,6 +476,14 @@ pub fn draw(
             );
         let icon_x = row.x + 7.0;
         draw_queue_icon(project.building, icon_x, row.y + 9.0, 39.0);
+        // Drag from the icon; do not invalidate queue indices during rendering.
+        let handle = rect(icon_x, row.y + 7.0, 42.0, 44.0);
+        if ui::inside(handle) && is_mouse_button_pressed(MouseButton::Left) {
+            view.dragging_project = Some(*key);
+        }
+        if view.dragging_project == Some(*key) {
+            draw_rectangle_lines(handle.x, handle.y, handle.w, handle.h, 2.0, ui::GOLD);
+        }
         let text_x = row.x + 53.0;
         let text_space = (row.w - 162.0).max(65.0);
         let label_size: u16 = if narrow { 11 } else { 13 };
@@ -525,11 +544,12 @@ pub fn draw(
         // Moving projects across state boundaries affects the real national CIV
         // scheduler, not just the way rows are displayed.
         let control_x = row.x + row.w - 103.0;
+        let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
         if ui::small_button("↑", rect(control_x, row.y + 7.0, 31.0, 27.0), false) {
-            request = Some(('u', *key));
+            request = Some((if shift { 't' } else { 'u' }, *key));
         }
         if ui::small_button("↓", rect(control_x + 35.0, row.y + 7.0, 31.0, 27.0), false) {
-            request = Some(('d', *key));
+            request = Some((if shift { 'b' } else { 'd' }, *key));
         }
         if ui::small_button("X", rect(control_x + 70.0, row.y + 7.0, 25.0, 27.0), false) {
             request = Some(('x', *key));
@@ -547,10 +567,37 @@ pub fn draw(
         );
     }
 
+    // Outline the hovered destination row; reorder only once on release.
+    if view.dragging_project.is_some() && is_mouse_button_down(MouseButton::Left) {
+        let pointer = vec2(mouse_position().0, mouse_position().1);
+        if list_region.contains(pointer) && visible_count > 0 {
+            let target = ((pointer.y - content_y) / row_height).floor()
+                .clamp(0.0, (visible_count - 1) as f32) as usize;
+            let marker_y = content_y + target as f32 * row_height;
+            draw_rectangle_lines(list_x + 2.0, marker_y, list_w - 4.0, row_height - 2.0, 2.0, ui::GOLD);
+        }
+    }
+    if is_mouse_button_released(MouseButton::Left) {
+        if let Some(key) = view.dragging_project.take() {
+            let pointer = vec2(mouse_position().0, mouse_position().1);
+            if list_region.contains(pointer) && visible_count > 0 {
+                let target = ((pointer.y - content_y) / row_height).floor()
+                    .clamp(0.0, (visible_count - 1) as f32) as usize;
+                if order.move_to(key, view.first_visible_row + target) {
+                    *notice = "Приоритет строительства изменён перетаскиванием".to_owned();
+                }
+            }
+        }
+    }
+
     if let Some((command, key)) = request {
         match command {
             'u' if order.move_up(key) => *notice = "Приоритет строительства повышен".to_owned(),
             'd' if order.move_down(key) => *notice = "Приоритет строительства понижен".to_owned(),
+            't' if order.move_to(key, 0) => *notice = "Проект перемещён в начало очереди".to_owned(),
+            'b' if order.move_to(key, order.lines.len().saturating_sub(1)) => {
+                *notice = "Проект перемещён в конец очереди".to_owned();
+            }
             'x' if order.cancel(queues, key) => {
                 if !queues.contains_key(&key.state_id) {
                     priority.retain(|id| *id != key.state_id);
@@ -583,6 +630,57 @@ pub fn draw(
             false,
         ) {
             view.first_visible_row = (view.first_visible_row + 1).min(max_first);
+        }
+    }
+
+    if let Some(state_id) = view.focused_state {
+        if let Some(state) = world.states.get(&state_id) {
+            let info_y = list_bottom + 5.0;
+            let info_h = (detail_height - 8.0).max(0.0);
+            if info_h > 0.0 {
+                draw_rectangle(list_x, info_y, list_w, info_h, ui::BASE);
+                draw_rectangle_lines(list_x, info_y, list_w, info_h, 1.0, ui::EDGE);
+                let name = state.name.as_deref().unwrap_or("Неизвестный регион");
+                let name = name.chars().take(if narrow { 24 } else { 42 }).collect::<String>();
+                let total_slots = construction::shared_slot_limit(world, state_id, rules).unwrap_or(0);
+                let occupied_slots = usize::from(state.economy.occupied_shared_slots());
+                let state_queue = queues.get(&state_id);
+                let reserved_slots = state_queue.map_or(0, |q| {
+                    q.iter().filter(|p| rules.shares_slots(p.building)
+                        && construction::project_belongs(world, state_id, p, tag)).count()
+                });
+                let state_queue_count = state_queue.map_or(0, |q| {
+                    q.iter().filter(|p|
+                        construction::project_belongs(world, state_id, p, tag)).count()
+                });
+                let built = view.selected_building.built_count(state.economy);
+                let pending = state_queue.map_or(0, |q| {
+                    q.iter().filter(|p| p.building == view.selected_building
+                        && construction::project_belongs(world, state_id, p, tag)).count()
+                });
+                let eligible = world.state_controller(state_id) == Some(tag);
+                draw_ui_text(
+                    &format!("РЕГИОН: {}", name),
+                    list_x + 8.0, info_y + 16.0, 12.0, ui::GOLD,
+                );
+                draw_ui_text(
+                    &format!("Слоты: {}+{}/{}  |  Инфра: {}/5",
+                        occupied_slots, reserved_slots, total_slots, state.economy.infrastructure),
+                    list_x + 8.0, info_y + 32.0, 11.0, ui::TEXT,
+                );
+                draw_ui_text(
+                    &format!("{}: {}+{}  |  Строек: {}{}",
+                        view.selected_building.short_label(), built, pending, state_queue_count,
+                        if eligible { "" } else { "  |  ЧУЖОЙ РЕГИОН" }),
+                    list_x + 8.0, info_y + if narrow { 46.0 } else { 49.0 }, 11.0, ui::MUTED,
+                );
+                if !narrow {
+                    draw_ui_text(
+                        "Значок: перетащить. Shift+стрелка: начало/конец.",
+                        list_x + 8.0, info_y + 67.0, 10.0, ui::MUTED,
+                    );
+                }
+            }
         }
     }
 
