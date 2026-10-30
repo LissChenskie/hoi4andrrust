@@ -102,6 +102,28 @@ fn selection(
         Ok(None)
     }
 }
+/// Read-only tree selection for both simulation and the existing focus panel.
+pub fn selected_tree<'a>(original: &str, cat: &'a ResearchCatalogue)
+    -> Result<&'a crate::research_script::FocusTreeRecord, String> {
+    let mut choices = Vec::new();
+    let mut unsupported = Vec::new();
+    for tree in cat.scripts.focus_trees.values() {
+        match selection(tree, original) {
+            Ok(Some(score)) => choices.push((score, tree)),
+            Ok(None) => {}
+            Err(e) => unsupported.push(e),
+        }
+    }
+    choices.sort_by(|(a, _), (b, _)| b.total_cmp(a));
+    let Some((score, tree)) = choices.first() else {
+        return Err(format!("No verified focus tree for {original}; {}",
+            unsupported.join("; ")));
+    };
+    if choices.get(1).is_some_and(|(other, _)| other == score) {
+        return Err(format!("Ambiguous focus trees for {original} at score {score}"));
+    }
+    Ok(tree)
+}
 impl GameSession {
     /// Country-tree selection never silently falls through unknown DLC gates.
     pub fn focus_tree<'a>(
@@ -118,26 +140,7 @@ impl GameSession {
         } else {
             &c.context.original_tag
         };
-        let mut choices = vec![];
-        let mut unsupported = vec![];
-        for tree in cat.scripts.focus_trees.values() {
-            match selection(tree, original) {
-                Ok(Some(score)) => choices.push((score, tree)),
-                Ok(None) => {}
-                Err(e) => unsupported.push(e),
-            }
-        }
-        choices.sort_by(|(a, _), (b, _)| b.total_cmp(a));
-        let Some((score, tree)) = choices.first() else {
-            return Err(format!(
-                "No verified focus tree for {tag}; {}",
-                unsupported.join("; ")
-            ));
-        };
-        if choices.get(1).is_some_and(|(other, _)| other == score) {
-            return Err(format!("Ambiguous focus trees for {tag} at score {score}"));
-        }
-        Ok(tree)
+        selected_tree(original, cat)
     }
     fn focus_rules<'a>(
         &self,
