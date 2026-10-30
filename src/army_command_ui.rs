@@ -35,7 +35,12 @@ pub fn draw(
     } else {
         0.
     };
-    let body = Rect::new(r.x, r.y + hierarchy_height, r.w, (r.h - hierarchy_height).max(1.));
+    let body = Rect::new(
+        r.x,
+        r.y + hierarchy_height,
+        r.w,
+        (r.h - hierarchy_height).max(1.),
+    );
     if view.commander_picker.is_none() && ui::inside(body) {
         let (_, wheel) = mouse_wheel();
         view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(
@@ -66,7 +71,11 @@ pub fn draw(
             0.0
         };
     if view.selected_army.is_none() {
-        if ui::small_button("Создать армию из выделенных", Rect::new(x, y, width, 31.), false) {
+        if ui::small_button(
+            "Создать армию из выделенных",
+            Rect::new(x, y, width, 31.),
+            false,
+        ) {
             let ids: Vec<_> = view.selected.iter().copied().collect();
             match w.create_army(tag, &ids, "") {
                 Ok(id) => {
@@ -342,7 +351,12 @@ pub fn draw(
         }
     }
     y += 36.0;
-    if commander_tile(w, army.general.as_deref(), Rect::new(x, y, width, 88.), false) {
+    if commander_tile(
+        w,
+        army.general.as_deref(),
+        Rect::new(x, y, width, 88.),
+        false,
+    ) {
         view.commander_picker = Some(false);
         view.command_scroll = 0;
     }
@@ -360,7 +374,12 @@ pub fn draw(
             macroquad::miniquad::window::show_keyboard(true);
         }
         y += 26.0;
-        if commander_tile(w, group.field_marshal.as_deref(), Rect::new(x, y, width, 88.), true) {
+        if commander_tile(
+            w,
+            group.field_marshal.as_deref(),
+            Rect::new(x, y, width, 88.),
+            true,
+        ) {
             view.commander_picker = Some(true);
             view.command_scroll = 0;
         }
@@ -671,26 +690,56 @@ fn commander_tile(w: &Warfare, id: Option<&str>, rect: Rect, marshal: bool) -> b
     }
     let x = photo.right() + 8.;
     let width = (rect.right() - x - 5.).max(4.);
-    let role = if marshal { "ФЕЛЬДМАРШАЛ" } else { "ГЕНЕРАЛ" };
+    let role = if marshal {
+        "ФЕЛЬДМАРШАЛ"
+    } else {
+        "ГЕНЕРАЛ"
+    };
     ui::label(role, Rect::new(x, rect.y + 4., width, 16.), 10., ui::GOLD);
     if let Some(c) = chosen {
-        ui::label(&c.name, Rect::new(x, rect.y + 21., width, 20.), 14., ui::TEXT);
         ui::label(
-            &format!("Ур. {}  ·  А{}  З{}  П{}  Л{}", c.skill, c.attack, c.defense, c.planning, c.logistics),
-            Rect::new(x, rect.y + 43., width, 17.), 11., ui::GOLD,
+            &c.name,
+            Rect::new(x, rect.y + 21., width, 20.),
+            14.,
+            ui::TEXT,
+        );
+        ui::label(
+            &format!(
+                "Ур. {}  ·  А{}  З{}  П{}  Л{}",
+                c.skill, c.attack, c.defense, c.planning, c.logistics
+            ),
+            Rect::new(x, rect.y + 43., width, 17.),
+            11.,
+            ui::GOLD,
         );
         ui::label(
             &format!("Опыт {:.1} · {} черт", c.experience, c.traits.len()),
-            Rect::new(x, rect.y + 63., width, 16.), 10., ui::MUTED,
+            Rect::new(x, rect.y + 63., width, 16.),
+            10.,
+            ui::MUTED,
         );
-        ui::tooltip(rect, &c.name,
-            &format!("Атака {} · Защита {} · Планирование {} · Логистика {}\nЧерты: {}\nНажмите для замены командующего",
-                c.attack, c.defense, c.planning, c.logistics,
-                c.traits.iter().cloned().collect::<Vec<_>>().join(", ")));
+        ui::tooltip(
+            rect,
+            &c.name,
+            &format!(
+                "Атака {} · Защита {} · Планирование {} · Логистика {}\nЧерты: {}\nНажмите для замены командующего",
+                c.attack,
+                c.defense,
+                c.planning,
+                c.logistics,
+                c.traits.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+        );
     } else {
         ui::paragraph(
-            if marshal { "НАЗНАЧИТЬ ФЕЛЬДМАРШАЛА" } else { "НАЗНАЧИТЬ ГЕНЕРАЛА" },
-            Rect::new(x, rect.y + 22., width, 45.), 13., ui::GOLD,
+            if marshal {
+                "НАЗНАЧИТЬ ФЕЛЬДМАРШАЛА"
+            } else {
+                "НАЗНАЧИТЬ ГЕНЕРАЛА"
+            },
+            Rect::new(x, rect.y + 22., width, 45.),
+            13.,
+            ui::GOLD,
         );
     }
     pressed
