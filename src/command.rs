@@ -368,7 +368,14 @@ impl CommandState {
                 }
             }
         }
-        self.armies.get_mut(&army).unwrap().group = group;
+        // Every army assigned to a group must share its theater. Otherwise
+        // the command tree and battle-plan hierarchy disagree after transfers.
+        let target_theater = group.and_then(|id| self.groups.get(&id)).map(|g| g.theater);
+        let target = self.armies.get_mut(&army).unwrap();
+        target.group = group;
+        if let Some(theater) = target_theater {
+            target.theater = theater;
+        }
         self.revision += 1;
         Ok(())
     }
