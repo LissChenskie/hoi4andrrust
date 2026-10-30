@@ -165,7 +165,10 @@ pub fn draw(
             let occupied = assignment.is_some();
             if ui::small_button("", row, occupied) {
                 if occupied {
-                    view.notice = format!("Сначала освободите командующего: {}", assignment.as_deref().unwrap_or_default());
+                    view.notice = format!(
+                        "Сначала освободите командующего: {}",
+                        assignment.as_deref().unwrap_or_default()
+                    );
                 } else {
                     assign(tag, w, view, Some(&c.id), marshal);
                 }
