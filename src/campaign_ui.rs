@@ -132,10 +132,7 @@ impl Panel {
         }
     }
     pub fn placeholder(self) -> bool {
-        matches!(
-            self,
-            Self::Politics | Self::Decisions | Self::Agency
-        )
+        matches!(self, Self::Politics | Self::Decisions | Self::Agency)
     }
 }
 
