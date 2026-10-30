@@ -409,7 +409,7 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
             }
             MobilePage::Armies => {
                 rows.text(
-                    "Выберите армию или создайте её из выделенных дивизий.",
+                    "Театры → группы армий → армии. Нажмите армию, чтобы выбрать её дивизии.",
                     62.,
                     ui::MUTED,
                 );
@@ -418,36 +418,94 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                     match w.create_army(tag, &ids, "") {
                         Ok(id) => {
                             view.selected_army = Some(id);
+                            view.selected = w.command.members(id).collect();
                             navigate(&mut m, MobilePage::Army);
                         }
                         Err(e) => view.notice = e,
                     }
                 }
-                let ids = w
-                    .command
-                    .armies
-                    .values()
-                    .filter(|a| a.country == tag)
-                    .map(|a| a.id)
-                    .collect::<Vec<_>>();
-                for id in ids {
-                    let r = rows.rect(64.);
-                    if r.bottom() < body.y || r.y > body.bottom() {
-                        continue;
-                    }
-                    let a = &w.command.armies[&id];
-                    let title = format!("{} · {} див.", a.name, w.command.members(id).count());
-                    if button(
-                        &title,
-                        r,
-                        Some(id) == army,
-                        tap.filter(|p| body.contains(*p)),
-                    ) {
-                        view.selected_army = Some(id);
-                        view.selected = w.command.members(id).collect();
-                        view.selected_front = None;
-                        view.selected_plan = None;
-                        navigate(&mut m, MobilePage::Army);
+                // The touch inspector uses exactly the same hierarchy as desktop:
+                // neither renderer keeps its own army list or duplicate division state.
+                let entries = crate::army_hierarchy_ui::hierarchy_rows(&w.command, tag);
+                let counts = w.command.membership.values().fold(
+                    std::collections::BTreeMap::<u64, usize>::new(),
+                    |mut counts, id| {
+                        *counts.entry(*id).or_default() += 1;
+                        counts
+                    },
+                );
+                for entry in entries {
+                    match entry {
+                        crate::army_hierarchy_ui::HierarchyRow::Theater(id) => {
+                            if let Some(t) = w.command.theaters.get(&id) {
+                                rows.text(&format!("ТЕАТР: {}", t.name), 38., ui::GOLD);
+                            }
+                        }
+                        crate::army_hierarchy_ui::HierarchyRow::Group(id) => {
+                            if let Some(g) = w.command.groups.get(&id) {
+                                let marshal = g
+                                    .field_marshal
+                                    .as_deref()
+                                    .and_then(|id| w.command.commanders.get(id))
+                                    .map_or("Без фельдмаршала", |c| c.name.as_str());
+                                rows.text(&format!("  {}\n  {}", g.name, marshal), 59., ui::TEXT);
+                            }
+                        }
+                        crate::army_hierarchy_ui::HierarchyRow::Army(id) => {
+                            let r = rows.rect(68.);
+                            if r.bottom() < body.y || r.y > body.bottom() {
+                                continue;
+                            }
+                            let a = &w.command.armies[&id];
+                            ui::row_bg(r, Some(id) == army, false);
+                            draw_rectangle(
+                                r.x + 3.,
+                                r.y + 5.,
+                                4.,
+                                r.h - 10.,
+                                Color::from_rgba(a.color[0], a.color[1], a.color[2], 255),
+                            );
+                            let portrait = Rect::new(r.x + 12., r.y + 5., 48., 57.);
+                            if !a
+                                .general
+                                .as_deref()
+                                .is_some_and(|id| crate::hoi_assets::portrait(id, portrait))
+                            {
+                                crate::ui_icons::draw(
+                                    crate::ui_icons::Icon::Officer,
+                                    portrait,
+                                    ui::MUTED,
+                                );
+                            }
+                            ui::label(
+                                &format!(
+                                    "{} · {} див.",
+                                    a.name,
+                                    counts.get(&id).copied().unwrap_or(0)
+                                ),
+                                Rect::new(r.x + 69., r.y + 9., r.w - 75., 24.),
+                                15.,
+                                ui::GOLD,
+                            );
+                            let commander = a
+                                .general
+                                .as_deref()
+                                .and_then(|id| w.command.commanders.get(id))
+                                .map_or("Назначить генерала", |c| c.name.as_str());
+                            ui::label(
+                                commander,
+                                Rect::new(r.x + 69., r.y + 39., r.w - 75., 22.),
+                                13.,
+                                ui::TEXT,
+                            );
+                            if tap.is_some_and(|p| body.contains(p) && r.contains(p)) {
+                                view.selected_army = Some(id);
+                                view.selected = w.command.members(id).collect();
+                                view.selected_front = None;
+                                view.selected_plan = None;
+                                navigate(&mut m, MobilePage::Army);
+                            }
+                        }
                     }
                 }
             }

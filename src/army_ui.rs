@@ -59,6 +59,8 @@ pub struct ArmyView {
     pub front_preview_end: Option<crate::frontline::FrontEdge>,
     pub front_preview: Vec<crate::frontline::FrontEdge>,
     pub army_scroll: f32,
+    pub hierarchy_scroll: usize,
+    pub hierarchy_collapsed: bool,
     pub commander_picker: Option<bool>,
     pub command_scroll: usize,
     pub edit_army_name: bool,

@@ -1,6 +1,7 @@
 mod air_warfare;
 mod army_command_ui;
 mod army_controls;
+mod army_hierarchy_ui;
 mod army_projection;
 mod army_touch;
 mod army_ui;
