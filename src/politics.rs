@@ -127,10 +127,37 @@ impl GameSession {
         tag: &str,
         cat: &ResearchCatalogue,
     ) -> Result<PowerIncome, String> {
+        if let Some(error) = self
+            .campaign
+            .dynamic_modifiers
+            .get(tag)
+            .into_iter()
+            .flat_map(|m| m.values())
+            .find_map(|m| m.blocked.as_ref())
+        {
+            return Err(format!("Dynamic modifier blocked: {error}"));
+        }
         let country = self
             .research
             .country(tag)
             .ok_or("Country research state missing")?;
+        fn unresolved_dynamic(b: &[Entry]) -> bool {
+            b.iter().any(|e| {
+                matches!(
+                    e.key.as_str(),
+                    "add_dynamic_modifier" | "remove_dynamic_modifier"
+                ) || e.block().is_some_and(unresolved_dynamic)
+            })
+        }
+        if country
+            .pending_effects
+            .iter()
+            .any(|e| unresolved_dynamic(&e.payload))
+        {
+            return Err(
+                "Historical dynamic modifier has not been executed; income is unverified".into(),
+            );
+        }
         let p = self
             .campaign
             .countries

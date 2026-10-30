@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 13;
+const CACHE_VERSION: u32 = 14;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -81,6 +81,7 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("common/ideas", "txt"),
     ("common/static_modifiers", "txt"),
     ("common/modifiers", "txt"),
+    ("common/dynamic_modifiers", "txt"),
     ("common/characters", "txt"),
     ("common/national_focus", "txt"),
     ("common/continuous_focus", "txt"),
@@ -616,6 +617,15 @@ impl ResearchDataset {
                 for e in b {
                     if let Some(raw) = e.block() {
                         scripts.static_modifiers.insert(e.key.clone(), raw.to_vec());
+                    }
+                }
+            }
+            if rel.starts_with("common/dynamic_modifiers/") {
+                for e in b {
+                    if let Some(raw) = e.block() {
+                        scripts
+                            .dynamic_modifiers
+                            .insert(e.key.clone(), raw.to_vec());
                     }
                 }
             }
@@ -1588,6 +1598,29 @@ mod tests {
         assert_eq!(
             cached.registry.scripts.defines["NDefines.NCountry.DEFAULT_STABILITY"],
             0.62
+        );
+    }
+    #[test]
+    fn native_dynamic_definitions_and_variables_survive_import_and_cache() {
+        let f = fixture();
+        f.put(
+            "common/dynamic_modifiers/authored.txt",
+            "authored={enable={has_country_flag=enabled} political_power_gain=var:ROOT.bonus?0}",
+        );
+        let d = ResearchDataset::load(&f.0, false).unwrap();
+        assert!(
+            d.registry
+                .scripts
+                .dynamic_modifiers
+                .contains_key("authored")
+        );
+        let d = ResearchDataset::load(&f.0, true).unwrap();
+        assert_eq!(
+            atom(
+                &d.registry.scripts.dynamic_modifiers["authored"],
+                "political_power_gain"
+            ),
+            Some("var:ROOT.bonus?0")
         );
     }
     fn fixture() -> Fixture {

@@ -522,6 +522,18 @@ impl Warfare {
                     }
                 }
             }
+            if let Some(c) = research.country(tag) {
+                for values in c
+                    .source_modifiers
+                    .iter()
+                    .filter(|(key, _)| key.starts_with("dynamic:"))
+                    .map(|(_, values)| values)
+                {
+                    for (key, value) in values {
+                        *m.country.entry(key.clone()).or_default() += value;
+                    }
+                }
+            }
             m.ideas = research
                 .country(tag)
                 .filter(|c| c.ideas_authoritative)

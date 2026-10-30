@@ -763,3 +763,255 @@ fn political_setters_government_and_popularity_affect_real_conditions_atomically
         .is_err()
     );
 }
+
+fn dynamic_cat() -> ResearchCatalogue {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.defines.extend([
+        (
+            "NDefines.NPolitics.BASE_POLITICAL_POWER_INCREASE".into(),
+            2.,
+        ),
+        ("NDefines.NCountry.POLITICAL_POWER_LOWER_CAP".into(), -500.),
+        ("NDefines.NCountry.POLITICAL_POWER_UPPER_CAP".into(), 2000.),
+    ]);
+    cat.scripts.dynamic_modifiers.insert("authored".into(),parse_pdx("enable={has_country_flag=enabled} remove_trigger={has_country_flag=remove} political_power_gain=var:ROOT.bonus?0 research_speed_factor=0.2 army_attack_factor=0.1").unwrap());
+    cat
+}
+fn dynamic_run(s: &mut GameSession, cat: &ResearchCatalogue, txt: &str) -> Result<(), String> {
+    s.campaign_effects(
+        &Context::country("A"),
+        &parse_pdx(txt).unwrap(),
+        "authored/dynamic",
+        cat,
+        &Default::default(),
+    )
+}
+#[test]
+fn dynamic_country_modifier_updates_actual_consumers_and_enable_remove_conditions() {
+    let mut s = fixture();
+    let cat = dynamic_cat();
+    dynamic_run(
+        &mut s,
+        &cat,
+        "set_variable={var=bonus value=0.5} add_dynamic_modifier={modifier=authored days=2}",
+    )
+    .unwrap();
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.
+    );
+    assert!(
+        s.campaign_conditions(
+            &Context::country("A"),
+            &parse_pdx("has_dynamic_modifier=authored").unwrap(),
+            &cat,
+            &Default::default()
+        )
+        .unwrap()
+    );
+    dynamic_run(&mut s, &cat, "set_country_flag=enabled").unwrap();
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.2
+    );
+    assert!(
+        (s.military.countries["A"]
+            .modifiers
+            .value("army_attack_factor")
+            - 0.1)
+            .abs()
+            < 1e-9
+    );
+    assert_eq!(s.political_income("A", &cat).unwrap().net, 2.5);
+    dynamic_run(&mut s, &cat, "set_variable={var=bonus value=1.5}").unwrap();
+    s.clock.elapsed_hours += 24;
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert_eq!(s.political_income("A", &cat).unwrap().net, 3.5);
+    dynamic_run(&mut s, &cat, "set_country_flag=remove").unwrap();
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert!(!s.campaign.dynamic_modifiers["A"].contains_key("authored"));
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.
+    );
+}
+#[test]
+fn timed_dynamic_modifier_renews_without_stacking_and_survives_save_then_expires() {
+    let mut s = fixture();
+    let cat = dynamic_cat();
+    dynamic_run(
+        &mut s,
+        &cat,
+        "set_country_flag=enabled add_dynamic_modifier={modifier=authored days=2}",
+    )
+    .unwrap();
+    assert_eq!(
+        s.campaign.dynamic_modifiers["A"]["authored"].expires,
+        Some(48)
+    );
+    s.clock.elapsed_hours = 24;
+    dynamic_run(
+        &mut s,
+        &cat,
+        "add_dynamic_modifier={modifier=authored days=2}",
+    )
+    .unwrap();
+    assert_eq!(
+        s.campaign.dynamic_modifiers["A"]["authored"].expires,
+        Some(72)
+    );
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.2
+    );
+    let db = s.military.catalogue.clone();
+    let bytes = serde_json::to_vec(&s).unwrap();
+    s = serde_json::from_slice(&bytes).unwrap();
+    s.military.catalogue = db;
+    s.clock.elapsed_hours = 48;
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.2
+    );
+    s.clock.elapsed_hours = 72;
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.
+    );
+    assert_eq!(
+        s.military.countries["A"]
+            .modifiers
+            .value("army_attack_factor"),
+        0.
+    );
+}
+#[test]
+fn unsupported_dynamic_consumers_targeted_scope_and_bad_duration_are_atomic() {
+    let mut s = fixture();
+    let mut cat = dynamic_cat();
+    cat.scripts
+        .dynamic_modifiers
+        .insert("bad".into(), parse_pdx("unknown_modifier=1").unwrap());
+    for script in [
+        "add_political_power=3 add_dynamic_modifier={modifier=bad}",
+        "add_political_power=3 add_dynamic_modifier={modifier=authored scope=B}",
+        "add_political_power=3 add_dynamic_modifier={modifier=authored days=-1}",
+    ] {
+        let before = snap(&s);
+        assert!(dynamic_run(&mut s, &cat, script).is_err());
+        assert_eq!(snap(&s), before);
+    }
+}
+#[test]
+fn failed_dynamic_refresh_removes_stale_bonuses_and_blocks_unverified_pp_income() {
+    let mut s = fixture();
+    let mut cat = dynamic_cat();
+    dynamic_run(
+        &mut s,
+        &cat,
+        "set_country_flag=enabled add_dynamic_modifier={modifier=authored}",
+    )
+    .unwrap();
+    cat.scripts.dynamic_modifiers.insert(
+        "authored".into(),
+        parse_pdx("political_power_gain=unknown_variable").unwrap(),
+    );
+    s.tick_dynamic_modifiers(&cat, &Default::default());
+    assert!(
+        s.campaign.dynamic_modifiers["A"]["authored"]
+            .blocked
+            .is_some()
+    );
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.
+    );
+    assert!(s.political_income("A", &cat).is_err());
+    dynamic_run(&mut s, &cat, "remove_dynamic_modifier={modifier=authored}").unwrap();
+    assert_eq!(s.political_income("A", &cat).unwrap().net, 2.);
+}
+
+#[test]
+fn active_dynamic_modifiers_require_explicit_split_inheritance_instead_of_leaking() {
+    let mut s = fixture();
+    let cat = dynamic_cat();
+    dynamic_run(
+        &mut s,
+        &cat,
+        "set_country_flag=enabled add_dynamic_modifier={modifier=authored}",
+    )
+    .unwrap();
+    let before = snap(&s);
+    assert!(
+        s.start_civil_war(&plan(), &Default::default())
+            .unwrap_err()
+            .contains("inheritance")
+    );
+    assert_eq!(snap(&s), before);
+}
+
+#[test]
+fn dynamic_expiry_is_hourly_even_when_modifier_was_added_between_midnights() {
+    let mut s = fixture();
+    let cat = dynamic_cat();
+    s.clock.elapsed_hours = 7;
+    dynamic_run(
+        &mut s,
+        &cat,
+        "set_country_flag=enabled add_dynamic_modifier={modifier=authored days=1}",
+    )
+    .unwrap();
+    s.clock.elapsed_hours = 30;
+    s.tick_campaign(&cat, &Default::default());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.2
+    );
+    s.clock.elapsed_hours = 31;
+    s.tick_campaign(&cat, &Default::default());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.
+    );
+    assert_eq!(
+        s.military.countries["A"]
+            .modifiers
+            .value("army_attack_factor"),
+        0.
+    );
+}
+
+#[test]
+fn independent_historical_dynamic_effect_replays_once_after_military_initialization() {
+    let mut s = fixture();
+    let cat = dynamic_cat();
+    dynamic_run(&mut s, &cat, "set_country_flag=enabled").unwrap();
+    let job = crate::research::DeferredEffect {
+        source: "history/A.txt".into(),
+        field: "add_dynamic_modifier".into(),
+        reason: "Research-only consumer".into(),
+        payload: parse_pdx("add_dynamic_modifier={modifier=authored days=2}").unwrap(),
+    };
+    s.research
+        .countries
+        .get_mut("A")
+        .unwrap()
+        .pending_effects
+        .push(job);
+    assert!(s.political_income("A", &cat).is_err());
+    s.initialize_campaign_dynamic_history(&cat, &Default::default());
+    assert!(s.research.countries["A"].pending_effects.is_empty());
+    assert_eq!(
+        s.research.countries["A"].modifier("research_speed_factor"),
+        0.2
+    );
+    s.clock.elapsed_hours = 10;
+    s.initialize_campaign_dynamic_history(&cat, &Default::default());
+    assert_eq!(
+        s.campaign.dynamic_modifiers["A"]["authored"].expires,
+        Some(48)
+    );
+}

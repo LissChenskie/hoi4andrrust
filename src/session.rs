@@ -439,6 +439,7 @@ impl GameSession {
         self.research.refresh_sharing(catalogue);
         // National focus progress advances once per completed game day, not
         // once per frame or once for every country's research tick.
+        self.tick_dynamic_modifiers(catalogue, research);
         self.tick_politics(catalogue);
         self.tick_focuses(catalogue, research);
         for tag in &tags {

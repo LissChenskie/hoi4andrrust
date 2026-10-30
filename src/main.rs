@@ -3240,6 +3240,7 @@ async fn main() {
             }
         }
         session.initialize_military(Path::new("data/hoi4"));
+        session.initialize_campaign_dynamic_history(&research_catalogue, &research_rules);
         match session
             .peace
             .import_state_history(Path::new("data/hoi4"), start_date)

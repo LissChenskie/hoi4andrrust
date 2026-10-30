@@ -74,12 +74,22 @@ pub struct PendingEvent {
     pub options: Vec<Vec<Entry>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DynamicModifier {
+    pub begun: u64,
+    pub expires: Option<u64>,
+    pub source: String,
+    #[serde(default)]
+    pub blocked: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CampaignState {
     #[serde(default)]
     pub focuses: crate::focus::FocusCampaign,
     #[serde(default)]
     pub politics: crate::politics::PoliticalRuntime,
+    #[serde(default)]
+    pub dynamic_modifiers: BTreeMap<String, BTreeMap<String, DynamicModifier>>,
     pub countries: BTreeMap<String, CountryPolitics>,
     pub state_flags: BTreeMap<u32, BTreeSet<String>>,
     pub queue: BTreeMap<u64, Scheduled>,
@@ -96,6 +106,7 @@ impl Default for CampaignState {
         Self {
             focuses: Default::default(),
             politics: Default::default(),
+            dynamic_modifiers: Default::default(),
             countries: BTreeMap::new(),
             state_flags: BTreeMap::new(),
             queue: BTreeMap::new(),
@@ -191,6 +202,21 @@ impl CampaignState {
             })
         {
             return Err("Invalid political income ledger".into());
+        }
+        if self
+            .dynamic_modifiers
+            .values()
+            .map(|m| m.len())
+            .sum::<usize>()
+            > 4096
+            || self.dynamic_modifiers.iter().any(|(tag, items)| {
+                !w.countries.contains_key(tag)
+                    || items.iter().any(|(id, m)| {
+                        id.is_empty() || m.begun > hour || m.expires.is_some_and(|e| e < m.begun)
+                    })
+            })
+        {
+            return Err("Invalid dynamic modifier state".into());
         }
         for (tag, c) in &self.countries {
             if !w.countries.contains_key(tag)
@@ -336,12 +362,33 @@ impl<'a> Journal<'a> {
                 Err("Non-finite value".into())
             };
         }
-        let t = self.tag(c)?;
+        let raw = a.strip_prefix("var:").unwrap_or(a);
+        let (name, fallback) = match raw.split_once('?') {
+            Some((key, n)) => (
+                key,
+                Some(
+                    n.parse::<f64>()
+                        .ok()
+                        .filter(|n| n.is_finite())
+                        .ok_or("Invalid variable fallback")?,
+                ),
+            ),
+            None => (raw, None),
+        };
+        let (t, key) = if let Some((scope, key)) = name.split_once('.') {
+            let Scope::Country(t) = self.scope(scope, c)? else {
+                return Err("Numeric variable requires country".into());
+            };
+            (t, key)
+        } else {
+            (self.tag(c)?, name)
+        };
         self.research(&t)
             .context
             .variables
-            .get(a.strip_prefix("var:").unwrap_or(a))
+            .get(key)
             .copied()
+            .or(fallback)
             .filter(|n| n.is_finite())
             .ok_or_else(|| format!("Unknown expression {a}"))
     }
@@ -371,6 +418,74 @@ impl<'a> Journal<'a> {
                 .map(Scope::State),
         };
         x.ok_or_else(|| format!("Unknown scope {k}"))
+    }
+    fn refresh_dynamic(&mut self, t: &str) -> Result<(), String> {
+        let active = self
+            .state
+            .dynamic_modifiers
+            .get(t)
+            .cloned()
+            .unwrap_or_default();
+        let ctx = Context::country(t);
+        self.research(t)
+            .source_modifiers
+            .retain(|k, _| !k.starts_with("dynamic:"));
+        for (id, job) in active {
+            self.step(0)?;
+            let cat = self.cat;
+            if job.expires.is_some_and(|h| h <= self.s.clock.elapsed_hours) {
+                self.state
+                    .to_mut()
+                    .dynamic_modifiers
+                    .get_mut(t)
+                    .unwrap()
+                    .remove(&id);
+                continue;
+            }
+            let raw = hoi4_mobile::script_validation::dynamic_definition(cat, &id)?;
+            if let Some(b) = pdx::block(raw, "remove_trigger") {
+                if self.conditions(b, &ctx, 0)? {
+                    self.state
+                        .to_mut()
+                        .dynamic_modifiers
+                        .get_mut(t)
+                        .unwrap()
+                        .remove(&id);
+                    continue;
+                }
+            }
+            let enabled = match pdx::block(raw, "enable") {
+                Some(b) => self.conditions(b, &ctx, 0)?,
+                None => true,
+            };
+            if enabled {
+                let mut values = BTreeMap::new();
+                for e in raw
+                    .iter()
+                    .filter(|e| crate::research::modifier_consumer(&e.key).is_some())
+                {
+                    let n = self.num(atom(e)?, &ctx)?;
+                    let value = values.entry(e.key.clone()).or_insert(0.);
+                    *value += n;
+                    if !value.is_finite() {
+                        return Err("Dynamic modifier overflow".into());
+                    }
+                }
+                self.research(t)
+                    .source_modifiers
+                    .insert(format!("dynamic:{id}"), values);
+            }
+            if let Some(job) = self
+                .state
+                .to_mut()
+                .dynamic_modifiers
+                .get_mut(t)
+                .and_then(|m| m.get_mut(&id))
+            {
+                job.blocked = None;
+            }
+        }
+        Ok(())
     }
     fn conditions(&mut self, b: &[Entry], c: &Context, d: usize) -> Result<bool, String> {
         let mut ok = true;
@@ -431,6 +546,20 @@ impl<'a> Journal<'a> {
                         .cloned()
                         .collect();
                     self.conditions(&b, c, d + 1)?
+                }
+                "has_dynamic_modifier" => {
+                    let t = self.tag(c)?;
+                    let id = if let Some(id) = e.atom() {
+                        id
+                    } else {
+                        fields(e, &["modifier"])?;
+                        field(body(e)?, "modifier")?
+                    };
+                    self.state
+                        .dynamic_modifiers
+                        .get(&t)
+                        .and_then(|m| m.get(id))
+                        .is_some_and(|m| m.expires.is_none_or(|h| h > self.s.clock.elapsed_hours))
                 }
                 "has_focus_tree" => {
                     let t = self.tag(c)?;
@@ -688,6 +817,72 @@ impl<'a> Journal<'a> {
                 self.state.to_mut().focuses.positions.remove(&t);
                 self.state.to_mut().focuses.layouts.remove(&t);
                 self.state.to_mut().focuses.layout_trees.remove(&t);
+                Ok(())
+            }
+            "add_dynamic_modifier" => {
+                let t = self.tag(c)?;
+                let raw = body(e)?;
+                let id = field(raw, "modifier")?.to_owned();
+                let expires = match pdx::atom(raw, "days") {
+                    Some(n) => {
+                        let n = self.num(n, c)?;
+                        if n <= 0. || n.fract() != 0. || n >= u64::MAX as f64 {
+                            return Err("Invalid dynamic modifier duration".into());
+                        }
+                        Some(
+                            self.s
+                                .clock
+                                .elapsed_hours
+                                .checked_add(
+                                    (n as u64)
+                                        .checked_mul(24)
+                                        .ok_or("Dynamic duration overflow")?,
+                                )
+                                .ok_or("Dynamic expiry overflow")?,
+                        )
+                    }
+                    None => None,
+                };
+                if self
+                    .state
+                    .dynamic_modifiers
+                    .values()
+                    .map(|m| m.len())
+                    .sum::<usize>()
+                    >= 4096
+                    && !self
+                        .state
+                        .dynamic_modifiers
+                        .get(&t)
+                        .is_some_and(|m| m.contains_key(&id))
+                {
+                    return Err("Too many dynamic modifiers".into());
+                }
+                self.state
+                    .to_mut()
+                    .dynamic_modifiers
+                    .entry(t.clone())
+                    .or_default()
+                    .insert(
+                        id,
+                        DynamicModifier {
+                            begun: self.s.clock.elapsed_hours,
+                            expires,
+                            source: source.into(),
+                            blocked: None,
+                        },
+                    );
+                self.refresh_dynamic(&t)
+            }
+            "remove_dynamic_modifier" => {
+                let t = self.tag(c)?;
+                let id = field(body(e)?, "modifier")?;
+                if let Some(m) = self.state.to_mut().dynamic_modifiers.get_mut(&t) {
+                    m.remove(id);
+                }
+                self.research(&t)
+                    .source_modifiers
+                    .remove(&format!("dynamic:{id}"));
                 Ok(())
             }
             "complete_national_focus" => {
@@ -1207,12 +1402,122 @@ impl GameSession {
     ) -> Result<bool, String> {
         Journal::new(self, cat, rules).conditions(b, c, 0)
     }
+    /// Replay only independent dynamic history effects that the research-only
+    /// importer deferred. Conditional/unknown wrappers are NOT flattened.
+    pub fn initialize_campaign_dynamic_history(
+        &mut self,
+        cat: &ResearchCatalogue,
+        rules: &ResearchRules,
+    ) {
+        let jobs: Vec<_> = self
+            .research
+            .countries
+            .iter()
+            .flat_map(|(tag, c)| {
+                c.pending_effects
+                    .iter()
+                    .filter(|e| {
+                        e.payload.len() == 1
+                            && matches!(
+                                e.payload[0].key.as_str(),
+                                "add_dynamic_modifier" | "remove_dynamic_modifier"
+                            )
+                    })
+                    .map(|e| (tag.clone(), e.clone()))
+            })
+            .collect();
+        for (tag, job) in jobs {
+            match self.campaign_effects(
+                &Context::country(&tag),
+                &job.payload,
+                &job.source,
+                cat,
+                rules,
+            ) {
+                Ok(()) => {
+                    if let Some(c) = self.research.countries.get_mut(&tag) {
+                        c.pending_effects
+                            .retain(|e| e.source != job.source || e.payload != job.payload);
+                    }
+                }
+                Err(e) => {
+                    self.campaign.politics.failures.insert(tag, e);
+                }
+            }
+        }
+    }
+    fn expire_dynamic_modifiers(&mut self) {
+        let expired: Vec<_> = self
+            .campaign
+            .dynamic_modifiers
+            .iter()
+            .flat_map(|(tag, jobs)| {
+                jobs.iter()
+                    .filter(|(_, m)| m.expires.is_some_and(|h| h <= self.clock.elapsed_hours))
+                    .map(|(id, _)| (tag.clone(), id.clone()))
+            })
+            .collect();
+        if expired.is_empty() {
+            return;
+        }
+        for (tag, id) in expired {
+            self.campaign
+                .dynamic_modifiers
+                .get_mut(&tag)
+                .unwrap()
+                .remove(&id);
+            if let Some(c) = self.research.countries.get_mut(&tag) {
+                c.source_modifiers.remove(&format!("dynamic:{id}"));
+                c.revision = c.revision.saturating_add(1);
+            }
+        }
+        self.military.refresh_modifiers(&self.research);
+        self.refresh_research_building_slots();
+    }
+    pub fn tick_dynamic_modifiers(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
+        let tags: Vec<_> = self
+            .campaign
+            .dynamic_modifiers
+            .keys()
+            .filter(|t| !self.campaign.inactive.contains(*t))
+            .cloned()
+            .collect();
+        for t in tags {
+            let mut j = Journal::new(self, cat, rules);
+            match j.refresh_dynamic(&t) {
+                Ok(()) => {
+                    let Journal {
+                        state, research, ..
+                    } = j;
+                    self.campaign = state.into_owned();
+                    for (tag, mut c) in research {
+                        c.revision = c.revision.saturating_add(1);
+                        self.research.countries.insert(tag, c);
+                    }
+                }
+                Err(e) => {
+                    if let Some(c) = self.research.countries.get_mut(&t) {
+                        c.source_modifiers.retain(|k, _| !k.starts_with("dynamic:"));
+                        c.revision = c.revision.saturating_add(1);
+                    }
+                    if let Some(items) = self.campaign.dynamic_modifiers.get_mut(&t) {
+                        for job in items.values_mut() {
+                            job.blocked = Some(e.clone());
+                        }
+                    }
+                }
+            }
+        }
+        self.military.refresh_modifiers(&self.research);
+        self.refresh_research_building_slots();
+    }
     pub fn tick_campaign(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
         let h = self.clock.elapsed_hours;
         if self.campaign.last_hour.is_some_and(|v| v >= h) {
             return;
         }
         self.campaign.last_hour = Some(h);
+        self.expire_dynamic_modifiers();
         for _ in 0..64 {
             let next = self
                 .campaign

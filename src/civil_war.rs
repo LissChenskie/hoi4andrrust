@@ -75,6 +75,15 @@ impl SplitPlan {
         {
             return Err("Country missing or rebel tag already registered".into());
         }
+        if s.campaign
+            .dynamic_modifiers
+            .get(&self.parent)
+            .is_some_and(|m| !m.is_empty())
+        {
+            return Err(
+                "Dynamic modifiers require an explicit civil-war inheritance policy".into(),
+            );
+        }
         if s.military
             .wars
             .iter()
@@ -406,6 +415,9 @@ impl GameSession {
             });
         }
         self.campaign.countries.insert(b.clone(), politics);
+        if let Some(day) = self.campaign.politics.last_day.get(a).copied() {
+            self.campaign.politics.last_day.insert(b.clone(), day);
+        }
         let inherited = self.construction.get(a).map(|c| (c.policy, c.law));
         let construction = self.construction.entry(b.clone()).or_default();
         if let Some((policy, law)) = inherited {
@@ -1052,6 +1064,11 @@ impl GameSession {
         self.campaign
             .pending
             .retain(|_, a| a.context.scope != crate::campaign::Scope::Country(loser.into()));
+        self.campaign.dynamic_modifiers.remove(loser);
+        self.campaign.politics.last_day.remove(loser);
+        self.campaign.politics.income.remove(loser);
+        self.campaign.politics.failures.remove(loser);
+        self.campaign.focuses.active.remove(loser);
         self.campaign.inactive.insert(loser.into());
         self.campaign.civil_wars.get_mut(rebel).unwrap().1 = Some(winner.into());
         self.military.wars.retain(|(a, b)| a != loser && b != loser);

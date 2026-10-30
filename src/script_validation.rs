@@ -102,6 +102,32 @@ pub fn check_event(raw: &[Entry]) -> Result<(), String> {
     }
     Ok(())
 }
+/// Country-scoped dynamic modifiers with real registered consumers only.
+pub fn dynamic_definition<'a>(cat: &'a ResearchCatalogue, id: &str) -> Result<&'a [Entry], String> {
+    let raw = cat
+        .scripts
+        .dynamic_modifiers
+        .get(id)
+        .ok_or_else(|| format!("Missing dynamic modifier {id}"))?;
+    for e in raw {
+        if e.operator != "=" {
+            return Err(format!("Invalid dynamic modifier operator {}", e.key));
+        }
+        match e.key.as_str() {
+            "icon" | "custom_modifier_tooltip" => {
+                atom(e)?;
+            }
+            "enable" | "remove_trigger" => {
+                body(e)?;
+            }
+            key if crate::research::modifier_consumer(key).is_some() => {
+                atom(e)?;
+            }
+            key => return Err(format!("Unsupported dynamic modifier field/consumer {key}")),
+        }
+    }
+    Ok(raw)
+}
 /// Checks every effect branch, including events reached indirectly. Successful
 /// structural coverage still requires runtime conditions/data to be validated.
 pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
@@ -174,6 +200,16 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         if atom(e)? != "yes" {
                             return Err("Layout invalidation requires yes".into());
                         }
+                        Ok(())
+                    }
+                    "add_dynamic_modifier" => {
+                        fields(e, &["modifier", "days"])?;
+                        dynamic_definition(cat, field(body(e)?, "modifier")?)?;
+                        Ok(())
+                    }
+                    "remove_dynamic_modifier" => {
+                        fields(e, &["modifier"])?;
+                        field(body(e)?, "modifier")?;
                         Ok(())
                     }
                     "complete_national_focus" => {

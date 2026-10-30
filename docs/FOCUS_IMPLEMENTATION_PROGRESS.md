@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `7a46f245c8223248f99613aefc8b65276bbe7475` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `0a0efcac1f9715dcdf591641cd670f7f7bcab4d7` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -110,3 +110,19 @@ Added native `has_focus_tree` and `focus_progress` triggers; `load_focus_tree.co
 Checked source: generated game effect/trigger documentation in CWTools and its schemas. Election timer fields are explicitly unsupported at runtime until elections/on_actions actually exist; characters are not silently appointed by changing an ideology string. This is not a full election/leader system. Party-specific dynamic references and full native political stability formulas still need expansion.
 
 Tests: cargo test --all-targets --locked: 443 passed (74 lib + 359 game + 3 exporter + 7 integration). Includes forced completion ordering/once behavior and active cancellation, nested failure and recursive rollback, native progress/tree predicates, copying FROM, actual government/popularity conditions and invalid popularity rollback. Next: real timed national dynamic modifiers with variable refresh, enable/remove triggers, expiry/save behavior and existing research/economy/military consumers; then decisions/missions and on_actions.
+
+## Continuation: timed national dynamic modifiers
+
+Parent checkpoint: 0a0efcac1f9715dcdf591641cd670f7f7bcab4d7. Current stage completed: source-driven **country-scoped** dynamic modifiers. Cache version 14 imports `common/dynamic_modifiers` into the existing catalogue.
+
+Implemented actual add/remove/has_dynamic_modifier operations, optional positive integral days, saved absolute expiry, renewal instead of stacking, literal/country-variable/ROOT/FROM/PREV numeric references and explicit variable fallbacks. enable/remove_trigger conditions use the real campaign interpreter. Values enter the existing source_modifiers registry and reach research, production/construction and military consumers; unknown consumers, attacker/targeted/state/character scope forms remain explicit blockers. National modifier values are recomputed at the daily simulation boundary; expiry is removed on the hourly campaign scheduler so a modifier added mid-day cannot retain stale bonuses until the next midnight. Native refresh cadence still requires a differential check on the user's version.
+
+Independent dynamic history effects deferred by the research-only importer replay once after military initialization. Conditional unknown history wrappers are preserved, never flattened into unconditional rewards. If a historical dynamic effect remains unresolved, or refreshing a dynamic coefficient fails, PP income is blocked rather than silently granting an optimistic balance. Failed refresh removes stale cached dynamic bonuses and records the reason on the active modifier. Compatibility report follows dynamic definitions/condition dependencies.
+
+Civil-war consistency: typed split currently rejects active dynamic modifiers until it has an explicit native inheritance policy, preventing cloned nonexpiring orphan buffs. This is a **known blocker**, not completed DLC civil-war inheritance. Split preserves the political day marker; settlement clears losing-side dynamic/income/active-focus state. No native start_civil_war adapter or Soviet-specific behavior has been invented.
+
+Tests: `cargo test --all-targets --locked`: **451 passed**, 0 failed (75 lib + 366 game + 3 exporter + 7 integration). Includes actual PP/research/military modifiers, variable refresh, enable/remove, unknown consumer/target scope rollback, renewal/save/expiry, hourly expiry away from midnight, unresolved-history handling, and explicit split inheritance rejection. `cargo fmt --all -- --check`, `git diff --check`, final `cargo check --all-targets --target aarch64-linux-android --locked` passed. Final `cargo clippy --all-targets --locked` passed with warnings; warning-free status is not claimed. Same local opt-level=0/debug=0 overrides, no Cargo profile modifications. No original corpus comparison, APK linking, A51 rendering or FPS benchmark was performed.
+
+### Next precise task
+
+Continue Stage E with **native decisions/missions and on_actions**, reusing the existing transactional journal and scheduler, with real PP payment, availability/recheck, completion/removal/timeout and persisted once-only processing. Then wire effective stability components, explicit difficulty/leader/advisor political modifiers, election timers and native dynamic-modifier civil-war inheritance using the user's exported source data. Do not reset old unknown PP balances, fabricate missing script outcomes, merge this branch into main, or claim complete DLC/native parity.

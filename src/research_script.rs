@@ -64,6 +64,8 @@ pub struct ResearchScripts {
     pub static_modifiers: BTreeMap<String, Vec<Entry>>,
     #[serde(default)]
     pub defines: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub dynamic_modifiers: BTreeMap<String, Vec<Entry>>,
 }
 /// Native set_popularities uses percentages; omitted ideologies have zero.
 pub fn popularities(b: &[Entry]) -> Result<BTreeMap<String, f64>, String> {

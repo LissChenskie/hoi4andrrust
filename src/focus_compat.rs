@@ -70,7 +70,8 @@ fn walk(
             | "has_stability"
             | "has_war_support"
             | "has_focus_tree"
-            | "focus_progress" => {}
+            | "focus_progress"
+            | "has_dynamic_modifier" => {}
             k if e.block().is_some()
                 && (k.parse::<u32>().is_ok()
                     || k.len() == 3
@@ -105,6 +106,16 @@ fn effect_conditions(
                     Ok(b) => effect_conditions(&b, cat, out, seen, depth + 1),
                     Err(err) => {
                         out.insert(err);
+                    }
+                }
+            }
+        } else if e.key == "add_dynamic_modifier" {
+            if let Some(id) = e.block().and_then(|b| pdx::atom(b, "modifier")) {
+                if seen.insert(format!("dynamic:{id}")) {
+                    if let Some(raw) = cat.scripts.dynamic_modifiers.get(id) {
+                        for key in ["enable", "remove_trigger"] {
+                            predicates(pdx::block(raw, key).unwrap_or(&[]), cat, out, 0);
+                        }
                     }
                 }
             }
@@ -215,7 +226,20 @@ fn dependencies(
         return;
     }
     for e in b {
-        if e.key == "complete_national_focus" {
+        if matches!(
+            e.key.as_str(),
+            "add_dynamic_modifier" | "has_dynamic_modifier"
+        ) {
+            match e
+                .atom()
+                .or_else(|| e.block().and_then(|b| pdx::atom(b, "modifier")))
+            {
+                Some(id) if cat.scripts.dynamic_modifiers.contains_key(id) => {}
+                id => {
+                    missing.insert(format!("dynamic_modifier:{}", id.unwrap_or("<dynamic>")));
+                }
+            }
+        } else if e.key == "complete_national_focus" {
             if let Some(id) = e
                 .atom()
                 .or_else(|| e.block().and_then(|b| pdx::atom(b, "focus")))
