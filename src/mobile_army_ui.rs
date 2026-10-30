@@ -443,7 +443,9 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                         }
                         crate::army_hierarchy_ui::HierarchyRow::Group(id) => {
                             if let Some(g) = w.command.groups.get(&id) {
-                                let marshal = g.field_marshal.as_deref()
+                                let marshal = g
+                                    .field_marshal
+                                    .as_deref()
                                     .and_then(|id| w.command.commanders.get(id))
                                     .map_or("Без фельдмаршала", |c| c.name.as_str());
                                 rows.text(&format!("  {}\n  {}", g.name, marshal), 59., ui::TEXT);
@@ -457,26 +459,44 @@ pub fn draw(world: &World, tag: &str, w: &mut Warfare, view: &mut ArmyView, pane
                             let a = &w.command.armies[&id];
                             ui::row_bg(r, Some(id) == army, false);
                             draw_rectangle(
-                                r.x + 3., r.y + 5., 4., r.h - 10.,
+                                r.x + 3.,
+                                r.y + 5.,
+                                4.,
+                                r.h - 10.,
                                 Color::from_rgba(a.color[0], a.color[1], a.color[2], 255),
                             );
                             let portrait = Rect::new(r.x + 12., r.y + 5., 48., 57.);
-                            if !a.general.as_deref()
+                            if !a
+                                .general
+                                .as_deref()
                                 .is_some_and(|id| crate::hoi_assets::portrait(id, portrait))
                             {
-                                crate::ui_icons::draw(crate::ui_icons::Icon::Officer, portrait, ui::MUTED);
+                                crate::ui_icons::draw(
+                                    crate::ui_icons::Icon::Officer,
+                                    portrait,
+                                    ui::MUTED,
+                                );
                             }
                             ui::label(
-                                &format!("{} · {} див.", a.name, counts.get(&id).copied().unwrap_or(0)),
+                                &format!(
+                                    "{} · {} див.",
+                                    a.name,
+                                    counts.get(&id).copied().unwrap_or(0)
+                                ),
                                 Rect::new(r.x + 69., r.y + 9., r.w - 75., 24.),
-                                15., ui::GOLD,
+                                15.,
+                                ui::GOLD,
                             );
-                            let commander = a.general.as_deref().and_then(|id| w.command.commanders.get(id))
+                            let commander = a
+                                .general
+                                .as_deref()
+                                .and_then(|id| w.command.commanders.get(id))
                                 .map_or("Назначить генерала", |c| c.name.as_str());
                             ui::label(
                                 commander,
                                 Rect::new(r.x + 69., r.y + 39., r.w - 75., 22.),
-                                13., ui::TEXT,
+                                13.,
+                                ui::TEXT,
                             );
                             if tap.is_some_and(|p| body.contains(p) && r.contains(p)) {
                                 view.selected_army = Some(id);
