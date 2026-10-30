@@ -144,3 +144,49 @@ pub fn positions(
     }
     Ok(out)
 }
+
+/// Recognised source fields; presentation/AI data are retained without executing
+/// tooltip blocks as rewards. New gameplay fields must not be silently ignored.
+pub fn unsupported_focus_fields(raw: &[Entry]) -> BTreeSet<String> {
+    const FIELDS: &[&str] = &[
+        "id",
+        "icon",
+        "x",
+        "y",
+        "relative_position_id",
+        "offset",
+        "cost",
+        "prerequisite",
+        "mutually_exclusive",
+        "available",
+        "visible",
+        "bypass",
+        "allow_branch",
+        "cancel",
+        "cancel_if_invalid",
+        "continue_if_invalid",
+        "available_if_capitulated",
+        "bypass_if_unavailable",
+        "enable_automatic_bypass",
+        "completion_reward",
+        "select_effect",
+        "bypass_effect",
+        "cancel_effect",
+        "complete_tooltip",
+        "ai_will_do",
+        "historical_ai",
+        "search_filters",
+        "dynamic",
+        "text",
+        "cancelable",
+        "text_icon",
+        "overlay",
+        "alternate_icon",
+        "will_lead_to_war_with",
+        "on_uncomplete",
+    ];
+    raw.iter()
+        .filter(|e| !FIELDS.contains(&e.key.as_str()))
+        .map(|e| e.key.clone())
+        .collect()
+}

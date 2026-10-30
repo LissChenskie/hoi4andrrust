@@ -3403,7 +3403,7 @@ async fn main() {
                             .map(|_| format!("Фокус {id} запущен"))
                             .unwrap_or_else(|e| e),
                         (Some(tag), focus_ui::Request::Cancel) => session
-                            .cancel_focus(tag)
+                            .cancel_focus(tag, &research_catalogue, &research_rules)
                             .map(|_| "Фокус отменён".into())
                             .unwrap_or_else(|e| e),
                         (None, _) => "Страна не выбрана".into(),
@@ -3616,6 +3616,13 @@ async fn main() {
                     &research_catalogue,
                     &research_rules,
                 );
+                if hud.active == Some(campaign_ui::Panel::Focus) {
+                    if let Some(tag) = session.player_country.clone() {
+                        if let Err(e) = session.refresh_focus_layout(&tag, &research_catalogue, &research_rules) {
+                            session.campaign.focuses.failures.insert(tag, e);
+                        }
+                    }
+                }
                 let GameSession {
                     world,
                     clock: game,

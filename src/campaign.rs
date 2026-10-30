@@ -188,6 +188,24 @@ impl CampaignState {
                 return Err("Invalid active national focus".into());
             }
         }
+        if self
+            .focuses
+            .selected
+            .iter()
+            .any(|(tag, id)| !w.countries.contains_key(tag) || id.is_empty())
+            || self
+                .focuses
+                .layouts
+                .keys()
+                .any(|t| !w.countries.contains_key(t))
+            || self
+                .focuses
+                .bypassed
+                .keys()
+                .any(|t| !w.countries.contains_key(t))
+        {
+            return Err("Invalid focus country/tree references".into());
+        }
         if self.state_flags.keys().any(|id| !w.states.contains_key(id)) {
             return Err("Invalid state flag".into());
         }
@@ -369,6 +387,24 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
+                    "mark_focus_tree_layout_dirty" => {
+                        if atom(e)? != "yes" {
+                            return Err("Layout invalidation requires yes".into());
+                        }
+                        Ok(())
+                    }
+                    "load_focus_tree" => {
+                        let id = if let Some(id) = e.atom() {
+                            id
+                        } else {
+                            fields(e, &["tree", "keep_completed"])?;
+                            field(body(e)?, "tree")?
+                        };
+                        if !cat.scripts.focus_trees.contains_key(id) {
+                            return Err(format!("Missing focus tree {id}"));
+                        }
+                        Ok(())
+                    }
                     "add_manpower"
                     | "add_political_power"
                     | "add_stability"
@@ -536,10 +572,40 @@ impl<'a> Journal<'a> {
     }
     fn conditions(&mut self, b: &[Entry], c: &Context, d: usize) -> Result<bool, String> {
         let mut ok = true;
-        for e in b {
+        let mut i = 0;
+        while let Some(e) = b.get(i) {
+            i += 1;
+            if e.key.eq_ignore_ascii_case("if") {
+                let mut branches = vec![(false, body(e)?)];
+                while let Some(e) = b.get(i).filter(|e| {
+                    e.key.eq_ignore_ascii_case("else_if") || e.key.eq_ignore_ascii_case("else")
+                }) {
+                    branches.push((e.key.eq_ignore_ascii_case("else"), body(e)?));
+                    i += 1;
+                }
+                for (otherwise, branch) in branches {
+                    if otherwise
+                        || self.conditions(
+                            pdx::keyword_block(branch, "limit")
+                                .ok_or("Trigger if limit missing")?,
+                            c,
+                            d + 1,
+                        )?
+                    {
+                        let selected: Vec<_> = branch
+                            .iter()
+                            .filter(|e| !e.key.eq_ignore_ascii_case("limit"))
+                            .cloned()
+                            .collect();
+                        ok &= self.conditions(&selected, c, d + 1)?;
+                        break;
+                    }
+                }
+                continue;
+            }
             self.step(d)?;
             let v = match e.key.as_str() {
-                "AND" => self.conditions(body(e)?, c, d + 1)?,
+                "AND" | "and" => self.conditions(body(e)?, c, d + 1)?,
                 "OR" | "NOT" | "NOR" | "NAND" => {
                     let mut v = Vec::new();
                     for e in body(e)? {
@@ -556,6 +622,36 @@ impl<'a> Journal<'a> {
                     "no" => false,
                     _ => return Err("Invalid always predicate".into()),
                 },
+                "hidden_trigger" | "custom_trigger_tooltip" => {
+                    let b: Vec<_> = body(e)?
+                        .iter()
+                        .filter(|e| e.key != "tooltip")
+                        .cloned()
+                        .collect();
+                    self.conditions(&b, c, d + 1)?
+                }
+                "has_completed_focus" => {
+                    let t = self.tag(c)?;
+                    self.research(&t)
+                        .context
+                        .completed_focuses
+                        .contains(atom(e)?)
+                        || self
+                            .state
+                            .focuses
+                            .bypassed
+                            .get(&t)
+                            .is_some_and(|b| b.contains(atom(e).unwrap()))
+                }
+                "has_capitulated" => {
+                    let t = self.tag(c)?;
+                    let yes = self.s.peace.capitulated.contains(&t);
+                    match atom(e)? {
+                        "yes" => yes,
+                        "no" => !yes,
+                        _ => return Err("Invalid has_capitulated".into()),
+                    }
+                }
                 "has_global_flag" => self.globals.contains(atom(e)?),
                 "tag" | "original_tag" => {
                     let tag = self.tag(c)?;
@@ -728,6 +824,53 @@ impl<'a> Journal<'a> {
                 for ctx in selected {
                     self.execute(&effects, &ctx, source, d + 1)?
                 }
+                Ok(())
+            }
+            "mark_focus_tree_layout_dirty" => {
+                let t = self.tag(c)?;
+                if atom(e)? != "yes" {
+                    return Err("Layout invalidation requires yes".into());
+                }
+                self.state.focuses.layouts.remove(&t);
+                self.state.focuses.layout_trees.remove(&t);
+                Ok(())
+            }
+            "load_focus_tree" => {
+                let t = self.tag(c)?;
+                let (id, keep) = if let Some(id) = e.atom() {
+                    (id, true)
+                } else {
+                    let b = body(e)?;
+                    let keep = match pdx::atom(b, "keep_completed") {
+                        None | Some("no") => false,
+                        Some("yes") => true,
+                        _ => return Err("keep_completed requires bool".into()),
+                    };
+                    (field(b, "tree")?, keep)
+                };
+                let tree = self
+                    .cat
+                    .scripts
+                    .focus_trees
+                    .get(id)
+                    .ok_or("Focus tree missing")?;
+                if !tree.problems.is_empty() {
+                    return Err(tree.problems.join("; "));
+                }
+                if !keep {
+                    let shared = self.cat.scripts.shared_focuses.clone();
+                    self.research(&t)
+                        .context
+                        .completed_focuses
+                        .retain(|f| shared.contains(f));
+                    if let Some(b) = self.state.focuses.bypassed.get_mut(&t) {
+                        b.retain(|f| shared.contains(f));
+                    }
+                }
+                self.state.focuses.active.remove(&t);
+                self.state.focuses.selected.insert(t.clone(), id.into());
+                self.state.focuses.layouts.remove(&t);
+                self.state.focuses.layout_trees.remove(&t);
                 Ok(())
             }
             "set_global_flag" | "clr_global_flag" => {

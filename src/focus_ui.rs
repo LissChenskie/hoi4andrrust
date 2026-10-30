@@ -28,16 +28,21 @@ pub fn draw(
     let y = layout.y + 53.;
     let width = layout.w - 28.;
     let height = (layout.bottom() - y - 16.).max(1.);
-    let original = research
-        .country(tag)
-        .map(|c| c.context.original_tag.as_str())
-        .filter(|t| !t.is_empty())
-        .unwrap_or(tag);
-    let tree = match crate::focus::selected_tree(original, cat) {
-        Ok(tree) => tree,
-        Err(error) => {
+    let tree = match state
+        .focuses
+        .selected
+        .get(tag)
+        .and_then(|id| cat.scripts.focus_trees.get(id))
+    {
+        Some(tree) => tree,
+        None => {
             ui::paragraph(
-                &format!("Нет достоверного дерева фокусов: {error}"),
+                state
+                    .focuses
+                    .failures
+                    .get(tag)
+                    .map(String::as_str)
+                    .unwrap_or("Дерево не загружено"),
                 Rect::new(x, y, width, height),
                 14.,
                 ui::MUTED,

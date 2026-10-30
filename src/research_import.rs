@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 8;
+const CACHE_VERSION: u32 = 9;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -79,6 +79,7 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("common/scripted_triggers", "txt"),
     ("common/scripted_effects", "txt"),
     ("common/ideas", "txt"),
+    ("common/static_modifiers", "txt"),
     ("common/characters", "txt"),
     ("common/national_focus", "txt"),
     ("common/continuous_focus", "txt"),
@@ -594,6 +595,13 @@ impl ResearchDataset {
                 for e in b {
                     if let Some(b) = e.block() {
                         scripts.effects.insert(e.key.clone(), b.to_vec());
+                    }
+                }
+            }
+            if rel.starts_with("common/static_modifiers/") {
+                for e in b {
+                    if let Some(raw) = e.block() {
+                        scripts.static_modifiers.insert(e.key.clone(), raw.to_vec());
                     }
                 }
             }
