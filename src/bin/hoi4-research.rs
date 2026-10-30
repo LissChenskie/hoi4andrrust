@@ -363,6 +363,10 @@ fn export(args: &[String]) -> Result<(), String> {
 }
 fn compile(root: &Path) -> Result<(), String> {
     let data = ResearchDataset::load(root, false)?;
+    // A deterministic, source-labelled inventory for DLC focus/event/decision
+    // work. This never claims missing game mechanics have been implemented.
+    let deps = hoi4_mobile::research_import::content_dependency_report(&data);
+    atomic_json(&root.join("content-dependencies.json"), &deps)?;
     let report = data.audit(root);
     atomic_json(&root.join("research-report.json"), &report)?;
     let sources = data.write_review_sources(root)?;
