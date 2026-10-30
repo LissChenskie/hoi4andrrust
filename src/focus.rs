@@ -1,6 +1,6 @@
 //! Minimal truthful, resumable national-focus lifecycle using imported 1.19.x AST.
 //! Missing defines, effects, tree selectors and politics are blockers, never guessed.
-use crate::{campaign::{Context,GameSession},pdx::{self,Entry},research::{ResearchCatalogue,ResearchRules}};
+use crate::{campaign::Context,session::GameSession,pdx::{self,Entry},research::{ResearchCatalogue,ResearchRules}};
 use serde::{Deserialize,Serialize};
 use std::collections::{BTreeMap,BTreeSet};
 
@@ -89,8 +89,8 @@ impl GameSession {
         }
         Ok(tree)
     }
-    fn focus_rules(&self,tag:&str,id:&str,cat:&ResearchCatalogue)
-        ->Result<(&crate::research_script::ScriptSource,f64),String> {
+    fn focus_rules<'a>(&self,tag:&str,id:&str,cat:&'a ResearchCatalogue,
+        rules:&ResearchRules)->Result<(&'a crate::research_script::ScriptSource,f64),String> {
         let tree=self.focus_tree(tag,cat)?;
         if !tree.focuses.contains(id) {return Err(format!("{id} not in selected tree {}",tree.id));}
         let src=cat.scripts.sources.get(&format!("focus:{id}"))
@@ -119,7 +119,7 @@ impl GameSession {
         let ctx=Context::country(tag);
         for name in ["visible","available","allow_branch"] {
             if let Some(conditions)=pdx::block(&src.raw,name) {
-                if !self.campaign_conditions(&ctx,conditions,cat,&ResearchRules::default())? {
+                if !self.campaign_conditions(&ctx,conditions,cat,rules)? {
                     return Err(format!("Focus {id} blocked: {name}"));
                 }
             }
@@ -142,13 +142,13 @@ impl GameSession {
         // HOI4 cost is point-days, not always 70.
         Ok((src,cost(&src.raw,self)?))
     }
-    pub fn begin_focus(&mut self,tag:&str,id:&str,cat:&ResearchCatalogue)
-        ->Result<(),String> {
+    pub fn begin_focus(&mut self,tag:&str,id:&str,cat:&ResearchCatalogue,
+        rules:&ResearchRules)->Result<(),String> {
         if !self.world.countries.contains_key(tag)||self.campaign.inactive.contains(tag) {
             return Err("Country absent or inactive".into());
         }
         if self.campaign.focuses.active.contains_key(tag) {return Err("Focus already active".into());}
-        let (src,required)=self.focus_rules(tag,id,cat)?;
+        let (src,required)=self.focus_rules(tag,id,cat,rules)?;
         let tree=self.focus_tree(tag,cat)?.id.clone();
         if self.campaign.countries.get(tag).and_then(|p|p.power).is_none(){
             return Err("Starting political power not imported; focus costs cannot be paid".into());
@@ -168,7 +168,7 @@ impl GameSession {
         for tag in tags {
             let Some(active)=self.campaign.focuses.active.get(&tag).cloned() else {continue};
             // Validate current selection, cost and prerequisites each midnight.
-            let check=self.focus_rules(&tag,&active.id,cat);
+            let check=self.focus_rules(&tag,&active.id,cat,rules);
             let mut blocked=check.err();
             let war=self.military.wars.iter().any(|(a,b)|a==&tag||b==&tag);
             let key=if war {"NDefines.NFocus.FOCUS_PROGRESS_WAR"} else {
