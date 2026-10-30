@@ -26,6 +26,14 @@ pub struct ScriptSource {
     pub raw: Vec<Entry>,
 }
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FocusTreeRecord {
+    pub id: String,
+    pub source: String,
+    pub country: Vec<Entry>,
+    pub default: bool,
+    pub focuses: BTreeSet<String>,
+}
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResearchScripts {
     #[serde(default)]
     pub laws_indexed: bool,
@@ -38,6 +46,8 @@ pub struct ResearchScripts {
     pub ideas: BTreeMap<String, Vec<Entry>>,
     pub sharing: BTreeMap<String, SharingGroup>,
     pub sources: BTreeMap<String, ScriptSource>,
+    #[serde(default)]
+    pub focus_trees: BTreeMap<String, FocusTreeRecord>,
 }
 pub fn parse_date(s: &str) -> Option<GameDate> {
     let p: Vec<_> = s.split('.').collect();

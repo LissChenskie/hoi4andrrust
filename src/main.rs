@@ -55,10 +55,13 @@ pub use hoi4_mobile::research;
 pub use hoi4_mobile::research_data;
 pub use hoi4_mobile::research_script;
 mod campaign;
+mod campaign_events_ui;
 mod campaign_save;
 #[cfg(test)]
 mod campaign_tests;
 mod civil_war;
+mod focus;
+mod focus_ui;
 mod platform_storage;
 mod research_layout;
 mod research_ui;
@@ -3384,6 +3387,26 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
+                if let Some((id, option)) = hud.event_request.take() {
+                    hud.notice = session
+                        .choose_campaign_event(id, option, &research_catalogue, &research_rules)
+                        .map(|_| "Решение события исполнено".into())
+                        .unwrap_or_else(|e| e);
+                }
+                if let Some(req) = hud.focus_request.take() {
+                    let focus_tag = session.player_country.clone();
+                    hud.notice = match (focus_tag.as_deref(), req) {
+                        (Some(tag), focus_ui::Request::Begin(id)) => session
+                            .begin_focus(tag, &id, &research_catalogue, &research_rules)
+                            .map(|_| format!("Фокус {id} запущен"))
+                            .unwrap_or_else(|e| e),
+                        (Some(tag), focus_ui::Request::Cancel) => session
+                            .cancel_focus(tag)
+                            .map(|_| "Фокус отменён".into())
+                            .unwrap_or_else(|e| e),
+                        (None, _) => "Страна не выбрана".into(),
+                    };
+                }
                 if hud.save_requested {
                     hud.save_requested = false;
                     hud.notice = platform_storage::game_file("campaign-save.json")
@@ -3602,6 +3625,7 @@ async fn main() {
                     research: research_world,
                     military,
                     peace: peace_state,
+                    campaign: focus_campaign,
                     ..
                 } = &mut session;
                 let country = country_construction
@@ -3661,6 +3685,14 @@ async fn main() {
                     peace_state,
                     &mut army_view,
                 );
+                focus_ui::draw(
+                    selected_country.as_deref(),
+                    research_world,
+                    focus_campaign,
+                    &research_catalogue,
+                    &mut hud,
+                );
+                campaign_events_ui::draw(selected_country.as_deref(), focus_campaign, &mut hud);
                 war_overview_ui::draw(
                     &mut hud,
                     world,

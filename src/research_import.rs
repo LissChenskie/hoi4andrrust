@@ -2,12 +2,12 @@
 use crate::game::GameDate;
 use crate::pdx::{self, Entry, atom, block, names, parse_pdx};
 use crate::research::*;
-use crate::research_script::{self, ResearchScripts, ScriptSource, SharingGroup};
+use crate::research_script::{self, FocusTreeRecord, ResearchScripts, ScriptSource, SharingGroup};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 6;
+const CACHE_VERSION: u32 = 7;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -284,6 +284,26 @@ fn source_nodes<'a>(b: &'a [Entry], key: &str) -> Vec<&'a Entry> {
 fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchScripts) {
     match kind {
         "focus" => {
+            for tree in b.iter().filter(|e| e.key == "focus_tree") {
+                let Some(raw) = tree.block() else { continue };
+                let Some(id) = atom(raw, "id") else { continue };
+                let focuses = raw
+                    .iter()
+                    .filter(|e| matches!(e.key.as_str(), "focus" | "shared_focus"))
+                    .filter_map(Entry::block)
+                    .filter_map(|b| atom(b, "id").map(str::to_owned))
+                    .collect();
+                scripts.focus_trees.insert(
+                    id.to_owned(),
+                    FocusTreeRecord {
+                        id: id.to_owned(),
+                        source: format!("{path}:{}", tree.span.line),
+                        country: block(raw, "country").unwrap_or(&[]).to_vec(),
+                        default: atom(raw, "default") == Some("yes"),
+                        focuses,
+                    },
+                );
+            }
             for e in source_nodes(b, "focus")
                 .into_iter()
                 .chain(source_nodes(b, "shared_focus"))

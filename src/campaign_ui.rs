@@ -132,10 +132,7 @@ impl Panel {
         }
     }
     pub fn placeholder(self) -> bool {
-        matches!(
-            self,
-            Self::Politics | Self::Decisions | Self::Agency | Self::Focus
-        )
+        matches!(self, Self::Politics | Self::Agency)
     }
 }
 
@@ -171,6 +168,9 @@ pub struct Hud {
     pub naval_carrier_index: usize,
     pub naval_target_planes: u32,
     pub naval_draft: std::collections::BTreeMap<String, String>,
+    pub focus_scroll: usize,
+    pub focus_request: Option<crate::focus_ui::Request>,
+    pub event_request: Option<(u64, usize)>,
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -206,6 +206,9 @@ impl Default for Hud {
             naval_carrier_index: 0,
             naval_target_planes: 10,
             naval_draft: Default::default(),
+            focus_scroll: 0,
+            focus_request: None,
+            event_request: None,
         }
     }
 }
@@ -1232,7 +1235,8 @@ pub fn draw_panel(
             r.bottom() - 8.0,
             &mut actions,
         ),
-        Panel::Focus => focus(h, x, y, width, r.bottom() - 8.0),
+        Panel::Focus => {} // The imported source-aware tree is drawn by focus_ui.
+        Panel::Decisions => {} // Real pending events are drawn by campaign_events_ui.
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
     }
     actions
@@ -2632,73 +2636,6 @@ fn logistics(
         11.0,
         ui::MUTED,
     );
-}
-fn focus(h: &mut Hud, x: f32, y: f32, width: f32, bottom: f32) {
-    status(
-        "ЗАГЛУШКА · Дерево страны и выполнение фокусов ещё не подключены",
-        x,
-        y,
-        width,
-    );
-    let names = [
-        "Политические усилия",
-        "Промышленность",
-        "Развитие армии",
-        "Дипломатия",
-        "Научные проекты",
-        "Военная промышленность",
-        "Доктрины",
-        "Внешняя политика",
-    ];
-    let cols = if width < 700.0 { 2 } else { 4 };
-    let step = (width / cols as f32).min(245.0);
-    let node_w = (step - 20.0).min(205.0);
-    for i in 0..names.len() {
-        let col = i % cols;
-        let row = i / cols;
-        let xx = x + col as f32 * step + 9.0;
-        let yy = y + 52.0 + row as f32 * 145.0;
-        if yy + 105.0 > bottom {
-            continue;
-        }
-        if row > 0 {
-            draw_line(
-                xx + node_w * 0.5,
-                yy - 40.0,
-                xx + node_w * 0.5,
-                yy,
-                2.0,
-                ui::EDGE,
-            );
-        }
-        let r = Rect::new(xx, yy, node_w, 103.0);
-        ui::row_bg(r, false, false);
-        ui_icons::draw(
-            Icon::Focus,
-            Rect::new(xx + node_w * 0.5 - 20.0, yy + 10.0, 40.0, 40.0),
-            ui::MUTED,
-        );
-        ui::label(
-            names[i],
-            Rect::new(xx + 7.0, yy + 57.0, node_w - 14.0, 18.0),
-            12.0,
-            ui::TEXT,
-        );
-        ui::label(
-            "ЗАГЛУШКА",
-            Rect::new(xx + 7.0, yy + 79.0, node_w - 14.0, 18.0),
-            10.0,
-            ui::GOLD,
-        );
-        ui::tooltip(
-            r,
-            names[i],
-            "Образец места в интерфейсе. Это не исторический фокус страны; стоимость, требования и эффекты пока отсутствуют.",
-        );
-        if ui::inside(r) && is_mouse_button_pressed(MouseButton::Left) {
-            h.detail = Some(names[i].into());
-        }
-    }
 }
 fn system_shell(h: &mut Hud, panel: Panel, tag: &str, x: f32, y: f32, width: f32, bottom: f32) {
     ui::flag(tag, Rect::new(x + 4.0, y + 4.0, 55.0, 34.0));

@@ -71,6 +71,8 @@ pub struct PendingEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CampaignState {
+    #[serde(default)]
+    pub focuses: crate::focus::FocusCampaign,
     pub countries: BTreeMap<String, CountryPolitics>,
     pub state_flags: BTreeMap<u32, BTreeSet<String>>,
     pub queue: BTreeMap<u64, Scheduled>,
@@ -85,6 +87,7 @@ pub struct CampaignState {
 impl Default for CampaignState {
     fn default() -> Self {
         Self {
+            focuses: Default::default(),
             countries: BTreeMap::new(),
             state_flags: BTreeMap::new(),
             queue: BTreeMap::new(),
@@ -169,6 +172,20 @@ impl CampaignState {
                     .any(|v| !(0.0..=1.).contains(&v))
             {
                 return Err("Invalid political state".into());
+            }
+        }
+        for (tag, f) in &self.focuses.active {
+            if !w.countries.contains_key(tag)
+                || f.id.is_empty()
+                || f.tree.is_empty()
+                || !f.progress.is_finite()
+                || f.progress < 0.
+                || !f.required.is_finite()
+                || f.required <= 0.
+                || f.progress >= f.required
+                || f.begun > hour
+            {
+                return Err("Invalid active national focus".into());
             }
         }
         if self.state_flags.keys().any(|id| !w.states.contains_key(id)) {
