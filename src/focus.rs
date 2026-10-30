@@ -650,14 +650,17 @@ impl GameSession {
             .collect();
         for tag in tags {
             let result = (|| -> Result<(), String> {
-                self.refresh_focus_layout(&tag, cat, rules)?;
-                let ids: Vec<_> = self
-                    .focus_tree(&tag, cat)?
-                    .focuses
-                    .iter()
-                    .cloned()
-                    .collect();
-                for _ in 0..=ids.len() {
+                let mut visited = BTreeSet::new();
+                let limit = cat.scripts.sources.len().min(10000) + 1;
+                for pass in 0..limit {
+                    self.refresh_focus_layout(&tag, cat, rules)?;
+                    let tree = self.focus_tree(&tag, cat)?.id.clone();
+                    let ids: Vec<_> = self
+                        .focus_tree(&tag, cat)?
+                        .focuses
+                        .iter()
+                        .cloned()
+                        .collect();
                     let mut changed = false;
                     for id in &ids {
                         let src = match self.source(&tag, id, cat) {
@@ -679,13 +682,22 @@ impl GameSession {
                             if flag(&src.raw, "enable_automatic_bypass", true)?
                                 && self.bypass_condition(&tag, src, cat, rules)?
                             {
+                                if !visited.insert((tree.clone(), id.clone())) {
+                                    return Err(
+                                        "Repeated automatic bypass/tree-switch cycle".into()
+                                    );
+                                }
                                 self.bypass_focus(&tag, id, cat, rules)?;
                                 return Ok(true);
                             }
                             Ok(false)
                         })();
                         match attempt {
-                            Ok(v) => changed |= v,
+                            Ok(true) => {
+                                changed = true;
+                                break;
+                            }
+                            Ok(false) => {}
                             Err(e) => {
                                 self.campaign
                                     .focuses
@@ -696,6 +708,9 @@ impl GameSession {
                     }
                     if !changed {
                         break;
+                    }
+                    if pass + 1 == limit {
+                        return Err("Automatic bypass pass budget exceeded".into());
                     }
                 }
                 self.tick_active_focus(&tag, cat, rules)
@@ -1181,5 +1196,47 @@ pub(crate) mod tests {
         assert_eq!(s.campaign.countries["A"].power, Some(96.));
         s.begin_focus("A", "second", &cat, &rules).unwrap();
         assert!(s.choose_campaign_event(pending, 0, &cat, &rules).is_err());
+    }
+    #[test]
+    fn bypass_effect_may_invalidate_or_switch_tree_mid_chain_without_stale_layout() {
+        for effect in [
+            "mark_focus_tree_layout_dirty=yes",
+            "load_focus_tree={tree=new keep_completed=yes}",
+        ] {
+            let (mut s, mut cat, rules) = prepared();
+            source(
+                &mut cat,
+                "first",
+                &format!("cost=1 bypass={{always=yes}} bypass_effect={{{effect}}}"),
+            );
+            source(
+                &mut cat,
+                "second",
+                "cost=1 prerequisite={focus=first} bypass={always=yes}",
+            );
+            cat.scripts.focus_trees.insert(
+                "new".into(),
+                FocusTreeRecord {
+                    id: "new".into(),
+                    focuses: BTreeSet::from(["second".into()]),
+                    ..Default::default()
+                },
+            );
+            s.tick_focuses(&cat, &rules);
+            assert!(
+                s.research.countries["A"]
+                    .context
+                    .completed_focuses
+                    .contains("first")
+            );
+            assert!(
+                s.research.countries["A"]
+                    .context
+                    .completed_focuses
+                    .contains("second"),
+                "{effect}: {:?}",
+                s.campaign.focuses.failures
+            );
+        }
     }
 }

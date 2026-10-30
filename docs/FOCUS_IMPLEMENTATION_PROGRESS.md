@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `11daecabe5a1de5123567ad92ced732258f44e1c` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `a816802e37cf5479ea88be9b1221323fb8a3bb09` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -76,3 +76,11 @@ Known UI limits: continuous-focus execution/palette navigation is not implemente
 6. Test final linked Android APK on A51, touch gesture rendering and memory/FPS; cargo check is only Rust compilation.
 
 Do not merge into main. No force pushes or history rewrites have been used. Last published SHA above is a checkpoint ancestor (a commit cannot contain its own SHA); branch HEAD and final report identify the latest published commit.
+
+## Final validation checkpoint
+
+Previous implementation checkpoint: `a816802e37cf5479ea88be9b1221323fb8a3bb09`. This follow-up also fixes transitive event dependency classification, argument-sensitive preflight and audit recursion bounds, and bypass chains which dirty/switch their own tree; it normalises formatting and records final checks. `cargo fmt --all -- --check` passes after formatting the existing main/production/construction/hierarchy source too (format-only changes in those unrelated systems). No mechanics changed there. Final `cargo check --all-targets --target aarch64-linux-android --locked` passed. Final native Rust tests: **434 passed** (73 library + 351 game + 3 exporter + 7 integration), zero failures; Python importer tests: **4 passed**. `cargo clippy --all-targets --locked` passes with warnings; no claim of a warning-free codebase. Local dev/test verification used opt-level=0, debug=0 environment overrides, without changing Cargo profiles.
+
+The original-installation import count, fully executable original-focus count, native HOI4 differential parity and A51 device behavior remain **unmeasured**, not zero-percent claims or fabricated coverage. Synthetic CLI audit counts above are only fixture results. Final source stage is a checked, published incremental interpreter/graph implementation, NOT completion of all acceptance criteria in the assignment.
+
+Final regression additions: parameterized scripted-effect calls cannot hide a later unsupported command; missing parameterized event dependencies affect resolved=false; self-referential trigger audit terminates with explicit budget/depth diagnostics; bypass effects can dirty/switch the tree mid-chain without stale-layout indexing or applying one bypass indefinitely in the same tick. Pass/recursion guards are technical engine bounds, not claimed HOI4 gameplay rules. All final Rust tests, Android check, formatter and Clippy were rerun after these code changes.

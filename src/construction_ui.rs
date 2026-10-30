@@ -375,9 +375,7 @@ pub fn draw(
     } else {
         0.0
     };
-    let list_bottom = area.y + area.h
-        - if narrow { 31.0 } else { 50.0 }
-        - detail_height;
+    let list_bottom = area.y + area.h - if narrow { 31.0 } else { 50.0 } - detail_height;
     let list_h = (list_bottom - list_y).max(10.0);
     draw_rectangle(
         list_x,
@@ -571,17 +569,26 @@ pub fn draw(
     if view.dragging_project.is_some() && is_mouse_button_down(MouseButton::Left) {
         let pointer = vec2(mouse_position().0, mouse_position().1);
         if list_region.contains(pointer) && visible_count > 0 {
-            let target = ((pointer.y - content_y) / row_height).floor()
+            let target = ((pointer.y - content_y) / row_height)
+                .floor()
                 .clamp(0.0, (visible_count - 1) as f32) as usize;
             let marker_y = content_y + target as f32 * row_height;
-            draw_rectangle_lines(list_x + 2.0, marker_y, list_w - 4.0, row_height - 2.0, 2.0, ui::GOLD);
+            draw_rectangle_lines(
+                list_x + 2.0,
+                marker_y,
+                list_w - 4.0,
+                row_height - 2.0,
+                2.0,
+                ui::GOLD,
+            );
         }
     }
     if is_mouse_button_released(MouseButton::Left) {
         if let Some(key) = view.dragging_project.take() {
             let pointer = vec2(mouse_position().0, mouse_position().1);
             if list_region.contains(pointer) && visible_count > 0 {
-                let target = ((pointer.y - content_y) / row_height).floor()
+                let target = ((pointer.y - content_y) / row_height)
+                    .floor()
                     .clamp(0.0, (visible_count - 1) as f32) as usize;
                 if order.move_to(key, view.first_visible_row + target) {
                     *notice = "Приоритет строительства изменён перетаскиванием".to_owned();
@@ -594,7 +601,9 @@ pub fn draw(
         match command {
             'u' if order.move_up(key) => *notice = "Приоритет строительства повышен".to_owned(),
             'd' if order.move_down(key) => *notice = "Приоритет строительства понижен".to_owned(),
-            't' if order.move_to(key, 0) => *notice = "Проект перемещён в начало очереди".to_owned(),
+            't' if order.move_to(key, 0) => {
+                *notice = "Проект перемещён в начало очереди".to_owned()
+            }
             'b' if order.move_to(key, order.lines.len().saturating_sub(1)) => {
                 *notice = "Проект перемещён в конец очереди".to_owned();
             }
@@ -641,43 +650,79 @@ pub fn draw(
                 draw_rectangle(list_x, info_y, list_w, info_h, ui::BASE);
                 draw_rectangle_lines(list_x, info_y, list_w, info_h, 1.0, ui::EDGE);
                 let name = state.name.as_deref().unwrap_or("Неизвестный регион");
-                let name = name.chars().take(if narrow { 24 } else { 42 }).collect::<String>();
-                let total_slots = construction::shared_slot_limit(world, state_id, rules).unwrap_or(0);
+                let name = name
+                    .chars()
+                    .take(if narrow { 24 } else { 42 })
+                    .collect::<String>();
+                let total_slots =
+                    construction::shared_slot_limit(world, state_id, rules).unwrap_or(0);
                 let occupied_slots = usize::from(state.economy.occupied_shared_slots());
                 let state_queue = queues.get(&state_id);
                 let reserved_slots = state_queue.map_or(0, |q| {
-                    q.iter().filter(|p| rules.shares_slots(p.building)
-                        && construction::project_belongs(world, state_id, p, tag)).count()
+                    q.iter()
+                        .filter(|p| {
+                            rules.shares_slots(p.building)
+                                && construction::project_belongs(world, state_id, p, tag)
+                        })
+                        .count()
                 });
                 let state_queue_count = state_queue.map_or(0, |q| {
-                    q.iter().filter(|p|
-                        construction::project_belongs(world, state_id, p, tag)).count()
+                    q.iter()
+                        .filter(|p| construction::project_belongs(world, state_id, p, tag))
+                        .count()
                 });
                 let built = view.selected_building.built_count(state.economy);
                 let pending = state_queue.map_or(0, |q| {
-                    q.iter().filter(|p| p.building == view.selected_building
-                        && construction::project_belongs(world, state_id, p, tag)).count()
+                    q.iter()
+                        .filter(|p| {
+                            p.building == view.selected_building
+                                && construction::project_belongs(world, state_id, p, tag)
+                        })
+                        .count()
                 });
                 let eligible = world.state_controller(state_id) == Some(tag);
                 draw_ui_text(
                     &format!("РЕГИОН: {}", name),
-                    list_x + 8.0, info_y + 16.0, 12.0, ui::GOLD,
+                    list_x + 8.0,
+                    info_y + 16.0,
+                    12.0,
+                    ui::GOLD,
                 );
                 draw_ui_text(
-                    &format!("Слоты: {}+{}/{}  |  Инфра: {}/5",
-                        occupied_slots, reserved_slots, total_slots, state.economy.infrastructure),
-                    list_x + 8.0, info_y + 32.0, 11.0, ui::TEXT,
+                    &format!(
+                        "Слоты: {}+{}/{}  |  Инфра: {}/5",
+                        occupied_slots, reserved_slots, total_slots, state.economy.infrastructure
+                    ),
+                    list_x + 8.0,
+                    info_y + 32.0,
+                    11.0,
+                    ui::TEXT,
                 );
                 draw_ui_text(
-                    &format!("{}: {}+{}  |  Строек: {}{}",
-                        view.selected_building.short_label(), built, pending, state_queue_count,
-                        if eligible { "" } else { "  |  ЧУЖОЙ РЕГИОН" }),
-                    list_x + 8.0, info_y + if narrow { 46.0 } else { 49.0 }, 11.0, ui::MUTED,
+                    &format!(
+                        "{}: {}+{}  |  Строек: {}{}",
+                        view.selected_building.short_label(),
+                        built,
+                        pending,
+                        state_queue_count,
+                        if eligible {
+                            ""
+                        } else {
+                            "  |  ЧУЖОЙ РЕГИОН"
+                        }
+                    ),
+                    list_x + 8.0,
+                    info_y + if narrow { 46.0 } else { 49.0 },
+                    11.0,
+                    ui::MUTED,
                 );
                 if !narrow {
                     draw_ui_text(
                         "Значок: перетащить. Shift+стрелка: начало/конец.",
-                        list_x + 8.0, info_y + 67.0, 10.0, ui::MUTED,
+                        list_x + 8.0,
+                        info_y + 67.0,
+                        10.0,
+                        ui::MUTED,
                     );
                 }
             }

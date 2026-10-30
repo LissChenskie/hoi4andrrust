@@ -3618,13 +3618,20 @@ async fn main() {
                 );
                 if hud.active == Some(campaign_ui::Panel::Focus) {
                     if let Some(tag) = session.player_country.clone() {
-                        if let Err(e) = session.refresh_focus_layout(&tag, &research_catalogue, &research_rules) {
+                        if let Err(e) =
+                            session.refresh_focus_layout(&tag, &research_catalogue, &research_rules)
+                        {
                             session.campaign.focuses.failures.insert(tag, e);
                         }
                     }
                 }
                 if hud.active == Some(campaign_ui::Panel::Focus) {
-                    focus_ui::prepare(&session, &research_catalogue, &research_rules, &mut hud.focus_view);
+                    focus_ui::prepare(
+                        &session,
+                        &research_catalogue,
+                        &research_rules,
+                        &mut hud.focus_view,
+                    );
                 }
                 let GameSession {
                     world,
@@ -4090,8 +4097,8 @@ async fn main() {
                                 if let Some((tag, state_id)) =
                                     selected_country.as_deref().zip(selected_state_id)
                                 {
-                                    let start_index = construction_queue
-                                        .get(&state_id).map_or(0, |q| q.len());
+                                    let start_index =
+                                        construction_queue.get(&state_id).map_or(0, |q| q.len());
                                     let shift = is_key_down(KeyCode::LeftShift)
                                         || is_key_down(KeyCode::RightShift);
                                     let ctrl = is_key_down(KeyCode::LeftControl)
@@ -4100,9 +4107,14 @@ async fn main() {
                                     // is rerun for each queued project.
                                     let attempts = if shift {
                                         construction_map::availability(
-                                            world, tag, state_id, construction_view.selected_building,
-                                            construction_queue, &building_rules,
-                                        ).map_or(1, |a| a.free.max(1).min(25))
+                                            world,
+                                            tag,
+                                            state_id,
+                                            construction_view.selected_building,
+                                            construction_queue,
+                                            &building_rules,
+                                        )
+                                        .map_or(1, |a| a.free.max(1).min(25))
                                     } else {
                                         1
                                     };
@@ -4110,8 +4122,12 @@ async fn main() {
                                     let mut error = None;
                                     for _ in 0..attempts {
                                         match construction::enqueue_project(
-                                            world, tag, state_id, construction_queue,
-                                            &building_rules, construction_view.selected_building,
+                                            world,
+                                            tag,
+                                            state_id,
+                                            construction_queue,
+                                            &building_rules,
+                                            construction_view.selected_building,
                                         ) {
                                             Ok(()) => added += 1,
                                             Err(reason) => {
@@ -4133,16 +4149,22 @@ async fn main() {
                                                     construction::ProjectRef {
                                                         state_id,
                                                         project_index: index,
-                                                    }, 0,
+                                                    },
+                                                    0,
                                                 );
                                             }
                                         }
-                                        let state_name = world.states.get(&state_id)
-                                            .and_then(|s| s.name.as_deref()).unwrap_or("State");
+                                        let state_name = world
+                                            .states
+                                            .get(&state_id)
+                                            .and_then(|s| s.name.as_deref())
+                                            .unwrap_or("State");
                                         construction_notice = format!(
                                             "{}: {} x{} в очереди{}",
-                                            state_name, construction_view.selected_building.label(),
-                                            added, if ctrl { " (приоритет)" } else { "" },
+                                            state_name,
+                                            construction_view.selected_building.label(),
+                                            added,
+                                            if ctrl { " (приоритет)" } else { "" },
                                         );
                                     } else if let Some(reason) = error {
                                         construction_notice = reason;

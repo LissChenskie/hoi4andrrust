@@ -2,6 +2,7 @@
 pub mod command_data;
 pub mod defines;
 pub mod dependency_report;
+pub mod focus_compat;
 pub mod focus_data;
 pub mod game;
 pub mod pdx;
@@ -11,4 +12,3 @@ pub mod research_import;
 pub mod research_script;
 pub mod script_constants;
 pub mod script_validation;
-pub mod focus_compat;

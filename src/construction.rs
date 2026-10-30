@@ -1035,16 +1035,33 @@ mod construction_queue_reorder_tests {
 
     #[test]
     fn reordering_preserves_other_projects_and_bounds_indices() {
-        let a = ProjectRef { state_id: 1, project_index: 0 };
-        let b = ProjectRef { state_id: 2, project_index: 0 };
-        let c = ProjectRef { state_id: 1, project_index: 1 };
-        let mut order = ConstructionOrder { lines: vec![a, b, c] };
+        let a = ProjectRef {
+            state_id: 1,
+            project_index: 0,
+        };
+        let b = ProjectRef {
+            state_id: 2,
+            project_index: 0,
+        };
+        let c = ProjectRef {
+            state_id: 1,
+            project_index: 1,
+        };
+        let mut order = ConstructionOrder {
+            lines: vec![a, b, c],
+        };
         assert!(order.move_to(c, 0));
         assert_eq!(order.lines, vec![c, a, b]);
         assert!(order.move_to(c, usize::MAX));
         assert_eq!(order.lines, vec![a, b, c]);
         assert!(!order.move_to(c, 2));
-        assert!(!order.move_to(ProjectRef { state_id: 99, project_index: 0 }, 1));
+        assert!(!order.move_to(
+            ProjectRef {
+                state_id: 99,
+                project_index: 0
+            },
+            1
+        ));
         assert_eq!(order.lines, vec![a, b, c]);
     }
 }

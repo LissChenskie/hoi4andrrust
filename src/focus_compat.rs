@@ -11,17 +11,31 @@ use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
 fn predicates(b: &[Entry], cat: &ResearchCatalogue, out: &mut BTreeSet<String>, depth: usize) {
+    walk(b, cat, out, depth, &mut 10000);
+}
+fn walk(
+    b: &[Entry],
+    cat: &ResearchCatalogue,
+    out: &mut BTreeSet<String>,
+    depth: usize,
+    budget: &mut usize,
+) {
     if depth > 64 {
         out.insert("Trigger expansion depth exceeded".into());
         return;
     }
     for e in b {
+        if *budget == 0 {
+            out.insert("Trigger expansion budget exceeded".into());
+            return;
+        }
+        *budget -= 1;
         if let Some(raw) = cat.scripts.triggers.get(&e.key) {
             match script_validation::instantiate(raw, e) {
-                Ok(b) => predicates(&b, cat, out, depth + 1),
+                Ok(b) => walk(&b, cat, out, depth + 1, budget),
                 Err(err) if e.atom() == Some("no") => {
                     let _ = err;
-                    predicates(raw, cat, out, depth + 1);
+                    walk(raw, cat, out, depth + 1, budget);
                 }
                 Err(err) => {
                     out.insert(format!("{}: {err}", e.key));
@@ -33,9 +47,9 @@ fn predicates(b: &[Entry], cat: &ResearchCatalogue, out: &mut BTreeSet<String>, 
             "AND" | "OR" | "NOT" | "NOR" | "NAND" | "and" | "or" | "not" | "nor" | "nand"
             | "ROOT" | "THIS" | "FROM" | "PREV" | "owner" | "controller" | "if" | "else_if"
             | "else" | "limit" | "hidden_trigger" => {
-                predicates(e.block().unwrap_or(&[]), cat, out, depth + 1)
+                walk(e.block().unwrap_or(&[]), cat, out, depth + 1, budget)
             }
-            "custom_trigger_tooltip" => predicates(
+            "custom_trigger_tooltip" => walk(
                 &e.block()
                     .unwrap_or(&[])
                     .iter()
@@ -45,6 +59,7 @@ fn predicates(b: &[Entry], cat: &ResearchCatalogue, out: &mut BTreeSet<String>, 
                 cat,
                 out,
                 depth + 1,
+                budget,
             ),
             "political_power" | "stability" | "war_support" | "has_state_flag"
             | "has_capitulated" => {}
@@ -54,7 +69,7 @@ fn predicates(b: &[Entry], cat: &ResearchCatalogue, out: &mut BTreeSet<String>, 
                         && k.bytes()
                             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())) =>
             {
-                predicates(e.block().unwrap(), cat, out, depth + 1)
+                walk(e.block().unwrap(), cat, out, depth + 1, budget)
             }
             _ => {
                 for k in crate::research_script::unsupported_predicates(std::slice::from_ref(e)) {
@@ -71,13 +86,13 @@ fn effect_conditions(
     seen: &mut BTreeSet<String>,
     depth: usize,
 ) {
-    if depth > 64 {
-        out.insert("Effect dependency depth exceeded".into());
+    if depth > 64 || seen.len() > 10000 {
+        out.insert("Effect dependency depth/budget exceeded".into());
         return;
     }
     for e in b {
         if let Some(raw) = cat.scripts.effects.get(&e.key) {
-            if seen.insert(format!("effect:{}", e.key)) {
+            if seen.insert(format!("effect:{}:{:?}", e.key, e.value)) {
                 match script_validation::instantiate(raw, e) {
                     Ok(b) => effect_conditions(&b, cat, out, seen, depth + 1),
                     Err(err) => {
@@ -169,6 +184,69 @@ fn effect_conditions(
         }
     }
 }
+fn dependencies(
+    b: &[Entry],
+    cat: &ResearchCatalogue,
+    missing: &mut BTreeSet<String>,
+    seen: &mut BTreeSet<String>,
+    depth: usize,
+) {
+    if depth > 64 || seen.len() > 10000 {
+        missing.insert("Dependency traversal depth/budget exceeded".into());
+        return;
+    }
+    for e in b {
+        if e.key == "country_event" {
+            let id = e
+                .atom()
+                .or_else(|| e.block().and_then(|b| pdx::atom(b, "id")));
+            if let Some(id) = id {
+                if seen.insert(format!("event:{id}")) {
+                    match script_validation::event(cat, id) {
+                        Ok((_, raw)) => dependencies(&raw, cat, missing, seen, depth + 1),
+                        Err(_) => {
+                            missing.insert(format!("event:{id}"));
+                        }
+                    }
+                }
+            } else {
+                missing.insert("country_event: unresolved ID".into());
+            }
+        } else if e.key == "load_focus_tree" {
+            match e
+                .atom()
+                .or_else(|| e.block().and_then(|b| pdx::atom(b, "tree")))
+            {
+                Some(id) if cat.scripts.focus_trees.contains_key(id) => {}
+                id => {
+                    missing.insert(format!("tree:{}", id.unwrap_or("<dynamic>")));
+                }
+            }
+        } else if matches!(e.key.as_str(), "has_tech" | "has_technology") {
+            if let Some(id) = e.atom() {
+                if !cat.technologies.contains_key(id) {
+                    missing.insert(format!("technology:{id}"));
+                }
+            }
+        }
+        if let Some(raw) = cat.scripts.effects.get(&e.key) {
+            // Arguments are part of the visited identity; distinct parameter
+            // values must not conceal different transitive event dependencies.
+            let key = format!("{}:{:?}", e.key, e.value);
+            if seen.insert(key) {
+                match script_validation::instantiate(raw, e) {
+                    Ok(b) => dependencies(&b, cat, missing, seen, depth + 1),
+                    Err(err) => {
+                        missing.insert(format!("{}: {err}", e.key));
+                    }
+                }
+            }
+        }
+        if let Some(b) = e.block() {
+            dependencies(b, cat, missing, seen, depth + 1);
+        }
+    }
+}
 pub fn report(data: &ResearchDataset) -> Value {
     let cat = &data.registry;
     let mut nodes = Vec::new();
@@ -188,6 +266,7 @@ pub fn report(data: &ResearchDataset) -> Value {
                 missing.insert(dep.to_owned());
             }
         }
+        dependencies(&src.raw, cat, &mut missing, &mut BTreeSet::new(), 0);
         if trees.is_empty() {
             missing
                 .insert("Focus not attached to a tree (shared library node may be unused)".into());
@@ -270,4 +349,25 @@ pub fn report(data: &ResearchDataset) -> Value {
         "continuous_focuses":cat.scripts.sources.values().filter(|s|s.kind=="continuous_focus").map(|s|json!({"id":s.id,"source":s.source,"parsed":true,"supported":false,"tested":false,"parity_verified":false,"blocker":"Continuous focus lifecycle and modifier removal not implemented"})).collect::<Vec<_>>(),
         "tree_diagnostics":cat.scripts.focus_trees.iter().map(|(id,t)|(id,&t.problems)).collect::<std::collections::BTreeMap<_,_>>(),
         "limitations":["supported=null means runtime evidence unavailable, not full support", "Authored unit tests are not tests of imported proprietary focuses", "Continuous/joint focuses, decisions/missions and DLC-specific mechanics need additional runtime implementations", "Dynamic localisation and source speed modifiers remain unverified"]})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recursive_trigger_expansion_is_bounded() {
+        let mut cat = ResearchCatalogue::default();
+        cat.scripts.triggers.insert(
+            "loop_trigger".into(),
+            pdx::parse_pdx("loop_trigger=yes loop_trigger=yes").unwrap(),
+        );
+        let mut errors = BTreeSet::new();
+        predicates(
+            &pdx::parse_pdx("loop_trigger=yes").unwrap(),
+            &cat,
+            &mut errors,
+            0,
+        );
+        assert!(errors.iter().any(|e| e.contains("budget")));
+    }
 }

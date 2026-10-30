@@ -1542,6 +1542,30 @@ mod tests {
                 .contains("cycle")
         );
     }
+    #[test]
+    fn focus_audit_resolves_parameterized_event_dependencies_transitively() {
+        let f = fixture();
+        f.put("common/national_focus/test.txt","focus_tree={id=t focus={id=a completion_reward={dispatch={TARGET=found} dispatch={TARGET=missing}}}}");
+        f.put(
+            "common/scripted_effects/test.txt",
+            "dispatch={country_event={id=$TARGET$}}",
+        );
+        f.put(
+            "events/test.txt",
+            "country_event={id=found is_triggered_only=yes immediate={add_political_power=1}}",
+        );
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let report = crate::focus_compat::report(&data);
+        let node = &report["focuses"][0];
+        assert_eq!(node["resolved"], false);
+        assert!(
+            node["missing_dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == "event:missing")
+        );
+    }
     fn fixture() -> Fixture {
         let f = Fixture::new();
         f.put("common/technologies/a.txt",r#"@cost=1.5 technologies={

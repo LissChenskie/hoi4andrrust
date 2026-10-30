@@ -218,7 +218,7 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                     "add_ideas" | "remove_ideas" | "swap_ideas" | "set_technology"
                     | "add_tech_bonus" | "add_research_slot" | "set_research_slots" => Ok(()),
                     k if cat.scripts.effects.contains_key(k) => {
-                        if seen.insert(format!("effect:{k}")) {
+                        if seen.insert(format!("effect:{k}:{:?}", e.value)) {
                             walk(
                                 &instantiate(&cat.scripts.effects[k], e)?,
                                 cat,
@@ -245,4 +245,23 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
     }
     let mut budget = STEPS;
     walk(b, cat, &mut BTreeSet::new(), &mut budget, 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn different_script_arguments_cannot_hide_unsupported_nested_effects() {
+        let mut cat = ResearchCatalogue::default();
+        cat.scripts.effects.insert(
+            "dispatch".into(),
+            pdx::parse_pdx("$COMMAND$=$VALUE$").unwrap(),
+        );
+        let b=pdx::parse_pdx("if={limit={always=yes} dispatch={COMMAND=set_country_flag VALUE=ok} dispatch={COMMAND=not_supported VALUE=yes}}").unwrap();
+        assert!(
+            preflight(&b, &cat)
+                .unwrap_err()
+                .contains("Unsupported effect not_supported")
+        );
+    }
 }
