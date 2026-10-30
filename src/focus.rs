@@ -103,8 +103,10 @@ fn selection(
     }
 }
 /// Read-only tree selection for both simulation and the existing focus panel.
-pub fn selected_tree<'a>(original: &str, cat: &'a ResearchCatalogue)
-    -> Result<&'a crate::research_script::FocusTreeRecord, String> {
+pub fn selected_tree<'a>(
+    original: &str,
+    cat: &'a ResearchCatalogue,
+) -> Result<&'a crate::research_script::FocusTreeRecord, String> {
     let mut choices = Vec::new();
     let mut unsupported = Vec::new();
     for tree in cat.scripts.focus_trees.values() {
@@ -116,11 +118,15 @@ pub fn selected_tree<'a>(original: &str, cat: &'a ResearchCatalogue)
     }
     choices.sort_by(|(a, _), (b, _)| b.total_cmp(a));
     let Some((score, tree)) = choices.first() else {
-        return Err(format!("No verified focus tree for {original}; {}",
-            unsupported.join("; ")));
+        return Err(format!(
+            "No verified focus tree for {original}; {}",
+            unsupported.join("; ")
+        ));
     };
     if choices.get(1).is_some_and(|(other, _)| other == score) {
-        return Err(format!("Ambiguous focus trees for {original} at score {score}"));
+        return Err(format!(
+            "Ambiguous focus trees for {original} at score {score}"
+        ));
     }
     Ok(tree)
 }
@@ -373,89 +379,137 @@ mod tests {
     use crate::{
         campaign::CountryPolitics,
         military_model::tests::catalogue,
-        research::{CountryResearch,ResearchCatalogue},
-        research_script::{FocusTreeRecord,ScriptSource},
+        research::{CountryResearch, ResearchCatalogue},
+        research_script::{FocusTreeRecord, ScriptSource},
         warfare::Warfare,
     };
-    fn prepared() -> (GameSession,ResearchCatalogue,ResearchRules) {
-        let mut s=GameSession::new(crate::warfare::tests::world());
-        let mut db=catalogue();
-        for (k,n) in [
-            ("FOCUS_POINT_DAYS",7.),("FOCUS_PROGRESS_PEACE",1.),
-            ("FOCUS_PROGRESS_WAR",1.)
+    fn prepared() -> (GameSession, ResearchCatalogue, ResearchRules) {
+        let mut s = GameSession::new(crate::warfare::tests::world());
+        let mut db = catalogue();
+        for (k, n) in [
+            ("FOCUS_POINT_DAYS", 7.),
+            ("FOCUS_PROGRESS_PEACE", 1.),
+            ("FOCUS_PROGRESS_WAR", 1.),
         ] {
-            db.literal_defines.insert(format!("NDefines.NFocus.{k}"),n);
+            db.literal_defines.insert(format!("NDefines.NFocus.{k}"), n);
         }
-        s.military=Warfare::new(db);
-        s.campaign.countries.insert("A".into(),CountryPolitics{
-            power:Some(100.),stability:Some(0.5),war_support:Some(0.5)
-        });
-        let rules=ResearchRules::default();
-        let mut c=CountryResearch::new(1,&rules);
-        c.context.tag="A".into();
-        c.context.original_tag="A".into();
-        s.research.countries.insert("A".into(),c);
-        let mut cat=ResearchCatalogue::default();
-        cat.scripts.focus_trees.insert("test".into(),FocusTreeRecord{
-            id:"test".into(),source:"authored/test.txt:1".into(),
-            country:crate::pdx::parse_pdx("factor=0 modifier={add=10 tag=A}").unwrap(),
-            default:false,
-            focuses:BTreeSet::from(["first".into(),"second".into(),"bad".into()]),
-        });
-        for (id,txt) in [
-            ("first","id=first cost=1 completion_reward={add_political_power=5}"),
-            ("second","id=second cost=2 prerequisite={focus=first} completion_reward={add_political_power=3}"),
-            ("bad","id=bad cost=1 completion_reward={undocumented_effect=yes}"),
+        s.military = Warfare::new(db);
+        s.campaign.countries.insert(
+            "A".into(),
+            CountryPolitics {
+                power: Some(100.),
+                stability: Some(0.5),
+                war_support: Some(0.5),
+            },
+        );
+        let rules = ResearchRules::default();
+        let mut c = CountryResearch::new(1, &rules);
+        c.context.tag = "A".into();
+        c.context.original_tag = "A".into();
+        s.research.countries.insert("A".into(), c);
+        let mut cat = ResearchCatalogue::default();
+        cat.scripts.focus_trees.insert(
+            "test".into(),
+            FocusTreeRecord {
+                id: "test".into(),
+                source: "authored/test.txt:1".into(),
+                country: crate::pdx::parse_pdx("factor=0 modifier={add=10 tag=A}").unwrap(),
+                default: false,
+                focuses: BTreeSet::from(["first".into(), "second".into(), "bad".into()]),
+            },
+        );
+        for (id, txt) in [
+            (
+                "first",
+                "id=first cost=1 completion_reward={add_political_power=5}",
+            ),
+            (
+                "second",
+                "id=second cost=2 prerequisite={focus=first} completion_reward={add_political_power=3}",
+            ),
+            (
+                "bad",
+                "id=bad cost=1 completion_reward={undocumented_effect=yes}",
+            ),
         ] {
-            let raw=crate::pdx::parse_pdx(txt).unwrap();
-            cat.scripts.sources.insert(format!("focus:{id}"),ScriptSource{
-                kind:"focus".into(),id:id.into(),source:format!("authored/test.txt:{id}"),
-                conditions:Vec::new(),
-                effects:crate::pdx::block(&raw,"completion_reward").unwrap().to_vec(),
-                raw,
-            });
+            let raw = crate::pdx::parse_pdx(txt).unwrap();
+            cat.scripts.sources.insert(
+                format!("focus:{id}"),
+                ScriptSource {
+                    kind: "focus".into(),
+                    id: id.into(),
+                    source: format!("authored/test.txt:{id}"),
+                    conditions: Vec::new(),
+                    effects: crate::pdx::block(&raw, "completion_reward")
+                        .unwrap()
+                        .to_vec(),
+                    raw,
+                },
+            );
         }
-        (s,cat,rules)
+        (s, cat, rules)
     }
     #[test]
     fn imported_cost_prerequisites_and_one_time_reward() {
-        let (mut s,cat,rules)=prepared();
-        assert!(s.begin_focus("A","second",&cat,&rules).is_err());
-        s.begin_focus("A","first",&cat,&rules).unwrap();
-        assert_eq!(s.campaign.focuses.active["A"].required,7.);
-        for _ in 0..6 { s.tick_focuses(&cat,&rules); }
-        assert!(!s.research.countries["A"].context.completed_focuses.contains("first"));
-        let snapshot=serde_json::to_string(&s.campaign).unwrap();
-        let restored:crate::campaign::CampaignState=serde_json::from_str(&snapshot).unwrap();
-        assert_eq!(restored.focuses.active["A"].progress,6.);
-        s.tick_focuses(&cat,&rules);
-        assert!(s.research.countries["A"].context.completed_focuses.contains("first"));
-        assert_eq!(s.campaign.countries["A"].power,Some(98.));
+        let (mut s, cat, rules) = prepared();
+        assert!(s.begin_focus("A", "second", &cat, &rules).is_err());
+        s.begin_focus("A", "first", &cat, &rules).unwrap();
+        assert_eq!(s.campaign.focuses.active["A"].required, 7.);
+        for _ in 0..6 {
+            s.tick_focuses(&cat, &rules);
+        }
+        assert!(
+            !s.research.countries["A"]
+                .context
+                .completed_focuses
+                .contains("first")
+        );
+        let snapshot = serde_json::to_string(&s.campaign).unwrap();
+        let restored: crate::campaign::CampaignState = serde_json::from_str(&snapshot).unwrap();
+        assert_eq!(restored.focuses.active["A"].progress, 6.);
+        s.tick_focuses(&cat, &rules);
+        assert!(
+            s.research.countries["A"]
+                .context
+                .completed_focuses
+                .contains("first")
+        );
+        assert_eq!(s.campaign.countries["A"].power, Some(98.));
         assert!(s.campaign.focuses.active.is_empty());
-        s.begin_focus("A","second",&cat,&rules).unwrap();
-        assert_eq!(s.campaign.focuses.active["A"].required,14.);
-        assert!(s.begin_focus("A","first",&cat,&rules).is_err());
+        s.begin_focus("A", "second", &cat, &rules).unwrap();
+        assert_eq!(s.campaign.focuses.active["A"].required, 14.);
+        assert!(s.begin_focus("A", "first", &cat, &rules).is_err());
     }
     #[test]
     fn unsupported_reward_cannot_start_or_spend_currency() {
-        let (mut s,cat,rules)=prepared();
-        let before=serde_json::to_value(&s.campaign).unwrap();
-        let r=s.begin_focus("A","bad",&cat,&rules);
+        let (mut s, cat, rules) = prepared();
+        let before = serde_json::to_value(&s.campaign).unwrap();
+        let r = s.begin_focus("A", "bad", &cat, &rules);
         assert!(r.unwrap_err().contains("Unsupported"));
-        assert_eq!(serde_json::to_value(&s.campaign).unwrap(),before);
+        assert_eq!(serde_json::to_value(&s.campaign).unwrap(), before);
     }
     #[test]
     fn missing_versioned_focus_timing_is_not_guessed() {
-        let (mut s,cat,rules)=prepared();
-        let mut db=(*s.military.catalogue).clone();
-        db.literal_defines.remove("NDefines.NFocus.FOCUS_POINT_DAYS");
-        s.military=Warfare::new(db);
-        assert!(s.begin_focus("A","first",&cat,&rules).unwrap_err().contains("define"));
+        let (mut s, cat, rules) = prepared();
+        let mut db = (*s.military.catalogue).clone();
+        db.literal_defines
+            .remove("NDefines.NFocus.FOCUS_POINT_DAYS");
+        s.military = Warfare::new(db);
+        assert!(
+            s.begin_focus("A", "first", &cat, &rules)
+                .unwrap_err()
+                .contains("define")
+        );
     }
     #[test]
     fn nonmatching_tree_rejected_without_stealing_foreign_focuses() {
-        let (mut s,cat,rules)=prepared();
-        s.research.countries.get_mut("A").unwrap().context.original_tag="B".into();
-        assert!(s.begin_focus("A","first",&cat,&rules).is_err());
+        let (mut s, cat, rules) = prepared();
+        s.research
+            .countries
+            .get_mut("A")
+            .unwrap()
+            .context
+            .original_tag = "B".into();
+        assert!(s.begin_focus("A", "first", &cat, &rules).is_err());
     }
 }
