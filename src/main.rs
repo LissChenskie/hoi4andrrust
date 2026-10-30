@@ -3387,7 +3387,8 @@ async fn main() {
             Screen::MapViewer => {
                 use campaign_ui::Panel;
                 if let Some(req) = hud.focus_request.take() {
-                    hud.notice = match (session.player_country.as_deref(), req) {
+                    let focus_tag = session.player_country.clone();
+                    hud.notice = match (focus_tag.as_deref(), req) {
                         (Some(tag), focus_ui::Request::Begin(id)) => session
                             .begin_focus(tag, &id, &research_catalogue, &research_rules)
                             .map(|_| format!("Фокус {id} запущен"))
