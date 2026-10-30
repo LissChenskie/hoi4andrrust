@@ -132,7 +132,7 @@ impl Panel {
         }
     }
     pub fn placeholder(self) -> bool {
-        matches!(self, Self::Politics | Self::Decisions | Self::Agency)
+        matches!(self, Self::Politics | Self::Agency)
     }
 }
 
@@ -170,6 +170,7 @@ pub struct Hud {
     pub naval_draft: std::collections::BTreeMap<String, String>,
     pub focus_scroll: usize,
     pub focus_request: Option<crate::focus_ui::Request>,
+    pub event_request: Option<(u64, usize)>,
 }
 impl Default for Hud {
     fn default() -> Self {
@@ -207,6 +208,7 @@ impl Default for Hud {
             naval_draft: Default::default(),
             focus_scroll: 0,
             focus_request: None,
+            event_request: None,
         }
     }
 }
@@ -1234,6 +1236,7 @@ pub fn draw_panel(
             &mut actions,
         ),
         Panel::Focus => {} // The imported source-aware tree is drawn by focus_ui.
+        Panel::Decisions => {} // Real pending events are drawn by campaign_events_ui.
         _ => system_shell(h, panel, tag, x, y, width, r.bottom() - 8.0),
     }
     actions
