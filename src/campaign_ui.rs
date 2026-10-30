@@ -168,7 +168,7 @@ pub struct Hud {
     pub naval_carrier_index: usize,
     pub naval_target_planes: u32,
     pub naval_draft: std::collections::BTreeMap<String, String>,
-    pub focus_scroll: usize,
+    pub focus_view: crate::focus_ui::View,
     pub focus_request: Option<crate::focus_ui::Request>,
     pub event_request: Option<(u64, usize)>,
 }
@@ -206,7 +206,7 @@ impl Default for Hud {
             naval_carrier_index: 0,
             naval_target_planes: 10,
             naval_draft: Default::default(),
-            focus_scroll: 0,
+            focus_view: Default::default(),
             focus_request: None,
             event_request: None,
         }

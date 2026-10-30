@@ -99,6 +99,8 @@ def aliases(sprite: str):
 
 def categories(path: str):
     lower = path.replace("\\", "/").lower()
+    if any(k in lower for k in ("/goals/", "national_focus", "focus_tree")):
+        return ("focus",)
     if any(k in lower for k in ("technolog", "research", "/tech/")):
         return ("research",)
     if any(k in lower for k in ("equipment", "tank", "artillery", "infantry", "armor", "aircraft", "plane", "naval", "ship", "motorized", "trucks")):

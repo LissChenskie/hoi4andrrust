@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `1efd632517afa6485154fa77ea6ae2add67d2300` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `11daecabe5a1de5123567ad92ced732258f44e1c` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -55,3 +55,24 @@ Continuous palette/focus and joint-focus AST are retained/indexed; continuous ex
 Checks so far: cargo test --all-targets --locked: 429 passed (70 library + 349 game + 3 exporter + 7 integration), zero failures; Python UI art parser: 4 passed. Android aarch64 cargo check passed on the preceding source revision; final rerun follows UI checkpoint. CLI `audit /tmp/hoi4-focus-fixture` really emitted the JSON: **authored fixture only**: 1 tree, 2 nodes, 1 shared, 2 resolved, 1 structural candidate, 0 native-game parity. These are NOT counts of the user's original installation, which was not provided.
 
 Next: publish/test cached tree UI, then final regression/check/Android compile. After that, continue original-content integration at Stage D/E: supply version-verified local 1.19.3 export, inspect the generated report, implement the first actual missing consumers and source-backed starting PP/daily income. Soviet/DLC parity is not complete.
+
+## Stage F checkpoint — spatial graph (not certified original UI parity)
+
+Replaced ID list with original x/y/relative/conditional-offset graph, prerequisite edges (OR group labels), XOR links, original/localised names and descriptions, current/available/blocked/completed/bypassed states, progress/cancel, selectable detail card with description/reward tabs and scroll, disabled reasons, mouse pan/wheel zoom and one-pointer drag/two-touch pinch. View caches nodes/links/text between state changes, clips offscreen nodes, uses existing bounded texture LRU. The original goal icon symbol resolves through GFX aliases into local `ui/focus/*.png`; existing Python GFX/DDS importer now categorises goal sprites for that cache. No protected assets included.
+
+Branch/coordinate snapshots now persist together and change only on explicit tree load/layout invalidation. Saved layout revision invalidates the view even if no country facts changed. Shared focuses with existing country-specific external parents no longer invalidate the whole tree. Source absent relative coordinate references still error. All focus actions continue through simulation APIs; drawing cannot award effects. Active failures are visible in details rather than hiding a paused job.
+
+Tests: 430 Rust tests (70 lib + 350 game + 3 exporter + 7 integration), zero failures; includes cached presentation/layout invalidation and pointer-anchored zoom/clamping. Python icon parser: 4 passed. Clippy passes with pre-existing and style warnings; not warning-free. Visual rendering on a device/desktop display was NOT verified: no display server/device in this environment. Android aarch64 Rust compile is checked separately; no APK/device/FPS parity claim.
+
+Known UI limits: continuous-focus execution/palette navigation is not implemented; rewards currently show a structured script summary rather than every original game's localised effect tooltip; dynamic localisation/variables/color/icon control sequences are not complete (static aliases and colour stripping supported); conditional icon error diagnostics need further UI work; artwork tool does not yet resolve packaged active DLC/mod layers. Do not label Stage F original UI parity complete.
+
+## Exact handoff / next session
+
+1. Checkout this branch, fetch HEAD, run `cargo test --all-targets --locked`.
+2. Get the user's LOCAL version-verified 1.19.3 installation export (no original corpus is in this checkout). `cargo run --bin hoi4-research -- audit data/hoi4` emits `focus-compatibility-report.json`; do not label a different version 1.19.3 with an override.
+3. Start Stage D/E with the first actual industrial branch's blockers. In particular starting PP and base daily political income must be derived from original defines/static modifiers/history and integrated with all existing consumers; no guessed zero/free focus.
+4. Implement native source-backed missing commands in campaign journal, not per-country focus IDs. Known incomplete examples: `complete_national_focus`, `load_focus_tree.copy_completed_from`, `start_civil_war` adapter to SplitPlan, `set_politics`, dynamic modifiers, original decision/missions and on_actions. Character scopes/arrays/DLC systems remain beyond current interpreter coverage.
+5. Add original-installation differential fixtures without committing protected scripts. Test Germany/USSR/etc selection/duration/effects and Soviet paranoia/purges/civil-war distribution against the actual source/engine. Native parity verified so far: zero scenarios.
+6. Test final linked Android APK on A51, touch gesture rendering and memory/FPS; cargo check is only Rust compilation.
+
+Do not merge into main. No force pushes or history rewrites have been used. Last published SHA above is a checkpoint ancestor (a commit cannot contain its own SHA); branch HEAD and final report identify the latest published commit.

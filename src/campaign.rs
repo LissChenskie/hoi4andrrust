@@ -211,6 +211,14 @@ impl CampaignState {
         {
             return Err("Invalid focus country/tree references".into());
         }
+        if self.focuses.positions.iter().any(|(tag, nodes)| {
+            !w.countries.contains_key(tag)
+                || nodes
+                    .values()
+                    .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        }) {
+            return Err("Invalid focus layout coordinates".into());
+        }
         if self.state_flags.keys().any(|id| !w.states.contains_key(id)) {
             return Err("Invalid state flag".into());
         }
@@ -596,6 +604,7 @@ impl<'a> Journal<'a> {
                 if atom(e)? != "yes" {
                     return Err("Layout invalidation requires yes".into());
                 }
+                self.state.to_mut().focuses.positions.remove(&t);
                 self.state.to_mut().focuses.layouts.remove(&t);
                 self.state.to_mut().focuses.layout_trees.remove(&t);
                 Ok(())
@@ -638,6 +647,7 @@ impl<'a> Journal<'a> {
                     .focuses
                     .selected
                     .insert(t.clone(), id.into());
+                self.state.to_mut().focuses.positions.remove(&t);
                 self.state.to_mut().focuses.layouts.remove(&t);
                 self.state.to_mut().focuses.layout_trees.remove(&t);
                 Ok(())

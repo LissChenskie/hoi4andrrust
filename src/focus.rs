@@ -34,6 +34,10 @@ pub struct FocusCampaign {
     pub layouts: BTreeMap<String, BTreeMap<String, bool>>,
     #[serde(default)]
     pub layout_trees: BTreeMap<String, String>,
+    #[serde(default)]
+    pub positions: BTreeMap<String, BTreeMap<String, (f32, f32)>>,
+    #[serde(default)]
+    pub layout_revision: u64,
 }
 fn finite(v: Option<&f64>, name: &str) -> Result<f64, String> {
     v.copied()
@@ -167,6 +171,7 @@ impl GameSession {
         let tree = self.focus_tree(tag, cat)?;
         if self.campaign.focuses.layout_trees.get(tag) == Some(&tree.id)
             && self.campaign.focuses.layouts.contains_key(tag)
+            && self.campaign.focuses.positions.contains_key(tag)
         {
             return Ok(());
         }
@@ -220,7 +225,16 @@ impl GameSession {
                 &mut BTreeSet::new(),
             )?;
         }
+        let positions = hoi4_mobile::focus_data::positions(tree, &cat.scripts, |b| {
+            self.campaign_conditions(&Context::country(tag), b, cat, rules)
+        })?;
         let id = tree.id.clone();
+        self.campaign
+            .focuses
+            .positions
+            .insert(tag.into(), positions);
+        self.campaign.focuses.layout_revision =
+            self.campaign.focuses.layout_revision.saturating_add(1);
         self.campaign.focuses.layouts.insert(tag.into(), allowed);
         self.campaign
             .focuses
@@ -379,6 +393,13 @@ impl GameSession {
         cat: &ResearchCatalogue,
         rules: &ResearchRules,
     ) -> Result<(), String> {
+        if let Some(active) = self.campaign.focuses.active.get(tag) {
+            return Err(if active.id == id {
+                "Focus active".into()
+            } else {
+                "Another focus already active".into()
+            });
+        }
         let src = self.source(tag, id, cat)?;
         self.dependencies(tag, src)?;
         if self
@@ -690,7 +711,7 @@ impl GameSession {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::{
         campaign::CountryPolitics,
@@ -699,7 +720,7 @@ mod tests {
         research_script::{FocusTreeRecord, ScriptSource},
         warfare::Warfare,
     };
-    fn prepared() -> (GameSession, ResearchCatalogue, ResearchRules) {
+    pub(crate) fn prepared() -> (GameSession, ResearchCatalogue, ResearchRules) {
         let mut s = GameSession::new(crate::warfare::tests::world());
         let mut db = catalogue();
         for (k, n) in [

@@ -52,6 +52,10 @@ class TestLocalArtImporter(unittest.TestCase):
                       art.aliases("GFX_infantry_equipment_1_medium"))
         self.assertEqual(art.categories(found[1][1]), ("research",))
 
+    def test_focus_goal_icons_use_focus_cache(self):
+        self.assertEqual(art.categories("gfx/interface/goals/generic_industry.dds"), ("focus",))
+        self.assertIn("goal_generic_industry", art.aliases("GFX_goal_generic_industry"))
+
     def test_rejects_local_path_traversal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

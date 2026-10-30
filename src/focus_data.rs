@@ -65,11 +65,21 @@ pub fn resolve_shared(s: &mut ResearchScripts) {
             };
             for dep in references(&src.raw, "prerequisite")
                 .chain(references(&src.raw, "mutually_exclusive"))
-                .chain(pdx::atom(&src.raw, "relative_position_id"))
             {
-                if !tree.focuses.contains(dep) {
+                // Shared branches are reused with country-specific parents;
+                // external existing nodes may be absent from this tree.
+                if !tree.focuses.contains(dep)
+                    && !(s.shared_focuses.contains(id)
+                        && s.sources.contains_key(&format!("focus:{dep}")))
+                {
                     tree.problems
                         .push(format!("{id}: reference outside tree: {dep}"));
+                }
+            }
+            if let Some(dep) = pdx::atom(&src.raw, "relative_position_id") {
+                if !tree.focuses.contains(dep) {
+                    tree.problems
+                        .push(format!("{id}: relative position outside tree: {dep}"));
                 }
             }
         }

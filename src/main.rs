@@ -3623,6 +3623,9 @@ async fn main() {
                         }
                     }
                 }
+                if hud.active == Some(campaign_ui::Panel::Focus) {
+                    focus_ui::prepare(&session, &research_catalogue, &research_rules, &mut hud.focus_view);
+                }
                 let GameSession {
                     world,
                     clock: game,
@@ -3694,13 +3697,7 @@ async fn main() {
                     peace_state,
                     &mut army_view,
                 );
-                focus_ui::draw(
-                    selected_country.as_deref(),
-                    research_world,
-                    focus_campaign,
-                    &research_catalogue,
-                    &mut hud,
-                );
+                focus_ui::draw(&mut hud);
                 campaign_events_ui::draw(selected_country.as_deref(), focus_campaign, &mut hud);
                 war_overview_ui::draw(
                     &mut hud,

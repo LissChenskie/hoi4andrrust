@@ -20,7 +20,11 @@ fn safe(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 fn path(kind: &str, key: &str) -> Option<String> {
-    if !matches!(kind, "research" | "equipment" | "portraits" | "flags") || !safe(key) {
+    if !matches!(
+        kind,
+        "research" | "equipment" | "portraits" | "flags" | "focus"
+    ) || !safe(key)
+    {
         return None;
     }
     Some(format!("data/hoi4/ui/{kind}/{key}.png"))
