@@ -124,14 +124,20 @@ pub fn draw(
             assign(tag, w, view, None, marshal);
         }
         y += 34.0;
-        let choices: Vec<_> = w
+        let mut choices: Vec<_> = w
             .command
             .commanders
             .values()
             .filter(|c| c.country == tag && (!marshal || c.rank == Rank::FieldMarshal))
             .cloned()
             .collect();
-        let rows = ((r.bottom() - y - 36.0) / 38.0).max(0.0) as usize;
+        // Available officers first, then higher skill, preserving stable names.
+        choices.sort_by_key(|c| (
+            current_assignment(w, &c.id).is_some(),
+            std::cmp::Reverse(c.skill),
+            c.name.clone(),
+        ));
+        let rows = ((body.bottom() - y - 36.0) / 40.0).max(0.0) as usize;
         let max = choices.len().saturating_sub(rows.max(1));
         if ui::inside(r) {
             let (_, wheel) = mouse_wheel();
@@ -143,35 +149,43 @@ pub fn draw(
         }
         view.command_scroll = view.command_scroll.min(max);
         for c in choices.iter().skip(view.command_scroll).take(rows) {
-            let row = Rect::new(x, y, width, 32.0);
-            if ui::small_button("", row, false) {
-                assign(tag, w, view, Some(&c.id), marshal);
+            let row = Rect::new(x, y, width, 37.0);
+            let assignment = current_assignment(w, &c.id);
+            let occupied = assignment.is_some();
+            if ui::small_button("", row, occupied) {
+                if occupied {
+                    view.notice = format!("Сначала освободите командующего: {}", assignment.unwrap_or_default());
+                } else {
+                    assign(tag, w, view, Some(&c.id), marshal);
+                }
             }
-            let art = Rect::new(row.x + 3., row.y + 2., 29., row.h - 4.);
+            let art = Rect::new(row.x + 3., row.y + 2., 30., row.h - 4.);
             if !crate::hoi_assets::portrait(&c.id, art) {
                 crate::ui_icons::draw(crate::ui_icons::Icon::Officer, art, ui::MUTED);
             }
             ui::label(
-                &format!(
-                    "{} · ур. {} · А{} З{} П{} Л{}",
-                    c.name, c.skill, c.attack, c.defense, c.planning, c.logistics
+                &format!("{} · ур. {}", c.name, c.skill),
+                Rect::new(row.x + 38., row.y + 3., row.w - 43., 18.),
+                12., if occupied { ui::MUTED } else { ui::TEXT },
+            );
+            ui::label(
+                &assignment.map_or_else(
+                    || format!("А{}  З{}  П{}  Л{}", c.attack, c.defense, c.planning, c.logistics),
+                    |name| format!("Занят: {name}"),
                 ),
-                Rect::new(row.x + 36., row.y + 7., row.w - 40., 20.),
-                11.,
-                ui::TEXT,
+                Rect::new(row.x + 38., row.y + 21., row.w - 43., 15.),
+                10., if occupied { ui::MUTED } else { ui::GOLD },
             );
             ui::tooltip(
-                row,
-                &c.name,
-                &format!(
-                    "Опыт {:.1}\nЧерты: {}",
+                row, &c.name,
+                &format!("{} · опыт {:.1}\nЧерты: {}",
+                    if occupied { "Уже назначен" } else { "Доступен" },
                     c.experience,
-                    c.traits.iter().cloned().collect::<Vec<_>>().join(", ")
-                ),
+                    c.traits.iter().cloned().collect::<Vec<_>>().join(", ")),
             );
-            y += 38.0;
+            y += 40.0;
         }
-        if ui::small_button("Назад", Rect::new(x, r.bottom() - 28.0, width, 27.0), false) {
+        if ui::small_button("Назад", Rect::new(x, body.bottom() - 28.0, width, 27.0), false) {
             view.commander_picker = None;
         }
         return;
@@ -630,6 +644,22 @@ pub fn draw(
         }
     }
 }
+/// The assignment is read from real army/group membership; no UI copy.
+fn current_assignment<'a>(w: &'a Warfare, commander_id: &str) -> Option<&'a str> {
+    w.command
+        .armies
+        .values()
+        .find(|a| a.general.as_deref() == Some(commander_id))
+        .map(|a| a.name.as_str())
+        .or_else(|| {
+            w.command
+                .groups
+                .values()
+                .find(|g| g.field_marshal.as_deref() == Some(commander_id))
+                .map(|g| g.name.as_str())
+        })
+}
+
 /// A commander card connects the imported portrait, rank, skills and traits
 /// to the authoritative assignment action; it does not cache officer data.
 fn commander_tile(w: &Warfare, id: Option<&str>, rect: Rect, marshal: bool) -> bool {
