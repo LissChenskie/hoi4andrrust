@@ -84,3 +84,19 @@ Previous implementation checkpoint: `a816802e37cf5479ea88be9b1221323fb8a3bb09`. 
 The original-installation import count, fully executable original-focus count, native HOI4 differential parity and A51 device behavior remain **unmeasured**, not zero-percent claims or fabricated coverage. Synthetic CLI audit counts above are only fixture results. Final source stage is a checked, published incremental interpreter/graph implementation, NOT completion of all acceptance criteria in the assignment.
 
 Final regression additions: parameterized scripted-effect calls cannot hide a later unsupported command; missing parameterized event dependencies affect resolved=false; self-referential trigger audit terminates with explicit budget/depth diagnostics; bypass effects can dirty/switch the tree mid-chain without stale-layout indexing or applying one bypass indefinitely in the same tick. Pass/recursion guards are technical engine bounds, not claimed HOI4 gameplay rules. All final Rust tests, Android check, formatter and Clippy were rerun after these code changes.
+
+## Continuation: daily political ledger
+
+Base published checkpoint: b49e283198d84bae4154a1b2b4c35f170675caea. Current stage: D — political income and campaign effects.
+
+- Corrected native static modifier import to `common/modifiers/` (legacy `common/static_modifiers/` still accepted); retained imported literal defines in ResearchScripts. Cache version 12.
+- New `politics.rs`: country PP account begins at the engine's zero-before-history baseline, then ordered history set/add effects execute. DEFAULT_STABILITY/DEFAULT_WAR_SUPPORT come from imported NCountry defines. Unknown/nonliteral history amounts report an error rather than silently zeroing them.
+- Daily income uses imported NPolitics.BASE_POLITICAL_POWER_INCREASE, country modifier gain/factor/cost, imported static stability good/bad interpolation and active gain_focus scalar/hidden modifiers. Caps are read from NCountry; no default +2/day, -1 focus/day, -500/+2000 caps are hardcoded. Country starting balances are not hardcoded.
+- One saved per-country day marker prevents duplicate daily credit/debit across save/load. The main daily session tick credits the ledger before progressing focuses; focus progress no longer charges PP a second time. Missing rule inputs block income and active focus progression.
+- Existing political-power modifiers on ideas now have an actual consumer. Top bar displays real PP/stability/war support and income breakdown, replacing those three placeholders.
+
+Checks: `cargo test --all-targets --locked`: 439 passed (74 library + 355 game + 3 exporter + 7 integration). New fixtures cover native modifier directory, defines in cache, ordered starting history, missing defaults, additive/percentage/cost composition including focus, caps, once-per-day/save behavior and failed data blocking progression. These synthetic values are not original 1.19.3 data.
+
+Limits: full effective stability composition from ruling-party popularity, war/characters and explicit difficulty selection is still incomplete; the ledger currently consumes stored stability plus existing registered national PP modifiers. No claim that all country's displayed original PP income matches. Initial zero-before-history semantics and formula ordering require final differential verification on the user's source version. Existing saves with unknown political balances are not silently reset; start a new campaign to import starting history or restore explicitly known values with set_political_power.
+
+Next: transactional complete_national_focus, native focus triggers/copy_completed_from, explicit political setters and set_politics; then source-backed decisions/dynamic modifiers.

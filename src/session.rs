@@ -141,13 +141,12 @@ impl GameSession {
             c.context.global_flags = self.research.global_flags.clone();
         }
         self.research.refresh_sharing(&data.registry);
-        // Only historically specified political starting values are admitted.
-        // Absent values remain unknown rather than defaulting to made-up stats.
-        for (tag, history) in &data.histories {
+        for tag in self.world.countries.keys() {
+            let history = data.histories.get(tag).map(Vec::as_slice).unwrap_or(&[]);
             let (entries, warnings) = crate::history_conditions::resolve(
                 history,
                 tag,
-                &crate::military_model::MilitaryModifiers::default(),
+                &Default::default(),
                 self.clock.date,
             );
             self.military.diagnostics.extend(
@@ -155,37 +154,21 @@ impl GameSession {
                     .into_iter()
                     .map(|w| format!("{tag}: political history: {w}")),
             );
-            let p = self.campaign.countries.entry(tag.clone()).or_default();
-            for e in entries {
-                let Some(value) = e
-                    .atom()
-                    .and_then(|v| v.parse::<f64>().ok())
-                    .filter(|v| v.is_finite())
-                else {
-                    continue;
-                };
-                match e.key.as_str() {
-                    "set_political_power" => p.power = Some(value),
-                    "add_political_power" => {
-                        if let Some(old) = p.power {
-                            p.power = Some(old + value);
-                        }
-                    }
-                    "set_stability" => p.stability = Some(value.clamp(0., 1.)),
-                    "add_stability" => {
-                        if let Some(old) = p.stability {
-                            p.stability = Some((old + value).clamp(0., 1.));
-                        }
-                    }
-                    "set_war_support" => p.war_support = Some(value.clamp(0., 1.)),
-                    "add_war_support" => {
-                        if let Some(old) = p.war_support {
-                            p.war_support = Some((old + value).clamp(0., 1.));
-                        }
-                    }
-                    _ => {}
+            match crate::politics::history(&entries, &data.registry) {
+                Ok(p) => {
+                    self.campaign.countries.insert(tag.clone(), p);
+                }
+                Err(e) => {
+                    self.campaign
+                        .countries
+                        .insert(tag.clone(), Default::default());
+                    self.campaign.politics.failures.insert(tag.clone(), e);
                 }
             }
+            self.campaign
+                .politics
+                .last_day
+                .insert(tag.clone(), self.clock.elapsed_hours / 24);
         }
         self.refresh_research_building_slots();
     }
@@ -456,6 +439,7 @@ impl GameSession {
         self.research.refresh_sharing(catalogue);
         // National focus progress advances once per completed game day, not
         // once per frame or once for every country's research tick.
+        self.tick_politics(catalogue);
         self.tick_focuses(catalogue, research);
         for tag in &tags {
             self.research.country_mut(tag, 0, research);

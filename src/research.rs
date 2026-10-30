@@ -75,7 +75,12 @@ mod condition_regressions {
 
 /// Declares implemented consumers; retaining a numeric modifier alone is not execution.
 pub fn modifier_consumer(key: &str) -> Option<&'static str> {
-    if key == "research_speed_factor" {
+    if matches!(
+        key,
+        "political_power_gain" | "political_power_cost" | "political_power_factor"
+    ) {
+        Some("политическая власть")
+    } else if key == "research_speed_factor" {
         Some("исследования")
     } else if matches!(
         key,

@@ -137,6 +137,7 @@ impl Panel {
 }
 
 pub struct Hud {
+    pub politics: Option<crate::politics::Display>,
     pub active: Option<Panel>,
     pub diplomacy_country: Option<String>,
     pub outliner: bool,
@@ -175,6 +176,7 @@ pub struct Hud {
 impl Default for Hud {
     fn default() -> Self {
         Self {
+            politics: None,
             active: None,
             diplomacy_country: None,
             outliner: true,
@@ -518,27 +520,35 @@ pub fn draw_chrome(
     } else {
         "—".into()
     };
+    let political = h.politics.as_ref().filter(|p| Some(p.tag.as_str()) == tag);
+    let power = political.and_then(|p| p.values.power);
+    let stability = political.and_then(|p| p.values.stability);
+    let war_support = political.and_then(|p| p.values.war_support);
+    let power_body=political.map(|p|match &p.income {
+        Ok(i)=>format!("Ежедневно: {:+.2}\nБаза: {:.2} · прибавки: {:+.2}\nМножитель: {:+.1}% · расходы: {:.2}",i.net,i.base,i.flat,i.factor*100.,i.cost),
+        Err(e)=>format!("Прирост не вычислен: {e}"),
+    }).unwrap_or_else(||"Политическое состояние не загружено".into());
     let metrics = [
         (
             Icon::Power,
-            "—".into(),
+            power.map_or_else(|| "—".into(), |v| format!("{v:.0}")),
             "Политическая власть",
-            "ЗАГЛУШКА · Политическая власть и ежедневный прирост ещё не рассчитываются.",
-            false,
+            power_body.as_str(),
+            power.is_some(),
         ),
         (
             Icon::Stability,
-            "—".into(),
+            stability.map_or_else(|| "—".into(), |v| format!("{:.0}%", v * 100.)),
             "Стабильность",
-            "ЗАГЛУШКА · Стабильность страны ещё не рассчитывается.",
-            false,
+            "Текущее политическое значение страны.",
+            stability.is_some(),
         ),
         (
             Icon::WarSupport,
-            "—".into(),
+            war_support.map_or_else(|| "—".into(), |v| format!("{:.0}%", v * 100.)),
             "Поддержка войны",
-            "ЗАГЛУШКА · Поддержка войны ещё не рассчитывается.",
-            false,
+            "Текущее политическое значение страны.",
+            war_support.is_some(),
         ),
         (
             Icon::Manpower,

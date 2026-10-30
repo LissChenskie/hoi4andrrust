@@ -64,6 +64,7 @@ mod civil_war;
 mod focus;
 mod focus_ui;
 mod platform_storage;
+mod politics;
 mod research_layout;
 mod research_ui;
 mod scenario;
@@ -3633,6 +3634,7 @@ async fn main() {
                         &mut hud.focus_view,
                     );
                 }
+                hud.politics = session.politics_display(&research_catalogue);
                 let GameSession {
                     world,
                     clock: game,

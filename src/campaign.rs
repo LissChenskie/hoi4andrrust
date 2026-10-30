@@ -78,6 +78,8 @@ pub struct PendingEvent {
 pub struct CampaignState {
     #[serde(default)]
     pub focuses: crate::focus::FocusCampaign,
+    #[serde(default)]
+    pub politics: crate::politics::PoliticalRuntime,
     pub countries: BTreeMap<String, CountryPolitics>,
     pub state_flags: BTreeMap<u32, BTreeSet<String>>,
     pub queue: BTreeMap<u64, Scheduled>,
@@ -93,6 +95,7 @@ impl Default for CampaignState {
     fn default() -> Self {
         Self {
             focuses: Default::default(),
+            politics: Default::default(),
             countries: BTreeMap::new(),
             state_flags: BTreeMap::new(),
             queue: BTreeMap::new(),
@@ -164,6 +167,30 @@ impl CampaignState {
             {
                 return Err("Invalid pending event".into());
             }
+        }
+        if self
+            .politics
+            .last_day
+            .iter()
+            .any(|(tag, day)| !w.countries.contains_key(tag) || *day > hour / 24)
+            || self.politics.income.iter().any(|(tag, i)| {
+                !w.countries.contains_key(tag)
+                    || [
+                        i.base,
+                        i.flat,
+                        i.factor,
+                        i.cost,
+                        i.net,
+                        i.stability_factor,
+                        i.focus_gain,
+                        i.focus_factor,
+                        i.focus_cost,
+                    ]
+                    .iter()
+                    .any(|n| !n.is_finite())
+            })
+        {
+            return Err("Invalid political income ledger".into());
         }
         for (tag, c) in &self.countries {
             if !w.countries.contains_key(tag)

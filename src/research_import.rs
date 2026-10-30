@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 11;
+const CACHE_VERSION: u32 = 12;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -80,6 +80,7 @@ const DIRECTORIES: &[(&str, &str)] = &[
     ("common/scripted_effects", "txt"),
     ("common/ideas", "txt"),
     ("common/static_modifiers", "txt"),
+    ("common/modifiers", "txt"),
     ("common/characters", "txt"),
     ("common/national_focus", "txt"),
     ("common/continuous_focus", "txt"),
@@ -558,6 +559,7 @@ impl ResearchDataset {
                 }
             }
         }
+        data.registry.scripts.defines = data.define_values.clone();
         for (path, value) in &data.define_values {
             let one = crate::defines::LiteralDefines {
                 values: BTreeMap::from([(path.clone(), *value)]),
@@ -610,7 +612,7 @@ impl ResearchDataset {
                     }
                 }
             }
-            if rel.starts_with("common/static_modifiers/") {
+            if rel.starts_with("common/static_modifiers/") || rel.starts_with("common/modifiers/") {
                 for e in b {
                     if let Some(raw) = e.block() {
                         scripts.static_modifiers.insert(e.key.clone(), raw.to_vec());
@@ -1564,6 +1566,28 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|v| v == "event:missing")
+        );
+    }
+    #[test]
+    fn native_modifier_directory_and_political_defines_are_in_compiled_registry() {
+        let f = fixture();
+        f.put("common/modifiers/authored.txt","gain_focus={political_power_cost=1 hidden_modifier={is_doing_focus=1}} stability_good_modifier={political_power_factor=0.25}");
+        f.put("common/defines/politics.lua","NDefines.NPolitics.BASE_POLITICAL_POWER_INCREASE=3\nNDefines.NCountry.DEFAULT_STABILITY=0.62");
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        assert!(
+            data.registry
+                .scripts
+                .static_modifiers
+                .contains_key("gain_focus")
+        );
+        assert_eq!(
+            data.registry.scripts.defines["NDefines.NPolitics.BASE_POLITICAL_POWER_INCREASE"],
+            3.
+        );
+        let cached = ResearchDataset::load(&f.0, true).unwrap();
+        assert_eq!(
+            cached.registry.scripts.defines["NDefines.NCountry.DEFAULT_STABILITY"],
+            0.62
         );
     }
     fn fixture() -> Fixture {

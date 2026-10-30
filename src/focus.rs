@@ -371,21 +371,6 @@ impl GameSession {
         Ok(flag(&src.raw, "bypass_if_unavailable", false)?
             && !self.available(tag, src, cat, rules)?)
     }
-    /// Original gain_focus static modifier, independent of daily focus progress.
-    fn focus_payment(&self, cat: &ResearchCatalogue) -> Result<f64, String> {
-        let b = cat
-            .scripts
-            .static_modifiers
-            .get("gain_focus")
-            .ok_or("Missing gain_focus static modifier")?;
-        if b.len() != 1 || b[0].key != "political_power_gain" {
-            return Err("Unsupported gain_focus modifier consumer".into());
-        }
-        b[0].atom()
-            .and_then(|v| v.parse::<f64>().ok())
-            .filter(|v| v.is_finite())
-            .ok_or_else(|| "Nonliteral gain_focus political_power_gain".into())
-    }
     pub fn focus_blocked_reason(
         &self,
         tag: &str,
@@ -427,7 +412,7 @@ impl GameSession {
             }
         }
         cost(&src.raw, self)?;
-        self.focus_payment(cat)?;
+        self.political_income(tag, cat)?;
         if self
             .campaign
             .countries
@@ -586,19 +571,19 @@ impl GameSession {
             self.campaign.focuses.active.remove(tag);
             return Ok(());
         }
-        let delta = self.focus_payment(cat)?;
-        let power = self
+        if let Some(reason) = self.campaign.politics.failures.get(tag) {
+            return Err(format!("Political income blocked: {reason}"));
+        }
+        if self
             .campaign
             .countries
             .get(tag)
             .and_then(|p| p.power)
-            .ok_or("Political power unknown")?;
-        let paid = power + delta;
-        if !paid.is_finite() {
-            return Err("Focus payment overflow".into());
+            .is_none()
+        {
+            return Err("Political power unknown".into());
         }
         if !available && !flag(&src.raw, "continue_if_invalid", false)? {
-            self.campaign.countries.get_mut(tag).unwrap().power = Some(paid);
             self.campaign.focuses.active.get_mut(tag).unwrap().blocked =
                 Some("Paused: available conditions false".into());
             return Ok(());
@@ -614,7 +599,6 @@ impl GameSession {
         if !next.is_finite() {
             return Err("Focus progress overflow".into());
         }
-        self.campaign.countries.get_mut(tag).unwrap().power = Some(paid);
         if next + 1e-9 < a.required {
             let f = self.campaign.focuses.active.get_mut(tag).unwrap();
             f.progress = next;
@@ -632,10 +616,7 @@ impl GameSession {
                 self.mark_focus_done(tag, &a.id, false);
                 Ok(())
             }
-            Err(e) => {
-                self.campaign.countries.get_mut(tag).unwrap().power = Some(power);
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
     }
     pub fn tick_focuses(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
@@ -760,6 +741,14 @@ pub(crate) mod tests {
         c.context.original_tag = "A".into();
         s.research.countries.insert("A".into(), c);
         let mut cat = ResearchCatalogue::default();
+        cat.scripts.defines.extend([
+            (
+                "NDefines.NPolitics.BASE_POLITICAL_POWER_INCREASE".into(),
+                0.,
+            ),
+            ("NDefines.NCountry.POLITICAL_POWER_LOWER_CAP".into(), -500.),
+            ("NDefines.NCountry.POLITICAL_POWER_UPPER_CAP".into(), 2000.),
+        ]);
         cat.scripts.static_modifiers.insert(
             "gain_focus".into(),
             pdx::parse_pdx("political_power_gain=-1").unwrap(),
@@ -807,6 +796,11 @@ pub(crate) mod tests {
         }
         (s, cat, rules)
     }
+    fn day(s: &mut GameSession, cat: &ResearchCatalogue, rules: &ResearchRules) {
+        s.clock.elapsed_hours += 24;
+        s.tick_politics(cat);
+        s.tick_focuses(cat, rules);
+    }
     #[test]
     fn imported_cost_prerequisites_and_one_time_reward() {
         let (mut s, cat, rules) = prepared();
@@ -814,7 +808,7 @@ pub(crate) mod tests {
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         assert_eq!(s.campaign.focuses.active["A"].required, 7.);
         for _ in 0..6 {
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
         }
         assert!(
             !s.research.countries["A"]
@@ -825,7 +819,7 @@ pub(crate) mod tests {
         let snapshot = serde_json::to_string(&s.campaign).unwrap();
         let restored: crate::campaign::CampaignState = serde_json::from_str(&snapshot).unwrap();
         assert_eq!(restored.focuses.active["A"].progress, 6.);
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
         assert!(
             s.research.countries["A"]
                 .context
@@ -931,8 +925,8 @@ pub(crate) mod tests {
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         assert_eq!(s.campaign.countries["A"].power, Some(110.));
         assert!(s.cancel_focus("A", &cat, &rules).is_err());
-        s.tick_focuses(&cat, &rules);
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
+        day(&mut s, &cat, &rules);
         assert_eq!(s.campaign.countries["A"].power, Some(108.));
     }
     #[test]
@@ -949,7 +943,7 @@ pub(crate) mod tests {
             .unwrap()
             .flags
             .insert("bypass_me".into());
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
         assert!(s.campaign.focuses.bypassed["A"].contains("first"));
         assert!(
             s.research.countries["A"]
@@ -958,7 +952,7 @@ pub(crate) mod tests {
                 .contains("first")
         );
         assert_eq!(s.campaign.countries["A"].power, Some(102.));
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
         assert_eq!(s.campaign.countries["A"].power, Some(102.));
         s.begin_focus("A", "second", &cat, &rules).unwrap();
     }
@@ -970,7 +964,7 @@ pub(crate) mod tests {
             "first",
             "cost=1 enable_automatic_bypass=no bypass={always=yes} bypass_effect={add_political_power=2}",
         );
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
         assert!(
             !s.research.countries["A"]
                 .context
@@ -1008,13 +1002,13 @@ pub(crate) mod tests {
                 .unwrap()
                 .flags
                 .remove("ready");
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
             assert_eq!(s.campaign.focuses.active.contains_key("A"), expected_active);
             if expected_active {
                 assert_eq!(s.campaign.focuses.active["A"].progress, expected_progress);
                 assert_eq!(s.campaign.countries["A"].power, Some(99.));
             } else {
-                assert_eq!(s.campaign.countries["A"].power, Some(104.));
+                assert_eq!(s.campaign.countries["A"].power, Some(103.));
             }
         }
     }
@@ -1028,7 +1022,7 @@ pub(crate) mod tests {
         source(&mut cat, "first", "cost=1.5");
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         assert_eq!(s.campaign.focuses.active["A"].required, 10.);
-        s.tick_focuses(&cat, &rules);
+        day(&mut s, &cat, &rules);
         assert_eq!(s.campaign.focuses.active["A"].progress, 2.);
         assert_eq!(s.campaign.countries["A"].power, Some(99.));
     }
@@ -1061,7 +1055,7 @@ pub(crate) mod tests {
         );
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         for _ in 0..3 {
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
         }
         // Runtime catalogue is intentionally not serialized; production save/load
         // reconnects it to the installation, as this fixture does here.
@@ -1069,7 +1063,7 @@ pub(crate) mod tests {
         s = serde_json::from_slice(&serde_json::to_vec(&s).unwrap()).unwrap();
         s.military.catalogue = db;
         for _ in 0..10 {
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
         }
         assert_eq!(s.campaign.countries["A"].power, Some(98.));
         assert!(
@@ -1090,7 +1084,7 @@ pub(crate) mod tests {
         let before = s.world.states[&1].economy.civilian_factories;
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         for _ in 0..70 {
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
         }
         assert_eq!(s.world.states[&1].economy.civilian_factories, before + 1);
         assert!(
@@ -1185,7 +1179,7 @@ pub(crate) mod tests {
         );
         s.begin_focus("A", "first", &cat, &rules).unwrap();
         for _ in 0..7 {
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
         }
         assert!(s.begin_focus("A", "second", &cat, &rules).is_err());
         s.clock.elapsed_hours += 1;
@@ -1222,7 +1216,7 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
             );
-            s.tick_focuses(&cat, &rules);
+            day(&mut s, &cat, &rules);
             assert!(
                 s.research.countries["A"]
                     .context

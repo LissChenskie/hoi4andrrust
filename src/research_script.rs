@@ -62,6 +62,8 @@ pub struct ResearchScripts {
     pub localisation: BTreeMap<String, String>,
     #[serde(default)]
     pub static_modifiers: BTreeMap<String, Vec<Entry>>,
+    #[serde(default)]
+    pub defines: BTreeMap<String, f64>,
 }
 pub fn parse_date(s: &str) -> Option<GameDate> {
     let p: Vec<_> = s.split('.').collect();
