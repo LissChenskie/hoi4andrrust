@@ -286,18 +286,23 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
         "focus" => {
             for tree in b.iter().filter(|e| e.key == "focus_tree") {
                 let Some(raw) = tree.block() else { continue };
-                let Some(id) = atom(raw,"id") else { continue };
-                let focuses = raw.iter().filter(|e|matches!(e.key.as_str(),
-                    "focus" | "shared_focus")).filter_map(Entry::block)
-                    .filter_map(|b|atom(b,"id").map(str::to_owned))
+                let Some(id) = atom(raw, "id") else { continue };
+                let focuses = raw
+                    .iter()
+                    .filter(|e| matches!(e.key.as_str(), "focus" | "shared_focus"))
+                    .filter_map(Entry::block)
+                    .filter_map(|b| atom(b, "id").map(str::to_owned))
                     .collect();
-                scripts.focus_trees.insert(id.to_owned(), FocusTreeRecord {
-                    id: id.to_owned(),
-                    source: format!("{path}:{}",tree.span.line),
-                    country: block(raw,"country").unwrap_or(&[]).to_vec(),
-                    default: atom(raw,"default")==Some("yes"),
-                    focuses,
-                });
+                scripts.focus_trees.insert(
+                    id.to_owned(),
+                    FocusTreeRecord {
+                        id: id.to_owned(),
+                        source: format!("{path}:{}", tree.span.line),
+                        country: block(raw, "country").unwrap_or(&[]).to_vec(),
+                        default: atom(raw, "default") == Some("yes"),
+                        focuses,
+                    },
+                );
             }
             for e in source_nodes(b, "focus")
                 .into_iter()
