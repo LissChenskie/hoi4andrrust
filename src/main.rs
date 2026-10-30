@@ -3387,11 +3387,11 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
-                if let Some((id,option)) = hud.event_request.take() {
-                    hud.notice=session.choose_campaign_event(
-                        id,option,&research_catalogue,&research_rules)
-                        .map(|_|"Решение события исполнено".into())
-                        .unwrap_or_else(|e|e);
+                if let Some((id, option)) = hud.event_request.take() {
+                    hud.notice = session
+                        .choose_campaign_event(id, option, &research_catalogue, &research_rules)
+                        .map(|_| "Решение события исполнено".into())
+                        .unwrap_or_else(|e| e);
                 }
                 if let Some(req) = hud.focus_request.take() {
                     let focus_tag = session.player_country.clone();
@@ -3692,7 +3692,7 @@ async fn main() {
                     &research_catalogue,
                     &mut hud,
                 );
-                campaign_events_ui::draw(selected_country.as_deref(),focus_campaign,&mut hud);
+                campaign_events_ui::draw(selected_country.as_deref(), focus_campaign, &mut hud);
                 war_overview_ui::draw(
                     &mut hud,
                     world,
