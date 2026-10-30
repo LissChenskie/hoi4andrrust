@@ -10,3 +10,5 @@ pub mod research_data;
 pub mod research_import;
 pub mod research_script;
 pub mod script_constants;
+pub mod script_validation;
+pub mod focus_compat;

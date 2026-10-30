@@ -1,7 +1,7 @@
 # National focus interpreter — recovery checkpoint
 
 Branch: `feature/hoi4-focus-interpreter-1193`. Base: `64b0a66893a96c0deae02fc6be0682da5ee2e8e3`.
-Last published ancestor: `86d380c354d8d6a7d45eb42330646f1f8bcc804e` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
+Last published ancestor: `1efd632517afa6485154fa77ea6ae2add67d2300` (this document is committed after that SHA; use branch HEAD for the latest checkpoint).
 
 ## Stage A: architecture audit
 
@@ -45,3 +45,13 @@ Tests: full cargo test --all-targets --locked passed (counts recorded in next ch
 Known gaps: original starting PP/base daily PP generation not established; idle saved focus progress/refunds not implemented; source speed modifiers, native DLC civil-war adapters, decisions/missions, on_actions, joint and continuous execution and dynamic localization remain incomplete. Schemas consulted: cwtools-hoi4-config at 297dd69c42aabe10078a8b7ab7f2d07ee631d4ef (not proof of 1.19.3 timing). Wiki direct access failed; no third-party code was copied. GPL TreeSnap was inspected for graph concepts only, no implementation reused.
 
 Next: share campaign preflight with headless exporter and emit truthful focus-compatibility-report.json; render spatial tree with cached presentation, gestures and imported icons.
+
+## Stage G (audit infrastructure) checkpoint
+
+Shared `script_validation.rs` is now the exact structural preflight used by BOTH the runtime journal and headless exporter. `focus_compat.rs` reports parsed/resolved, unknown/dynamic predicates, effect blockers (including transitive scripted/event references), unsupported source fields, missing localisation, duplicate IDs, source parse/EOF diagnostics and explicitly unsupported continuous nodes. `supported` is null without runtime evidence; imported-node `tested`/`parity_verified` remain false. This intentionally does not turn successful parsing into fake gameplay coverage.
+
+Continuous palette/focus and joint-focus AST are retained/indexed; continuous execution and joint rewards remain unsupported. Cache version 11. Static localisation retains only imported focus/event/decision text keys, resolving aliases against the full dictionary before discarding unrelated strings. Tree metadata no longer duplicates all source focus AST. Journal uses copy-on-write political state so read-only predicates don't clone the full scheduler and focus history per node.
+
+Checks so far: cargo test --all-targets --locked: 429 passed (70 library + 349 game + 3 exporter + 7 integration), zero failures; Python UI art parser: 4 passed. Android aarch64 cargo check passed on the preceding source revision; final rerun follows UI checkpoint. CLI `audit /tmp/hoi4-focus-fixture` really emitted the JSON: **authored fixture only**: 1 tree, 2 nodes, 1 shared, 2 resolved, 1 structural candidate, 0 native-game parity. These are NOT counts of the user's original installation, which was not provided.
+
+Next: publish/test cached tree UI, then final regression/check/Android compile. After that, continue original-content integration at Stage D/E: supply version-verified local 1.19.3 export, inspect the generated report, implement the first actual missing consumers and source-backed starting PP/daily income. Soviet/DLC parity is not complete.

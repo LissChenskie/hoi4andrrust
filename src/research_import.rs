@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 9;
+const CACHE_VERSION: u32 = 11;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -317,7 +317,18 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                             .filter_map(Entry::atom)
                             .map(str::to_owned)
                             .collect(),
-                        raw: raw.to_vec(),
+                        // Focus bodies already live once in sources; keep tree
+                        // metadata without duplicating the full DLC script corpus.
+                        raw: raw
+                            .iter()
+                            .filter(|e| {
+                                !(matches!(
+                                    e.key.as_str(),
+                                    "focus" | "shared_focus" | "joint_focus"
+                                ) && e.block().is_some())
+                            })
+                            .cloned()
+                            .collect(),
                         problems: Vec::new(),
                     },
                 );
@@ -325,6 +336,7 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
             for e in source_nodes(b, "focus")
                 .into_iter()
                 .chain(source_nodes(b, "shared_focus"))
+                .chain(source_nodes(b, "joint_focus"))
             {
                 let Some(raw) = e.block() else {
                     continue;
@@ -332,7 +344,7 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                 let Some(id) = atom(raw, "id") else {
                     continue;
                 };
-                if e.key == "shared_focus" {
+                if matches!(e.key.as_str(), "shared_focus" | "joint_focus") {
                     scripts.shared_focuses.insert(id.into());
                 }
                 if scripts.sources.contains_key(&format!("focus:{id}")) {
@@ -662,6 +674,43 @@ impl ResearchDataset {
             }
             if rel.starts_with("common/national_focus/") {
                 collect_sources(b, "focus", rel, scripts);
+            }
+            if rel.starts_with("common/continuous_focus/") {
+                for palette in b.iter().filter(|e| e.key == "continuous_focus_palette") {
+                    if let Some(raw) = palette.block() {
+                        let id = atom(raw, "id").unwrap_or(rel);
+                        scripts.sources.insert(
+                            format!("continuous_palette:{id}"),
+                            ScriptSource {
+                                kind: "continuous_palette".into(),
+                                id: id.into(),
+                                source: format!("{rel}:{}", palette.span.line),
+                                conditions: block(raw, "country").unwrap_or(&[]).to_vec(),
+                                effects: vec![],
+                                raw: raw.to_vec(),
+                            },
+                        );
+                        for e in raw.iter().filter(|e| e.key == "focus") {
+                            if let Some(raw) = e.block() {
+                                if let Some(id) = atom(raw, "id") {
+                                    scripts.sources.insert(
+                                        format!("continuous_focus:{id}"),
+                                        ScriptSource {
+                                            kind: "continuous_focus".into(),
+                                            id: id.into(),
+                                            source: format!("{rel}:{}", e.span.line),
+                                            conditions: block(raw, "available")
+                                                .unwrap_or(&[])
+                                                .to_vec(),
+                                            effects: vec![],
+                                            raw: raw.to_vec(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
             }
             if rel.starts_with("events/") {
                 collect_sources(b, "event", rel, scripts);
@@ -1140,8 +1189,37 @@ fn apply_localisations(
         out.push_str(rest);
         out
     }
+    let mut needed = BTreeSet::new();
+    fn text_keys(b: &[Entry], out: &mut BTreeSet<String>) {
+        for e in b {
+            if ["text", "title", "desc", "name"].contains(&e.key.as_str()) {
+                if let Some(key) = e.atom() {
+                    out.insert(key.to_owned());
+                    out.insert(format!("{key}_desc"));
+                }
+            }
+            if let Some(b) = e.block() {
+                text_keys(b, out);
+            }
+        }
+    }
+    for src in cat.scripts.sources.values().filter(|s| {
+        matches!(
+            s.kind.as_str(),
+            "focus" | "event" | "decision" | "continuous_focus" | "continuous_palette"
+        )
+    }) {
+        needed.insert(src.id.clone());
+        needed.insert(format!("{}_desc", src.id));
+        text_keys(&src.raw, &mut needed);
+    }
+    needed.extend(cat.scripts.focus_trees.keys().cloned());
+    // Resolve static aliases against the full dictionary, retain only texts the
+    // imported focus/event UI can use. The unrelated world localisation corpus
+    // must not become permanent Android heap overhead.
     cat.scripts.localisation = translations
         .iter()
+        .filter(|(k, _)| needed.contains(*k))
         .map(|(k, v)| (k.clone(), resolve(v, &translations, 0)))
         .collect();
     for f in cat.folders.iter().chain(cat.folder_definitions.keys()) {
@@ -1405,6 +1483,63 @@ mod tests {
                 .problems
                 .iter()
                 .any(|p| p.contains("missing"))
+        );
+    }
+    #[test]
+    fn focus_audit_distinguishes_structure_from_runtime_and_native_parity() {
+        let f = fixture();
+        f.put("common/national_focus/test.txt","focus_tree={id=t default=yes focus={id=ok cost=1 x=0 y=0 completion_reward={add_political_power=1}} focus={id=bad cost=1 prerequisite={focus=missing} completion_reward={unknown_command=yes}}}");
+        f.put("common/continuous_focus/test.txt","continuous_focus_palette={id=p focus={id=continuous daily_cost=1 modifier={research_speed_factor=0.1}}}");
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        assert!(
+            data.registry
+                .scripts
+                .sources
+                .contains_key("continuous_focus:continuous")
+        );
+        let report = crate::focus_compat::report(&data);
+        let nodes = report["focuses"].as_array().unwrap();
+        let ok = nodes.iter().find(|n| n["id"] == "ok").unwrap();
+        assert_eq!(ok["parsed"], true);
+        // A malformed tree reference is diagnosed even for other nodes: the
+        // loader must not claim that the whole tree is validated.
+        assert_eq!(ok["resolved"], false);
+        assert!(ok["supported"].is_null());
+        assert_eq!(ok["parity_verified"], false);
+        let bad = nodes.iter().find(|n| n["id"] == "bad").unwrap();
+        assert!(!bad["effect_blockers"].as_array().unwrap().is_empty());
+        assert_eq!(report["counts"]["parity_verified"], 0);
+    }
+    #[test]
+    fn conditional_offsets_and_relative_cycles_are_validated() {
+        let f = fixture();
+        f.put("common/national_focus/test.txt","focus_tree={id=t focus={id=a x=2 y=0 offset={x=3 trigger={has_dlc=Test}}} focus={id=b x=1 y=2 relative_position_id=a}}");
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let scripts = &data.registry.scripts;
+        let tree = &scripts.focus_trees["t"];
+        assert_eq!(
+            crate::focus_data::positions(tree, scripts, |_| Ok(false)).unwrap()["b"],
+            (3., 2.)
+        );
+        assert_eq!(
+            crate::focus_data::positions(tree, scripts, |_| Ok(true)).unwrap()["b"],
+            (6., 2.)
+        );
+        assert!(
+            crate::focus_data::positions(tree, scripts, |_| Err("Unknown DLC profile".into()))
+                .is_err()
+        );
+        let mut scripts = scripts.clone();
+        scripts
+            .sources
+            .get_mut("focus:a")
+            .unwrap()
+            .raw
+            .extend(parse_pdx("relative_position_id=b").unwrap());
+        assert!(
+            crate::focus_data::positions(&scripts.focus_trees["t"], &scripts, |_| Ok(true))
+                .unwrap_err()
+                .contains("cycle")
         );
     }
     fn fixture() -> Fixture {

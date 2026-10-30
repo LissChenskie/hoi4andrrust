@@ -367,6 +367,10 @@ fn compile(root: &Path) -> Result<(), String> {
     // work. This never claims missing game mechanics have been implemented.
     let deps = hoi4_mobile::dependency_report::report(&data);
     atomic_json(&root.join("content-dependencies.json"), &deps)?;
+    atomic_json(
+        &root.join("focus-compatibility-report.json"),
+        &hoi4_mobile::focus_compat::report(&data),
+    )?;
     let report = data.audit(root);
     atomic_json(&root.join("research-report.json"), &report)?;
     let sources = data.write_review_sources(root)?;
