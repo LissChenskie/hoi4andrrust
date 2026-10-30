@@ -18,32 +18,6 @@ pub fn draw(
     province: Option<u32>,
 ) {
     let _clip = ui::clip(r);
-    if view.commander_picker.is_none() && ui::inside(r) {
-        let (_, wheel) = mouse_wheel();
-        view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(
-            0.0,
-            (1050.0 + w.abilities.definitions.len() as f32 * 33.0 - r.h).max(0.0),
-        );
-    }
-    let touch = touches()
-        .into_iter()
-        .find(|t| !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled));
-    if let Some(t) = touch.filter(|t| r.contains(t.position)) {
-        if let Some(last) = view.command_touch_last {
-            view.army_scroll = (view.army_scroll + last.y - t.position.y).max(0.0);
-        }
-        view.command_touch_last = Some(t.position);
-    } else {
-        view.command_touch_last = None;
-    }
-    let x = r.x;
-    let width = r.w;
-    let mut y = r.y
-        - if view.commander_picker.is_none() {
-            view.army_scroll
-        } else {
-            0.0
-        };
     let armies: Vec<_> = w
         .command
         .armies
@@ -54,7 +28,56 @@ pub fn draw(
     if !view.selected_army.is_some_and(|id| armies.contains(&id)) {
         view.selected_army = armies.first().copied();
     }
+    // Keep the theater/group/army tree visible when inspecting an army.
+    // The detail pane below it scrolls independently, as in HOI4.
+    let hierarchy_height = if view.commander_picker.is_none() {
+        crate::army_hierarchy_ui::draw(tag, w, view, r)
+    } else {
+        0.
+    };
+    let body = Rect::new(r.x, r.y + hierarchy_height, r.w, (r.h - hierarchy_height).max(1.));
+    if view.commander_picker.is_none() && ui::inside(body) {
+        let (_, wheel) = mouse_wheel();
+        view.army_scroll = (view.army_scroll - wheel * 30.0).clamp(
+            0.0,
+            (1050.0 + w.abilities.definitions.len() as f32 * 33.0 - body.h).max(0.0),
+        );
+    }
+    let touch = touches()
+        .into_iter()
+        .find(|t| !matches!(t.phase, TouchPhase::Ended | TouchPhase::Cancelled));
+    if view.commander_picker.is_none() {
+        if let Some(t) = touch.filter(|t| body.contains(t.position)) {
+            if let Some(last) = view.command_touch_last {
+                view.army_scroll = (view.army_scroll + last.y - t.position.y).max(0.0);
+            }
+            view.command_touch_last = Some(t.position);
+        } else {
+            view.command_touch_last = None;
+        }
+    }
+    let _body_clip = ui::clip(body);
+    let x = body.x;
+    let width = body.w;
+    let mut y = body.y
+        - if view.commander_picker.is_none() {
+            view.army_scroll
+        } else {
+            0.0
+        };
     if view.selected_army.is_none() {
+        if ui::small_button("Создать армию из выделенных", Rect::new(x, y, width, 31.), false) {
+            let ids: Vec<_> = view.selected.iter().copied().collect();
+            match w.create_army(tag, &ids, "") {
+                Ok(id) => {
+                    view.selected_army = Some(id);
+                    view.selected = w.command.members(id).collect();
+                    view.notice = "Армия создана".into();
+                }
+                Err(e) => view.notice = e,
+            }
+        }
+        y += 37.;
         ui::paragraph(
             "Выделите дивизии и нажмите + в нижней панели, чтобы создать армию. Затем нажмите её портрет для назначения генерала.",
             Rect::new(x, y, width, 85.0),
