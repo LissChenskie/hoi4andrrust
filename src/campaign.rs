@@ -175,11 +175,16 @@ impl CampaignState {
             }
         }
         for (tag, f) in &self.focuses.active {
-            if !w.countries.contains_key(tag) || f.id.is_empty() || f.tree.is_empty()
-                || !f.progress.is_finite() || f.progress < 0.
-                || !f.required.is_finite() || f.required <= 0.
+            if !w.countries.contains_key(tag)
+                || f.id.is_empty()
+                || f.tree.is_empty()
+                || !f.progress.is_finite()
+                || f.progress < 0.
+                || !f.required.is_finite()
+                || f.required <= 0.
                 || f.progress >= f.required
-                || f.begun > hour {
+                || f.begun > hour
+            {
                 return Err("Invalid active national focus".into());
             }
         }
