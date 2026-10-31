@@ -345,7 +345,8 @@ impl World {
         let Some(state) = self.states.get_mut(&state_id) else {
             return false;
         };
-        self.invalidate_state_control_cache();
+        // Invalidate this disjoint cache field while the state is mutably borrowed.
+        self.state_control_cache.get_mut().revision = None;
         let old_owner = state.owner.take();
         // Peaceful ownership transfers also move unoccupied control. A province
         // occupied by a third country retains that independent controller.
