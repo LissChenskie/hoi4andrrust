@@ -46,6 +46,8 @@ pub struct Province {
 pub struct StateControlCache {
     revision: Option<u64>,
     state_count: usize,
+    /// Reverse index so each country's economy only visits states it controls.
+    state_ids_by_controller: BTreeMap<String, Vec<u32>>,
     controllers: BTreeMap<u32, Option<u32>>,
 }
 impl PartialEq for StateControlCache {
@@ -162,21 +164,24 @@ impl World {
     /// Occupation/compliance reductions are a separate, not yet modelled layer.
     pub fn country_economy(&self, country_tag: &str) -> Option<CountryEconomy> {
         self.countries.get(country_tag)?;
+        self.refresh_state_control_cache();
         let mut totals = CountryEconomy::default();
-        for state in self
-            .states
-            .values()
-            .filter(|s| self.state_controller(s.id) == Some(country_tag))
-        {
-            totals.states += 1;
-            totals.infrastructure_total += u32::from(state.economy.infrastructure);
-            totals.civilian_factories += u32::from(state.economy.civilian_factories);
-            totals.military_factories += u32::from(state.economy.military_factories);
-            totals.dockyards += u32::from(state.economy.dockyards);
-            totals.synthetic_refineries += u32::from(state.economy.synthetic_refineries);
-            totals.fuel_silos += u32::from(state.economy.fuel_silos);
-            totals.rocket_sites += u32::from(state.economy.rocket_sites);
-            totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
+        let cache = self.state_control_cache.borrow();
+        if let Some(state_ids) = cache.state_ids_by_controller.get(country_tag) {
+            for state_id in state_ids {
+                let Some(state) = self.states.get(state_id) else {
+                    continue;
+                };
+                totals.states += 1;
+                totals.infrastructure_total += u32::from(state.economy.infrastructure);
+                totals.civilian_factories += u32::from(state.economy.civilian_factories);
+                totals.military_factories += u32::from(state.economy.military_factories);
+                totals.dockyards += u32::from(state.economy.dockyards);
+                totals.synthetic_refineries += u32::from(state.economy.synthetic_refineries);
+                totals.fuel_silos += u32::from(state.economy.fuel_silos);
+                totals.rocket_sites += u32::from(state.economy.rocket_sites);
+                totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
+            }
         }
         totals.civilian_factories = totals.civilian_factories.saturating_add(
             self.trade_factory_income
@@ -195,30 +200,7 @@ impl World {
         if state.province_ids.is_empty() {
             return state.owner.as_deref();
         }
-        let stale = {
-            let cache = self.state_control_cache.borrow();
-            cache.revision != Some(self.control_revision) || cache.state_count != self.states.len()
-        };
-        if stale {
-            let controllers = self
-                .states
-                .values()
-                .map(|s| {
-                    let representative = self.compute_state_controller(s.id).and_then(|tag| {
-                        s.province_ids
-                            .iter()
-                            .copied()
-                            .find(|&id| self.controller_of_province(id) == Some(tag))
-                    });
-                    (s.id, representative)
-                })
-                .collect();
-            *self.state_control_cache.borrow_mut() = StateControlCache {
-                revision: Some(self.control_revision),
-                state_count: self.states.len(),
-                controllers,
-            };
-        }
+        self.refresh_state_control_cache();
         let representative = self
             .state_control_cache
             .borrow()
@@ -228,6 +210,45 @@ impl World {
             .flatten()?;
         self.controller_of_province(representative)
     }
+    /// Rebuild both control lookups together. The index is derived state and is
+    /// invalidated by control_revision or changes to the number of states.
+    fn refresh_state_control_cache(&self) {
+        let stale = {
+            let cache = self.state_control_cache.borrow();
+            cache.revision != Some(self.control_revision) || cache.state_count != self.states.len()
+        };
+        if !stale {
+            return;
+        }
+
+        let mut controllers = BTreeMap::new();
+        let mut state_ids_by_controller = BTreeMap::<String, Vec<u32>>::new();
+        for state in self.states.values() {
+            let controller = self.compute_state_controller(state.id);
+            if let Some(tag) = controller {
+                state_ids_by_controller
+                    .entry(tag.to_owned())
+                    .or_default()
+                    .push(state.id);
+            }
+            let representative = controller.and_then(|tag| {
+                state
+                    .province_ids
+                    .iter()
+                    .copied()
+                    .find(|&id| self.controller_of_province(id) == Some(tag))
+            });
+            controllers.insert(state.id, representative);
+        }
+
+        *self.state_control_cache.borrow_mut() = StateControlCache {
+            revision: Some(self.control_revision),
+            state_count: self.states.len(),
+            state_ids_by_controller,
+            controllers,
+        };
+    }
+
     fn compute_state_controller(&self, state_id: u32) -> Option<&str> {
         let state = self.states.get(&state_id)?;
         if state.province_ids.is_empty() {
@@ -549,4 +570,113 @@ mod occupied_industry_regressions {
             assert_eq!(world.country_economy(tag).unwrap().states, 0);
         }
     }
+    fn full_scan_country_economy(world: &World, tag: &str) -> Option<super::CountryEconomy> {
+        use super::CountryEconomy;
+        world.countries.get(tag)?;
+        let mut totals = CountryEconomy::default();
+        for state in world
+            .states
+            .values()
+            .filter(|state| world.state_controller(state.id) == Some(tag))
+        {
+            totals.states += 1;
+            totals.infrastructure_total += u32::from(state.economy.infrastructure);
+            totals.civilian_factories += u32::from(state.economy.civilian_factories);
+            totals.military_factories += u32::from(state.economy.military_factories);
+            totals.dockyards += u32::from(state.economy.dockyards);
+            totals.synthetic_refineries += u32::from(state.economy.synthetic_refineries);
+            totals.fuel_silos += u32::from(state.economy.fuel_silos);
+            totals.rocket_sites += u32::from(state.economy.rocket_sites);
+            totals.nuclear_reactors += u32::from(state.economy.nuclear_reactors);
+        }
+        totals.civilian_factories = totals.civilian_factories.saturating_add(
+            world.trade_factory_income.get(tag).copied().unwrap_or(0),
+        );
+        Some(totals)
+    }
+
+    #[test]
+    fn indexed_country_economy_matches_full_scan_after_controller_changes() {
+        use crate::state::StateEconomy;
+        use super::State;
+
+        let mut state_by_province = HashMap::new();
+        let mut owner_by_state = HashMap::new();
+        let mut economy_by_state = HashMap::new();
+        let mut tags = Vec::new();
+        for i in 0..800u32 {
+            let state_id = i + 1;
+            let province_id = i + 10_001;
+            let tag = format!("C{:02}", i % 80);
+            if !tags.contains(&tag) {
+                tags.push(tag.clone());
+            }
+            state_by_province.insert(province_id, state_id);
+            owner_by_state.insert(state_id, tag);
+            economy_by_state.insert(
+                state_id,
+                StateEconomy {
+                    infrastructure: (i % 10) as u8,
+                    civilian_factories: (i % 6) as u8,
+                    military_factories: (i % 4) as u8,
+                    dockyards: (i % 3) as u8,
+                    synthetic_refineries: (i % 2) as u8,
+                    fuel_silos: (i % 5) as u8,
+                    rocket_sites: (i % 7) as u8,
+                    nuclear_reactors: (i % 3) as u8,
+                },
+            );
+        }
+        let mut world = World::from_map_data(
+            &state_by_province,
+            &owner_by_state,
+            &HashMap::new(),
+            &economy_by_state,
+            &HashMap::new(),
+        );
+        for tag in &tags {
+            world.trade_factory_income.insert(tag.clone(), 2);
+        }
+
+        // Empty states have a legal owner and must be included in that country's
+        // index even though state_controller() resolves them without a province.
+        world.states.insert(
+            10_001,
+            State {
+                id: 10_001,
+                name: None,
+                owner: Some("C00".into()),
+                province_ids: Vec::new(),
+                shared_building_slots: 0,
+                economy: StateEconomy {
+                    civilian_factories: 3,
+                    ..StateEconomy::default()
+                },
+            },
+        );
+        world.countries.get_mut("C00").unwrap().state_ids.insert(10_001);
+
+        // Warm the cache before changing control, then ensure the next lookup
+        // rebuilds both the per-state result and the reverse country index.
+        for tag in &tags {
+            assert_eq!(
+                world.country_economy(tag),
+                full_scan_country_economy(&world, tag),
+                "initial controller index mismatch for {tag}"
+            );
+        }
+        for i in (0..800u32).step_by(13) {
+            let province_id = i + 10_001;
+            let new_controller = format!("C{:02}", (i + 17) % 80);
+            assert!(world.set_province_controller(province_id, Some(&new_controller)));
+        }
+        for tag in &tags {
+            assert_eq!(
+                world.country_economy(tag),
+                full_scan_country_economy(&world, tag),
+                "updated controller index mismatch for {tag}"
+            );
+        }
+    }
+
 }
