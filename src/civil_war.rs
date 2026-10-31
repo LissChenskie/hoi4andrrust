@@ -355,6 +355,10 @@ impl GameSession {
                 }
             }
         }
+        // The owner field above is written directly to preserve the civil-war
+        // transfer semantics for occupied provinces; invalidate the derived
+        // reverse controller index even when a transferred state has no provinces.
+        self.world.invalidate_state_control_cache();
         let loyal = self.military.countries.get_mut(a).unwrap();
         if loyal.mobilization_target.is_none() {
             loyal.mobilization_target = Some(loyal.recruitable_total);

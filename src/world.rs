@@ -192,6 +192,12 @@ impl World {
         Some(totals)
     }
 
+    /// Mark the derived effective-controller cache stale after a direct owner
+    /// mutation performed by a higher-level transaction (for example civil war).
+    pub fn invalidate_state_control_cache(&mut self) {
+        self.state_control_cache.get_mut().revision = None;
+    }
+
     /// State-wide buildings require at least half the state's control VP:
     /// 0.1 per province plus its scripted VP. A tie favours the legal owner,
     /// then the lexical tag; faction transfer/occupation laws are not inferred.
@@ -339,7 +345,7 @@ impl World {
         let Some(state) = self.states.get_mut(&state_id) else {
             return false;
         };
-        self.state_control_cache.get_mut().revision = None;
+        self.invalidate_state_control_cache();
         let old_owner = state.owner.take();
         // Peaceful ownership transfers also move unoccupied control. A province
         // occupied by a third country retains that independent controller.
