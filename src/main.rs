@@ -30,6 +30,7 @@ pub use hoi4_mobile::game;
 mod battle_plan_render;
 mod battle_plan_ui;
 mod battle_ui;
+mod frame_profiler;
 mod frontline;
 mod history_conditions;
 mod hoi_assets;
@@ -2345,6 +2346,7 @@ fn draw_map_viewer(
     military: &mut warfare::Warfare,
     peace: &peace::PeaceSystem,
     army_view: &mut army_ui::ArmyView,
+    profiler: &mut frame_profiler::FrameProfiler,
 ) -> Screen {
     army_view.orders_enabled = matches!(
         hud.active,
@@ -2364,6 +2366,7 @@ fn draw_map_viewer(
     let compact = screen_width() < 760.0;
     let game_date = game.date;
     clear_background(Color::from_rgba(24, 36, 43, 255));
+    let map_profile_started = std::time::Instant::now();
     if let Some(map) = map.as_deref_mut() {
         let mouse = vec2(mouse_position().0, mouse_position().1);
         let rect = map_view_rect(map, construction_view.map_placement);
@@ -2846,6 +2849,8 @@ fn draw_map_viewer(
             hoi_ui::TEXT,
         );
     }
+    profiler.record_map(map_profile_started.elapsed());
+    let panels_profile_started = std::time::Instant::now();
     let mode = map.as_deref().map_or(0, |m| match m.map_mode {
         MapMode::Political => 0,
         MapMode::Resources => 1,
@@ -3090,6 +3095,7 @@ fn draw_map_viewer(
             &mut map,
         );
     }
+    profiler.record_panels(panels_profile_started.elapsed());
     if let Some(action) = campaign_ui::draw_modal(hud) {
         if matches!(action, campaign_ui::Action::MainMenu) {
             hud.menu = false;
@@ -3301,8 +3307,10 @@ async fn main() {
     } else {
         None
     };
+    let mut profiler = frame_profiler::FrameProfiler::from_environment();
 
     loop {
+        profiler.begin_frame();
         hoi_ui::begin_frame();
         hoi_ui::block_input(false);
         let next_screen = match screen {
@@ -3396,6 +3404,12 @@ async fn main() {
             }
             Screen::MapViewer => {
                 use campaign_ui::Panel;
+                let input_profile_started = std::time::Instant::now();
+                if is_key_pressed(KeyCode::F3)
+                    && (is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift))
+                {
+                    profiler.toggle();
+                }
                 session.flush_simulation_hooks(&research_catalogue, &research_rules);
                 if let Some((id, option)) = hud.event_request.take() {
                     hud.notice = session
@@ -3544,7 +3558,10 @@ async fn main() {
                             &mut army_view,
                         );
                     }
-                    if is_key_pressed(KeyCode::F3) {
+                    if is_key_pressed(KeyCode::F3)
+                        && !is_key_down(KeyCode::LeftShift)
+                        && !is_key_down(KeyCode::RightShift)
+                    {
                         hud.toggle(
                             Panel::Air,
                             &mut construction_view,
@@ -3628,6 +3645,8 @@ async fn main() {
                         army_view.strategic = !army_view.strategic;
                     }
                 }
+                profiler.record_input(input_profile_started.elapsed());
+                let simulation_profile_started = std::time::Instant::now();
                 session.advance_frame(
                     get_frame_time(),
                     &building_rules,
@@ -3635,6 +3654,8 @@ async fn main() {
                     &research_catalogue,
                     &research_rules,
                 );
+                profiler.record_simulation(simulation_profile_started.elapsed());
+                let ui_update_profile_started = std::time::Instant::now();
                 if hud.active == Some(campaign_ui::Panel::Focus) {
                     if let Some(tag) = session.player_country.clone() {
                         if let Err(e) =
@@ -3657,6 +3678,7 @@ async fn main() {
                     hud.decision_view
                         .refresh(&session, &research_catalogue, &research_rules);
                 }
+                profiler.record_ui_update(ui_update_profile_started.elapsed());
                 let GameSession {
                     world,
                     clock: game,
@@ -3727,6 +3749,7 @@ async fn main() {
                     military,
                     peace_state,
                     &mut army_view,
+                    &mut profiler,
                 );
                 focus_ui::draw(&mut hud);
                 campaign_events_ui::draw(selected_country.as_deref(), focus_campaign, &mut hud);
@@ -4325,6 +4348,8 @@ async fn main() {
         }
         screen = next_screen;
         hoi_ui::draw_tooltips();
+        profiler.finish_frame();
+        profiler.draw_overlay();
         next_frame().await;
     }
 }
