@@ -47,6 +47,10 @@ pub struct StateControlCache {
     revision: Option<u64>,
     state_count: usize,
     controllers: BTreeMap<u32, Option<u32>>,
+    /// Controller tag -> ids of its states (states that have provinces).
+    by_controller: BTreeMap<String, Vec<u32>>,
+    /// States without provinces are owned directly; their owner is read live.
+    unprovinced: Vec<u32>,
 }
 impl PartialEq for StateControlCache {
     fn eq(&self, _: &Self) -> bool {
@@ -162,12 +166,21 @@ impl World {
     /// Occupation/compliance reductions are a separate, not yet modelled layer.
     pub fn country_economy(&self, country_tag: &str) -> Option<CountryEconomy> {
         self.countries.get(country_tag)?;
+        self.ensure_control_cache();
+        let cache = self.state_control_cache.borrow();
+        let indexed = cache
+            .by_controller
+            .get(country_tag)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .copied();
+        let direct = cache.unprovinced.iter().copied().filter(|id| {
+            self.states.get(id).is_some_and(|s| {
+                s.province_ids.is_empty() && s.owner.as_deref() == Some(country_tag)
+            })
+        });
         let mut totals = CountryEconomy::default();
-        for state in self
-            .states
-            .values()
-            .filter(|s| self.state_controller(s.id) == Some(country_tag))
-        {
+        for state in indexed.chain(direct).filter_map(|id| self.states.get(&id)) {
             totals.states += 1;
             totals.infrastructure_total += u32::from(state.economy.infrastructure);
             totals.civilian_factories += u32::from(state.economy.civilian_factories);
@@ -190,35 +203,49 @@ impl World {
     /// State-wide buildings require at least half the state's control VP:
     /// 0.1 per province plus its scripted VP. A tie favours the legal owner,
     /// then the lexical tag; faction transfer/occupation laws are not inferred.
+    /// Rebuilds the derived control index when province control or the state
+    /// set changed. O(states) once per control change, not once per query.
+    fn ensure_control_cache(&self) {
+        let stale = {
+            let cache = self.state_control_cache.borrow();
+            cache.revision != Some(self.control_revision) || cache.state_count != self.states.len()
+        };
+        if !stale {
+            return;
+        }
+        let mut controllers = BTreeMap::new();
+        let mut by_controller: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+        let mut unprovinced = Vec::new();
+        for s in self.states.values() {
+            if s.province_ids.is_empty() {
+                unprovinced.push(s.id);
+                continue;
+            }
+            let representative = self.compute_state_controller(s.id).and_then(|tag| {
+                s.province_ids
+                    .iter()
+                    .copied()
+                    .find(|&id| self.controller_of_province(id) == Some(tag))
+            });
+            if let Some(tag) = representative.and_then(|p| self.controller_of_province(p)) {
+                by_controller.entry(tag.to_owned()).or_default().push(s.id);
+            }
+            controllers.insert(s.id, representative);
+        }
+        *self.state_control_cache.borrow_mut() = StateControlCache {
+            revision: Some(self.control_revision),
+            state_count: self.states.len(),
+            controllers,
+            by_controller,
+            unprovinced,
+        };
+    }
     pub fn state_controller(&self, state_id: u32) -> Option<&str> {
         let state = self.states.get(&state_id)?;
         if state.province_ids.is_empty() {
             return state.owner.as_deref();
         }
-        let stale = {
-            let cache = self.state_control_cache.borrow();
-            cache.revision != Some(self.control_revision) || cache.state_count != self.states.len()
-        };
-        if stale {
-            let controllers = self
-                .states
-                .values()
-                .map(|s| {
-                    let representative = self.compute_state_controller(s.id).and_then(|tag| {
-                        s.province_ids
-                            .iter()
-                            .copied()
-                            .find(|&id| self.controller_of_province(id) == Some(tag))
-                    });
-                    (s.id, representative)
-                })
-                .collect();
-            *self.state_control_cache.borrow_mut() = StateControlCache {
-                revision: Some(self.control_revision),
-                state_count: self.states.len(),
-                controllers,
-            };
-        }
+        self.ensure_control_cache();
         let representative = self
             .state_control_cache
             .borrow()
@@ -488,6 +515,81 @@ mod tests {
 #[cfg(test)]
 mod occupied_industry_regressions {
     use super::*;
+    /// The indexed fast path must equal the plain "scan every state" definition
+    /// through arbitrary control changes, including provinceless states.
+    #[test]
+    fn indexed_country_economy_matches_full_scan_through_control_changes() {
+        let mut membership = HashMap::new();
+        let mut owners = HashMap::new();
+        let mut economy = HashMap::new();
+        for state in 1u32..=12 {
+            let tag = ["AAA", "BBB", "CCC", "DDD"][(state % 4) as usize];
+            owners.insert(state, tag.to_owned());
+            economy.insert(
+                state,
+                StateEconomy {
+                    civilian_factories: (state % 5) as u16,
+                    military_factories: (state % 3) as u16,
+                    dockyards: (state % 2) as u16,
+                    ..Default::default()
+                },
+            );
+            if state != 12 {
+                // State 12 deliberately has no provinces.
+                for k in 0..3 {
+                    membership.insert(state * 10 + k, state);
+                }
+            }
+        }
+        let mut world = World::from_map_data(
+            &membership,
+            &owners,
+            &Default::default(),
+            &economy,
+            &Default::default(),
+        );
+        let reference = |world: &World, tag: &str| {
+            let mut t = (0u32, 0u32, 0u32, 0u32);
+            for s in world
+                .states
+                .values()
+                .filter(|s| world.state_controller(s.id) == Some(tag))
+            {
+                t.0 += 1;
+                t.1 += u32::from(s.economy.civilian_factories);
+                t.2 += u32::from(s.economy.military_factories);
+                t.3 += u32::from(s.economy.dockyards);
+            }
+            t
+        };
+        let check = |world: &World, step: &str| {
+            for tag in ["AAA", "BBB", "CCC", "DDD"] {
+                let fast = world.country_economy(tag).unwrap();
+                let got = (
+                    fast.states,
+                    fast.civilian_factories,
+                    fast.military_factories,
+                    fast.dockyards,
+                );
+                assert_eq!(got, reference(world, tag), "{tag} after {step}");
+            }
+        };
+        check(&world, "start");
+        // Whole-state and partial occupation, then hand some back.
+        for (province, controller, label) in [
+            (11, Some("BBB"), "partial 1"),
+            (12, Some("BBB"), "partial 2"),
+            (13, Some("BBB"), "whole state 1"),
+            (50, Some("DDD"), "state 5 partial"),
+            (51, Some("DDD"), "state 5 more"),
+            (11, Some("AAA"), "give back"),
+            (60, None, "uncontrolled"),
+        ] {
+            world.set_province_controller(province, controller);
+            check(&world, label);
+        }
+    }
+
     #[test]
     fn vp_control_moves_industry_without_annexing_and_is_not_double_counted() {
         let mut world = World::from_map_data(

@@ -62,6 +62,9 @@ mod campaign_save;
 mod campaign_tests;
 mod civil_war;
 mod focus;
+mod frame_profiler;
+#[cfg(test)]
+mod perf_probe;
 mod focus_ui;
 mod platform_storage;
 mod politics;
@@ -3172,6 +3175,7 @@ async fn main() {
     let mut production_view = production_ui::ProductionView::default();
     let mut army_view = army_ui::ArmyView::default();
     let mut hud = campaign_ui::Hud::default();
+    let mut perf = frame_profiler::FrameProfiler::default();
     let mut peace_view = peace_ui::PeaceView::default();
     let mut production_rules;
     // Use the player's own versioned game files if present. Never redistribute
@@ -3303,6 +3307,10 @@ async fn main() {
     };
 
     loop {
+        if is_key_pressed(KeyCode::F3) {
+            perf.toggle();
+        }
+        perf.begin_frame();
         hoi_ui::begin_frame();
         hoi_ui::block_input(false);
         let next_screen = match screen {
@@ -3628,6 +3636,7 @@ async fn main() {
                         army_view.strategic = !army_view.strategic;
                     }
                 }
+                perf.mark("input");
                 session.advance_frame(
                     get_frame_time(),
                     &building_rules,
@@ -3635,6 +3644,7 @@ async fn main() {
                     &research_catalogue,
                     &research_rules,
                 );
+                perf.mark("simulation");
                 if hud.active == Some(campaign_ui::Panel::Focus) {
                     if let Some(tag) = session.player_country.clone() {
                         if let Err(e) =
@@ -3657,6 +3667,7 @@ async fn main() {
                     hud.decision_view
                         .refresh(&session, &research_catalogue, &research_rules);
                 }
+                perf.mark("hud_refresh");
                 let GameSession {
                     world,
                     clock: game,
@@ -3728,6 +3739,7 @@ async fn main() {
                     peace_state,
                     &mut army_view,
                 );
+                perf.mark("draw_map_ui");
                 focus_ui::draw(&mut hud);
                 campaign_events_ui::draw(selected_country.as_deref(), focus_campaign, &mut hud);
                 war_overview_ui::draw(
@@ -3745,6 +3757,7 @@ async fn main() {
                     selected_country.as_deref(),
                     &mut peace_view,
                 );
+                perf.mark("panels");
                 if let Some(current_map) = map.as_mut() {
                     let (mouse_x, mouse_y) = mouse_position();
                     let mouse = vec2(mouse_x, mouse_y);
@@ -4281,6 +4294,7 @@ async fn main() {
                     current_map.update_zoom(get_frame_time(), rect);
                 }
 
+                perf.mark("map_overlays");
                 let reload_clicked = std::mem::take(&mut hud.reload_requested);
                 if reload_clicked {
                     // Drop the old world's GPU textures before allocating the new
@@ -4325,6 +4339,12 @@ async fn main() {
         }
         screen = next_screen;
         hoi_ui::draw_tooltips();
+        perf.end_frame();
+        if perf.enabled {
+            for (i, line) in perf.report().iter().enumerate() {
+                draw_text(line, 8.0, 18.0 + 16.0 * i as f32, 18.0, YELLOW);
+            }
+        }
         next_frame().await;
     }
 }
