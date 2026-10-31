@@ -39,6 +39,9 @@ pub struct GameSession {
     pub military: crate::warfare::Warfare,
     #[serde(default)]
     pub peace: crate::peace::PeaceSystem,
+    /// Persistent AI profiles, decision log and seed. Saved with the campaign.
+    #[serde(default)]
+    pub ai: crate::ai::AiState,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -48,6 +51,28 @@ pub struct SimulationAdvance {
 }
 
 impl GameSession {
+    /// Daily AI research step for one country. Observation is read-only; the
+    /// planner then issues commands through the validated research API.
+    fn run_research_ai(
+        &mut self,
+        tag: &str,
+        catalogue: &ResearchCatalogue,
+        rules: &ResearchRules,
+    ) {
+        let Some(country) = self.research.countries.get(tag) else {
+            return;
+        };
+        let Some(obs) = crate::ai::observation::observe(tag, &self.world, &self.military, country)
+        else {
+            return;
+        };
+        let hour = self.research.day_index * 24;
+        let date = self.clock.date;
+        if let Some(country) = self.research.countries.get_mut(tag) {
+            crate::ai::research::plan(&mut self.ai, &obs, catalogue, rules, country, date, hour);
+        }
+    }
+
     pub fn new(world: World) -> Self {
         let construction = world
             .countries
@@ -71,6 +96,7 @@ impl GameSession {
             research: ResearchWorld::default(),
             military: crate::warfare::Warfare::default(),
             peace: crate::peace::PeaceSystem::default(),
+            ai: Default::default(),
             campaign: Default::default(),
         }
     }
@@ -461,9 +487,8 @@ impl GameSession {
             self.research.country_mut(tag, 0, research);
             self.research
                 .tick_country(tag, catalogue, research, completed_day);
-            if self.research.day_index % 7 == 0 && self.player_country.as_ref() != Some(tag) {
-                self.research
-                    .ai_choose(tag, catalogue, research, self.clock.date);
+            if self.player_country.as_ref() != Some(tag) {
+                self.run_research_ai(tag, catalogue, research);
             }
         }
         self.research.day_index += 1;
