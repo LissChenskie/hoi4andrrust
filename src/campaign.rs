@@ -840,6 +840,46 @@ impl<'a> Journal<'a> {
         }
         Ok(())
     }
+    /// Candidates of a scope iterator in deterministic (tag / id) order.
+    fn iterator_scopes(&self, key: &str, c: &Context) -> Result<Vec<Scope>, String> {
+        let kind = key.split_once('_').map_or(key, |(_, rest)| rest);
+        if matches!(kind, "country" | "other_country") {
+            let me = if kind == "other_country" {
+                Some(self.tag(c)?)
+            } else {
+                None
+            };
+            return Ok(self
+                .s
+                .world
+                .countries
+                .keys()
+                .filter(|t| !self.state.inactive.contains(*t) && Some(*t) != me.as_ref())
+                .cloned()
+                .map(Scope::Country)
+                .collect());
+        }
+        let me = match kind {
+            "state" => None,
+            _ => Some(self.tag(c)?),
+        };
+        let world = &self.s.world;
+        Ok(world
+            .states
+            .values()
+            .filter(|s| match (kind, me.as_deref()) {
+                ("owned_state", Some(t)) => s.owner.as_deref() == Some(t),
+                ("controlled_state", Some(t)) => world.state_controller(s.id) == Some(t),
+                ("owned_controlled_state", Some(t)) => {
+                    s.owner.as_deref() == Some(t) && world.state_controller(s.id) == Some(t)
+                }
+                ("state", None) => true,
+                _ => false,
+            })
+            .map(|s| Scope::State(s.id))
+            .collect())
+    }
+
     fn effect(&mut self, e: &Entry, c: &Context, source: &str, d: usize) -> Result<(), String> {
         match e.key.as_str() {
             "activate_mission" => self.activate_mission(c, atom(e)?, d + 1),
@@ -872,26 +912,8 @@ impl<'a> Journal<'a> {
                 }
                 Ok(())
             }
-            "every_country" | "every_owned_state" | "random_owned_state" => {
-                let scopes: Vec<_> = if e.key == "every_country" {
-                    self.s
-                        .world
-                        .countries
-                        .keys()
-                        .filter(|t| !self.state.inactive.contains(*t))
-                        .cloned()
-                        .map(Scope::Country)
-                        .collect()
-                } else {
-                    let t = self.tag(c)?;
-                    self.s
-                        .world
-                        .states
-                        .values()
-                        .filter(|s| s.owner.as_deref() == Some(&t))
-                        .map(|s| Scope::State(s.id))
-                        .collect()
-                };
+            k if hoi4_mobile::script_validation::is_scope_iterator(k) => {
+                let scopes = self.iterator_scopes(&e.key, c)?;
                 let b = body(e)?;
                 let mut selected = vec![];
                 for s in scopes {
@@ -901,7 +923,7 @@ impl<'a> Journal<'a> {
                         selected.push(ctx)
                     }
                 }
-                if e.key == "random_owned_state" && !selected.is_empty() {
+                if e.key.starts_with("random_") && !selected.is_empty() {
                     let n =
                         u32::try_from(selected.len()).map_err(|_| "Too many random candidates")?;
                     let chosen = self.state.to_mut().rng.die(n) as usize - 1;

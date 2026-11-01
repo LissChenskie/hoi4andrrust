@@ -180,6 +180,49 @@ fn uppercase_branch_keywords_behave_exactly_like_lowercase() {
     }
 }
 
+/// State iterators must distinguish owner from controller; country iterators
+/// must exclude the scope country for `*_other_country`.
+#[test]
+fn scope_iterators_select_by_owner_controller_and_other_country() {
+    let mut s = fixture();
+    // State 1 stays owned by A but is occupied by B.
+    s.world.set_province_controller(1, Some("B"));
+    s.military.countries.entry("B".into()).or_default();
+    let flagged = |s: &GameSession, flag: &str| -> Vec<u32> {
+        s.campaign
+            .state_flags
+            .iter()
+            .filter(|(_, f)| f.contains(flag))
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    run(
+        &mut s,
+        "every_owned_state={set_state_flag=owned} every_controlled_state={set_state_flag=controlled} \
+         every_owned_controlled_state={set_state_flag=both} every_state={set_state_flag=all}",
+    )
+    .unwrap();
+    assert_eq!(flagged(&s, "owned"), [1, 2]);
+    assert_eq!(flagged(&s, "controlled"), [2]);
+    assert_eq!(flagged(&s, "both"), [2]);
+    assert_eq!(flagged(&s, "all"), [1, 2]);
+
+    // `random_*` picks exactly one candidate and honours `limit`.
+    run(
+        &mut s,
+        "random_owned_controlled_state={limit={always=yes} set_state_flag=picked} random_state={limit={always=no} set_state_flag=never}",
+    )
+    .unwrap();
+    assert_eq!(flagged(&s, "picked"), [2]);
+    assert!(flagged(&s, "never").is_empty());
+
+    let flags = |s: &GameSession, tag: &str| s.military.countries[tag].modifiers.flags.clone();
+    run(&mut s, "every_other_country={set_country_flag=other}").unwrap();
+    assert!(flags(&s, "B").contains("other") && !flags(&s, "A").contains("other"));
+    run(&mut s, "every_country={set_country_flag=everyone}").unwrap();
+    assert!(flags(&s, "A").contains("everyone") && flags(&s, "B").contains("everyone"));
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {

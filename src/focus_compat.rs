@@ -216,14 +216,9 @@ pub(crate) fn effect_conditions(
         } else if let Some(b) = e.block() {
             // Trigger bodies are not effects; effect parameter records do not
             // introduce scope. Only known control-flow containers are descended.
-            if [
-                "if",
-                "else_if",
-                "every_country",
-                "every_owned_state",
-                "random_owned_state",
-            ]
-            .contains(&e.key.as_str())
+            if e.key == "if"
+                || e.key == "else_if"
+                || crate::script_validation::is_scope_iterator(&e.key)
             {
                 predicates(pdx::block(b, "limit").unwrap_or(&[]), cat, out, 0);
                 effect_conditions(

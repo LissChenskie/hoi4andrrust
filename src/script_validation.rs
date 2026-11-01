@@ -6,6 +6,28 @@ use crate::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 const STEPS: usize = 10000;
+/// Scope iterators the executor implements. Validator, executor and the
+/// compatibility report all use this one list so they cannot disagree.
+/// `core` iterators are absent on purpose: the simulation has no core data.
+pub const SCOPE_ITERATORS: &[&str] = &[
+    "every_country",
+    "random_country",
+    "every_other_country",
+    "random_other_country",
+    "every_owned_state",
+    "random_owned_state",
+    "every_controlled_state",
+    "random_controlled_state",
+    "every_owned_controlled_state",
+    "random_owned_controlled_state",
+    "every_state",
+    "random_state",
+];
+
+pub fn is_scope_iterator(key: &str) -> bool {
+    SCOPE_ITERATORS.contains(&key)
+}
+
 pub fn body(e: &Entry) -> Result<&[Entry], String> {
     e.block().ok_or_else(|| format!("{} needs a block", e.key))
 }
@@ -189,8 +211,7 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
             }
             let r = (|| -> Result<(), String> {
                 match e.key.as_str() {
-                    "if" | "else_if" | "every_country" | "every_owned_state"
-                    | "random_owned_state" => {
+                    k if k == "if" || k == "else_if" || is_scope_iterator(k) => {
                         let x: Vec<_> = body(e)?
                             .iter()
                             .filter(|f| f.key != "limit")
