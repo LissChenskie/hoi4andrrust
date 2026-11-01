@@ -24,6 +24,53 @@ pub const SCOPE_ITERATORS: &[&str] = &[
     "random_state",
 ];
 
+/// Idea IDs named by `add_ideas` / `remove_ideas` / `swap_ideas`.
+pub fn idea_ids(e: &Entry) -> Result<Vec<&str>, String> {
+    if e.key == "swap_ideas" {
+        fields(e, &["add_idea", "remove_idea"])?;
+        body(e)?.iter().map(atom).collect()
+    } else if let Some(a) = e.atom() {
+        Ok(vec![a])
+    } else {
+        Ok(body(e)?.iter().map(|e| e.key.as_str()).collect())
+    }
+}
+
+/// An idea can be applied only if every part of its definition has a consumer
+/// in the simulation; otherwise the effect would silently do nothing.
+/// Shared by the executor and the validator so reports match runtime.
+pub fn check_idea(cat: &ResearchCatalogue, id: &str) -> Result<(), String> {
+    let raw = cat.scripts.ideas.get(id).ok_or("Unknown idea")?;
+    for f in raw {
+        if f.key == "modifier" {
+            for v in body(f)? {
+                if crate::research::modifier_consumer(&v.key).is_none()
+                    || v.atom()
+                        .and_then(|v| v.parse::<f64>().ok())
+                        .is_none_or(|v| !v.is_finite())
+                {
+                    return Err(format!("Missing modifier consumer {}", v.key));
+                }
+            }
+        } else if ![
+            "research_bonus",
+            "picture",
+            "name",
+            "desc",
+            "allowed",
+            "visible",
+            "cost",
+            "removal_cost",
+            "allowed_civil_war",
+        ]
+        .contains(&f.key.as_str())
+        {
+            return Err(format!("Unsupported idea semantics {}", f.key));
+        }
+    }
+    Ok(())
+}
+
 pub fn is_scope_iterator(key: &str) -> bool {
     SCOPE_ITERATORS.contains(&key)
 }
@@ -424,8 +471,19 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                         }
                         Ok(())
                     }
-                    "add_ideas" | "remove_ideas" | "swap_ideas" | "set_technology"
-                    | "add_tech_bonus" | "add_research_slot" | "set_research_slots" => Ok(()),
+                    "add_ideas" | "remove_ideas" | "swap_ideas" => {
+                        for id in idea_ids(e)? {
+                            check_idea(cat, id)?;
+                        }
+                        Ok(())
+                    }
+                    "add_timed_idea" => {
+                        fields(e, &["idea", "days"])?;
+                        check_idea(cat, field(body(e)?, "idea")?)
+                    }
+                    "add_popularity" => fields(e, &["ideology", "popularity"]),
+                    "set_technology" | "add_tech_bonus" | "add_research_slot"
+                    | "set_research_slots" => Ok(()),
                     k if cat.scripts.effects.contains_key(k) => {
                         if seen.insert(format!("effect:{k}:{:?}", e.value)) {
                             walk(

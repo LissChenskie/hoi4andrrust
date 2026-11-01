@@ -102,6 +102,53 @@ pub fn popularities(b: &[Entry]) -> Result<BTreeMap<String, f64>, String> {
     }
     Ok(values)
 }
+/// Native `add_popularity`: moves `ideology` by `delta` (a fraction, 0.05 = 5
+/// points), clamped to 0..=1, and rescales the others so the total stays 1.
+/// When nobody else holds support, the remainder is spread evenly over the
+/// other known ideologies (an assumption, unverified against the original).
+pub fn add_popularity(
+    map: &mut BTreeMap<String, f64>,
+    ideology: &str,
+    delta: f64,
+) -> Result<(), String> {
+    const VANILLA: [&str; 4] = ["democratic", "communism", "fascism", "neutrality"];
+    if !delta.is_finite() {
+        return Err("Invalid popularity change".into());
+    }
+    if !map.contains_key(ideology) && !VANILLA.contains(&ideology) {
+        return Err(format!("Unknown ideology {ideology}"));
+    }
+    let old = map.get(ideology).copied().unwrap_or(0.);
+    let new = (old + delta).clamp(0., 1.);
+    let others: Vec<String> = VANILLA
+        .iter()
+        .map(|s| s.to_string())
+        .chain(map.keys().cloned())
+        .filter(|k| k != ideology)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let others_sum: f64 = others
+        .iter()
+        .map(|k| map.get(k).copied().unwrap_or(0.))
+        .sum();
+    let remaining = 1. - new;
+    if others_sum > 1e-12 {
+        let scale = remaining / others_sum;
+        for k in &others {
+            if let Some(v) = map.get_mut(k) {
+                *v *= scale;
+            }
+        }
+    } else if remaining > 1e-12 {
+        let share = remaining / others.len() as f64;
+        for k in &others {
+            map.insert(k.clone(), share);
+        }
+    }
+    map.insert(ideology.to_owned(), new);
+    Ok(())
+}
 pub fn parse_date(s: &str) -> Option<GameDate> {
     let p: Vec<_> = s.split('.').collect();
     if p.len() < 3 || p.len() > 4 {
@@ -1050,5 +1097,53 @@ mod global_flag_tests {
                 .global_flags
                 .contains("signal_ready")
         );
+    }
+}
+
+#[cfg(test)]
+mod add_popularity_tests {
+    use super::*;
+
+    fn map(v: &[(&str, f64)]) -> BTreeMap<String, f64> {
+        v.iter().map(|(k, n)| (k.to_string(), *n)).collect()
+    }
+    fn total(m: &BTreeMap<String, f64>) -> f64 {
+        m.values().sum()
+    }
+
+    #[test]
+    fn shift_rescales_others_proportionally_and_keeps_the_total() {
+        let mut m = map(&[("democratic", 0.5), ("fascism", 0.3), ("neutrality", 0.2)]);
+        add_popularity(&mut m, "fascism", 0.1).unwrap();
+        assert!((m["fascism"] - 0.4).abs() < 1e-12);
+        assert!((m["democratic"] - 0.5 * 0.6 / 0.7).abs() < 1e-12);
+        assert!((m["neutrality"] - 0.2 * 0.6 / 0.7).abs() < 1e-12);
+        assert!((total(&m) - 1.).abs() < 1e-12);
+    }
+
+    #[test]
+    fn omitted_ideology_is_created_and_amounts_are_clamped() {
+        let mut m = map(&[("democratic", 0.6), ("neutrality", 0.4)]);
+        add_popularity(&mut m, "communism", 0.25).unwrap();
+        assert!((m["communism"] - 0.25).abs() < 1e-12 && (total(&m) - 1.).abs() < 1e-12);
+        add_popularity(&mut m, "communism", 5.0).unwrap();
+        assert_eq!(m["communism"], 1.0);
+        assert!(
+            m.iter()
+                .filter(|(k, _)| *k != "communism")
+                .all(|(_, v)| *v < 1e-12)
+        );
+        // Taking support back from a party that holds everything.
+        add_popularity(&mut m, "communism", -0.4).unwrap();
+        assert!((m["communism"] - 0.6).abs() < 1e-12 && (total(&m) - 1.).abs() < 1e-12);
+    }
+
+    #[test]
+    fn unknown_ideology_and_bad_numbers_are_rejected_without_changes() {
+        let mut m = map(&[("democratic", 1.0)]);
+        let before = m.clone();
+        assert!(add_popularity(&mut m, "monarchy_of_cheese", 0.1).is_err());
+        assert!(add_popularity(&mut m, "fascism", f64::NAN).is_err());
+        assert_eq!(m, before);
     }
 }

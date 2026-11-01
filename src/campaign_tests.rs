@@ -264,6 +264,81 @@ fn army_experience_adds_clamps_to_the_pool_cap_and_is_atomic() {
     assert_eq!(snap(&s), before, "a failing script must not leak partial experience");
 }
 
+/// The idea has a real effect while the timer runs and is gone afterwards; a
+/// failing application (unknown consumer) leaves neither idea nor timer.
+#[test]
+fn timed_idea_applies_now_and_is_removed_exactly_when_due() {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "boost".into(),
+        parse_pdx("modifier={army_attack_factor=0.5}").unwrap(),
+    );
+    cat.scripts.ideas.insert(
+        "inert".into(),
+        parse_pdx("modifier={not_implemented=1}").unwrap(),
+    );
+    let mut s = fixture();
+    let base = s.military.divisions[&1].derived.stats.soft_attack;
+    let apply = |s: &mut GameSession, script: &str| {
+        s.campaign_effects(
+            &Context::country("A"),
+            &parse_pdx(script).unwrap(),
+            "fixture",
+            &cat,
+            &Default::default(),
+        )
+    };
+    let before = snap(&s);
+    assert!(apply(&mut s, "add_timed_idea={idea=inert days=2}").is_err());
+    assert_eq!(snap(&s), before, "failed timed idea must leave no timer");
+    assert!(apply(&mut s, "add_timed_idea={idea=boost days=0}").is_err());
+    assert!(apply(&mut s, "add_timed_idea={idea=boost days=1.5}").is_err());
+
+    apply(&mut s, "add_timed_idea={idea=boost days=2}").unwrap();
+    let boosted = s.military.divisions[&1].derived.stats.soft_attack;
+    assert!((boosted - base * 1.5).abs() < 1e-9);
+    let (br, pr, rr) = (
+        crate::construction::BuildingRules::default(),
+        crate::production::ProductionRules::default(),
+        ResearchRules::default(),
+    );
+    for _ in 0..47 {
+        s.advance_one_hour(&br, &pr, &cat, &rr);
+    }
+    assert!(
+        (s.military.divisions[&1].derived.stats.soft_attack - boosted).abs() < 1e-9,
+        "still active just before the deadline"
+    );
+    for _ in 0..3 {
+        s.advance_one_hour(&br, &pr, &cat, &rr);
+    }
+    assert!(
+        (s.military.divisions[&1].derived.stats.soft_attack - base).abs() < 1e-9,
+        "removed once the timer ran out"
+    );
+}
+
+#[test]
+fn add_popularity_through_script_keeps_total_and_rejects_uninitialised_countries() {
+    let mut s = fixture();
+    assert!(run(&mut s, "add_popularity={ideology=fascism popularity=0.1}").is_err());
+    s.research.country_mut("A", 0, &Default::default());
+    run(
+        &mut s,
+        "set_popularities={democratic=50 fascism=30 neutrality=20} \
+         add_popularity={ideology=fascism popularity=0.1} \
+         add_popularity={ideology=communism popularity=0.05}",
+    )
+    .unwrap();
+    let p = s.research.countries["A"].context.party_popularities.clone().unwrap();
+    assert!((p.values().sum::<f64>() - 1.).abs() < 1e-9, "{p:?}");
+    assert!((p["communism"] - 0.05).abs() < 1e-9);
+    assert!(p["fascism"] > 0.4 - 1e-9 - 0.05 && p["fascism"] < 0.4);
+    let before = snap(&s);
+    assert!(run(&mut s, "add_popularity={ideology=fascism popularity=0.1} add_popularity={ideology=nonsense popularity=0.1}").is_err());
+    assert_eq!(snap(&s), before);
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {

@@ -1396,6 +1396,54 @@ impl<'a> Journal<'a> {
                 self.state.to_mut().extra_shared_slots.insert(id, new);
                 Ok(())
             }
+            // Applied exactly like `add_ideas` (same semantics checks); the idea
+            // is removed again by a scheduled `remove_ideas` after `days`.
+            "add_timed_idea" => {
+                fields(e, &["idea", "days"])?;
+                let b = body(e)?;
+                let id = field(b, "idea")?;
+                let days = self.num(field(b, "days")?, c)?;
+                if !days.is_finite() || days.fract() != 0. || !(1.0..=36500.).contains(&days) {
+                    return Err("Invalid idea duration".into());
+                }
+                let t = self.tag(c)?;
+                let idea = |key: &str| Entry {
+                    key: key.into(),
+                    operator: "=".into(),
+                    value: Some(crate::pdx::Value::Atom(id.into())),
+                    span: e.span.clone(),
+                };
+                self.effect(&idea("add_ideas"), c, source, d + 1)?;
+                let due = self
+                    .s
+                    .clock
+                    .elapsed_hours
+                    .checked_add(24 * days as u64)
+                    .ok_or("Idea timer overflow")?;
+                self.state.to_mut().schedule(
+                    due,
+                    Context::country(&t),
+                    source.into(),
+                    Payload::Effects(vec![idea("remove_ideas")]),
+                )?;
+                Ok(())
+            }
+            // Shifts one ideology; the others shrink or grow proportionally so
+            // the popularities still sum to 100 %.
+            "add_popularity" => {
+                fields(e, &["ideology", "popularity"])?;
+                let b = body(e)?;
+                let ideology = field(b, "ideology")?.to_owned();
+                let delta = self.num(field(b, "popularity")?, c)?;
+                let t = self.tag(c)?;
+                let map = self
+                    .research(&t)
+                    .context
+                    .party_popularities
+                    .as_mut()
+                    .ok_or("Party popularities are not initialised")?;
+                crate::research_script::add_popularity(map, &ideology, delta)
+            }
             "retire_character" => {
                 let t = self.tag(c)?;
                 let id = atom(e)?;
@@ -1440,43 +1488,8 @@ impl<'a> Journal<'a> {
             "add_ideas" | "remove_ideas" | "swap_ideas" | "set_technology" | "add_tech_bonus"
             | "set_research_slots" | "add_research_slot" => {
                 if matches!(e.key.as_str(), "add_ideas" | "remove_ideas" | "swap_ideas") {
-                    let ids: Vec<_> = if e.key == "swap_ideas" {
-                        fields(e, &["add_idea", "remove_idea"])?;
-                        body(e)?.iter().map(|e| atom(e)).collect::<Result<_, _>>()?
-                    } else if let Some(a) = e.atom() {
-                        vec![a]
-                    } else {
-                        body(e)?.iter().map(|e| e.key.as_str()).collect()
-                    };
-                    for id in ids {
-                        let raw = self.cat.scripts.ideas.get(id).ok_or("Unknown idea")?;
-                        for f in raw {
-                            if f.key == "modifier" {
-                                for v in body(f)? {
-                                    if crate::research::modifier_consumer(&v.key).is_none()
-                                        || v.atom()
-                                            .and_then(|v| v.parse::<f64>().ok())
-                                            .is_none_or(|v| !v.is_finite())
-                                    {
-                                        return Err(format!("Missing modifier consumer {}", v.key));
-                                    }
-                                }
-                            } else if ![
-                                "research_bonus",
-                                "picture",
-                                "name",
-                                "desc",
-                                "allowed",
-                                "visible",
-                                "cost",
-                                "removal_cost",
-                                "allowed_civil_war",
-                            ]
-                            .contains(&f.key.as_str())
-                            {
-                                return Err(format!("Unsupported idea semantics {}", f.key));
-                            }
-                        }
+                    for id in hoi4_mobile::script_validation::idea_ids(e)? {
+                        hoi4_mobile::script_validation::check_idea(self.cat, id)?;
                     }
                 }
                 let t = self.tag(c)?;
