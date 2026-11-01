@@ -274,6 +274,12 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                             "days",
                         ],
                     ),
+                    // Display-only effects: they change no game state and, for
+                    // `effect_tooltip`, the effects inside are never executed.
+                    "custom_effect_tooltip"
+                    | "show_ideas_tooltip"
+                    | "unlock_decision_tooltip"
+                    | "effect_tooltip" => Ok(()),
                     "mark_focus_tree_layout_dirty" => {
                         if atom(e)? != "yes" {
                             return Err("Layout invalidation requires yes".into());

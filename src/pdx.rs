@@ -278,6 +278,19 @@ fn entries(
             }
             _ => None,
         };
+        // `IF`/`ELSE`/`ELSE_IF` are the same constructs as the lowercase forms
+        // (the shipped 1.15.4 focus files use both spellings, about a quarter of
+        // all branches in uppercase). Normalise once here so every consumer,
+        // validator and executor sees a single spelling.
+        let key = if matches!(value, Some(Value::Block(_)))
+            && ["if", "else", "else_if"]
+                .iter()
+                .any(|k| key.eq_ignore_ascii_case(k))
+        {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        };
         out.push(Entry {
             key,
             operator,
@@ -343,6 +356,15 @@ pub fn names(b: &[Entry]) -> std::collections::BTreeSet<String> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn branch_keywords_are_normalised_but_other_keys_keep_their_case() {
+        let e = parse_pdx(
+            "IF={limit={a=b} x=1} ELSE_IF={y=1} ELSE={z=1} Else={w=1} ROOT={q=1} IF=yes Tag=GER",
+        )
+        .unwrap();
+        let keys: Vec<_> = e.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys, ["if", "else_if", "else", "else", "ROOT", "IF", "Tag"]);
+    }
     use super::*;
     #[test]
     fn compatible_outer_eof_preserves_children_and_reports_without_editing_source() {

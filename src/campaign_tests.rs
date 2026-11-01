@@ -156,6 +156,44 @@ fn campaign_unsupported_and_invalid_rewards_never_partially_commit() {
         assert_eq!(snap(&s), before);
     }
 }
+/// The shipped 1.15.4 focus files spell branches both `if` and `IF` (about a
+/// quarter of them in uppercase); both must behave identically.
+#[test]
+fn uppercase_branch_keywords_behave_exactly_like_lowercase() {
+    for (upper, lower) in [
+        (
+            "IF={limit={always=no} set_country_flag=wrong} ELSE_IF={limit={always=yes} set_country_flag=right} ELSE={set_country_flag=never}",
+            "if={limit={always=no} set_country_flag=wrong} else_if={limit={always=yes} set_country_flag=right} else={set_country_flag=never}",
+        ),
+        (
+            "If={limit={always=no} set_country_flag=wrong} Else={set_country_flag=fallback}",
+            "if={limit={always=no} set_country_flag=wrong} else={set_country_flag=fallback}",
+        ),
+    ] {
+        let mut a = fixture();
+        let mut b = fixture();
+        let before = snap(&a);
+        run(&mut a, upper).unwrap();
+        run(&mut b, lower).unwrap();
+        assert_ne!(snap(&a), before, "the branch effect must really run: {upper}");
+        assert_eq!(snap(&a), snap(&b), "{upper}");
+    }
+}
+
+/// Display-only effects change nothing and their inner effects never execute.
+#[test]
+fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {
+    let mut a = fixture();
+    let mut b = fixture();
+    run(
+        &mut a,
+        "add_manpower=1 custom_effect_tooltip=SOME_KEY show_ideas_tooltip=some_idea unlock_decision_tooltip=some_decision effect_tooltip={unknown_effect=yes add_manpower=999}",
+    )
+    .unwrap();
+    run(&mut b, "add_manpower=1").unwrap();
+    assert_eq!(snap(&a), snap(&b));
+}
+
 #[test]
 fn campaign_reward_changes_real_industry_inventory_and_country_flags() {
     let mut s = fixture();

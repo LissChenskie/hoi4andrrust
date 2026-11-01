@@ -847,6 +847,11 @@ impl<'a> Journal<'a> {
                 self.remove_decision(c, atom(e)?, e.key == "remove_mission")
             }
             "add_days_remove" | "add_days_mission_timeout" => self.adjust_decision_timer(c, e),
+            // Display-only effects; see the matching arm in script_validation.
+            "custom_effect_tooltip"
+            | "show_ideas_tooltip"
+            | "unlock_decision_tooltip"
+            | "effect_tooltip" => Ok(()),
             "hidden_effect" => self.execute(body(e)?, c, source, d + 1),
             "else" | "else_if" => Err("Orphan branch".into()),
             "random_list" => {

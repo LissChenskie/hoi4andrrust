@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-const CACHE_VERSION: u32 = 15;
+const CACHE_VERSION: u32 = 17;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Installation {
     pub version: Option<String>,
@@ -383,6 +383,21 @@ fn collect_sources(b: &[Entry], kind: &str, path: &str, scripts: &mut ResearchSc
                 let Some(id) = atom(raw, "id") else {
                     continue;
                 };
+                // Full definition of every event. Lookups by ID (focus rewards,
+                // `country_event`) need the whole event; the per-option and
+                // `immediate` records below only keep fragments, so events
+                // without an `immediate` block were previously unknown.
+                scripts.sources.insert(
+                    format!("event:{id}"),
+                    ScriptSource {
+                        kind: kind.into(),
+                        id: id.to_owned(),
+                        source: format!("{path}:{}", e.span.line),
+                        conditions: block(raw, "trigger").unwrap_or(&[]).to_vec(),
+                        effects: block(raw, "immediate").unwrap_or(&[]).to_vec(),
+                        raw: raw.to_vec(),
+                    },
+                );
                 if let Some(effects) = block(raw, "immediate") {
                     scripts.sources.insert(
                         format!("event:{id}:immediate"),
@@ -1690,6 +1705,25 @@ mod tests {
                 .iter()
                 .any(|v| v == "event:missing")
         );
+    }
+    #[test]
+    fn focus_with_option_only_event_uppercase_if_and_tooltips_is_fully_resolved() {
+        let f = fixture();
+        f.put(
+            "common/national_focus/test.txt",
+            "focus_tree={id=t focus={id=a completion_reward={IF={limit={always=yes} add_political_power=1} custom_effect_tooltip=SOME_TT country_event={id=opt_only}}}}",
+        );
+        // No `immediate` block: previously such events were "unknown".
+        f.put(
+            "events/test.txt",
+            "country_event={id=opt_only is_triggered_only=yes option={name=opt_only.a add_political_power=1}}",
+        );
+        let data = ResearchDataset::load(&f.0, false).unwrap();
+        let report = crate::focus_compat::report(&data);
+        let node = &report["focuses"][0];
+        assert_eq!(node["resolved"], true, "{node}");
+        assert!(node["missing_dependencies"].as_array().unwrap().is_empty(), "{node}");
+        assert!(node["effect_blockers"].as_array().unwrap().is_empty(), "{node}");
     }
     #[test]
     fn native_modifier_directory_and_political_defines_are_in_compiled_registry() {

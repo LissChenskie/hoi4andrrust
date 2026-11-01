@@ -104,6 +104,19 @@ impl FrameProfiler {
         }
         let total = self.frame_start.elapsed().as_secs_f64() * 1000.0;
         self.finish_frame(total);
+        if self.frames % LOG_EVERY_FRAMES == 0 {
+            self.append_log();
+        }
+    }
+
+    fn append_log(&self) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("perf.log")
+        {
+            let _ = writeln!(f, "--- frame {}\n{}", self.frames, self.report().join("\n"));
+        }
     }
 
     pub fn finish_frame(&mut self, total_ms: f64) {
@@ -113,15 +126,6 @@ impl FrameProfiler {
         }
         push(&mut self.totals, total_ms);
         self.frames += 1;
-        if self.frames % LOG_EVERY_FRAMES == 0 {
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("perf.log")
-            {
-                let _ = writeln!(f, "--- frame {}\n{}", self.frames, self.report().join("\n"));
-            }
-        }
     }
 
     /// Lines for the overlay and the log: average and worst over the last

@@ -30,7 +30,9 @@ fn traverse(
             if let Some(target) = target {
                 let key = format!("event:{target}:immediate");
                 refs.insert(key.clone());
-                if !cat.sources.contains_key(&key) {
+                if !cat.sources.contains_key(&key)
+                    && !cat.sources.contains_key(&format!("event:{target}"))
+                {
                     missing.insert(key);
                 }
             } else {
