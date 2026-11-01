@@ -190,10 +190,13 @@ impl GameSession {
                 .and_then(|tag| self.research.country(tag))
                 .map_or(0.0, |c| c.modifier("global_building_slots_factor"));
             if let Some(base) = self.base_shared_slots.get(id) {
-                state.shared_building_slots = (*base as f64 * (1.0 + bonus).max(0.0))
+                // Assumption (unverified against the original): the slot factor
+                // scales the base slots only; extra slots from scripts add on top.
+                let scaled = (*base as f64 * (1.0 + bonus).max(0.0))
                     .floor()
-                    .clamp(0.0, u16::MAX as f64)
-                    as u16;
+                    .clamp(0.0, u16::MAX as f64) as u16;
+                let extra = self.campaign.extra_shared_slots.get(id).copied().unwrap_or(0);
+                state.shared_building_slots = scaled.saturating_add(extra);
             }
         }
     }

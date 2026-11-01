@@ -38,6 +38,9 @@ pub enum WarTransition {
         peace_b: bool,
     },
 }
+/// Upper bound of a country's army experience pool.
+pub const ARMY_XP_CAP: f64 = 500.;
+
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct Warfare {
     #[serde(default)]
@@ -540,7 +543,7 @@ impl Warfare {
     fn grant_army_xp(&mut self, country: &str, amount: f64) {
         if amount.is_finite() && amount > 0. {
             if let Some(army) = self.countries.get_mut(country) {
-                army.army_xp = (army.army_xp + amount).min(500.);
+                army.army_xp = (army.army_xp + amount).min(ARMY_XP_CAP);
             }
         }
     }

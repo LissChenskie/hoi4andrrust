@@ -223,6 +223,47 @@ fn scope_iterators_select_by_owner_controller_and_other_country() {
     assert!(flags(&s, "A").contains("everyone") && flags(&s, "B").contains("everyone"));
 }
 
+/// The effect changes the same slot count construction uses as its limit, only
+/// in state scope, is atomic with the rest of the script, and survives a save.
+#[test]
+fn extra_shared_building_slots_change_the_construction_limit_atomically() {
+    let mut s = fixture();
+    s.base_shared_slots.insert(2, 4);
+    s.refresh_research_building_slots();
+    let before = s.world.states[&2].shared_building_slots;
+    assert_eq!(before, 4);
+    run(&mut s, "2={add_extra_state_shared_building_slots=3} 2={add_extra_state_shared_building_slots=2}").unwrap();
+    assert_eq!(s.world.states[&2].shared_building_slots, before + 5);
+    // Country scope is an error and a failing script leaves nothing behind.
+    let snapshot = snap(&s);
+    assert!(run(&mut s, "2={add_extra_state_shared_building_slots=1} add_extra_state_shared_building_slots=1").is_err());
+    assert_eq!(snap(&s), snapshot);
+    // Going below zero is rejected, never wrapped.
+    assert!(run(&mut s, "2={add_extra_state_shared_building_slots=-100}").is_err());
+    let json = serde_json::to_string(&s).unwrap();
+    let mut back: GameSession = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.world.states[&2].shared_building_slots, before + 5);
+    // A later recomputation (research, occupation) must keep the extra slots.
+    back.refresh_research_building_slots();
+    assert_eq!(back.world.states[&2].shared_building_slots, before + 5);
+}
+
+#[test]
+fn army_experience_adds_clamps_to_the_pool_cap_and_is_atomic() {
+    let mut s = fixture();
+    s.military.countries.get_mut("A").unwrap().army_xp = 100.;
+    run(&mut s, "army_experience=50 army_experience=25").unwrap();
+    assert_eq!(s.military.countries["A"].army_xp, 175.);
+    run(&mut s, "army_experience=100000").unwrap();
+    assert_eq!(s.military.countries["A"].army_xp, crate::warfare::ARMY_XP_CAP);
+    run(&mut s, "army_experience=-100000").unwrap();
+    assert_eq!(s.military.countries["A"].army_xp, 0.);
+    s.military.countries.get_mut("A").unwrap().army_xp = 40.;
+    let before = snap(&s);
+    assert!(run(&mut s, "army_experience=10 army_experience=nonsense").is_err());
+    assert_eq!(snap(&s), before, "a failing script must not leak partial experience");
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {

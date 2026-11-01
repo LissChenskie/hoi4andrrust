@@ -399,6 +399,8 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                     | "set_political_power"
                     | "set_stability"
                     | "set_war_support"
+                    | "add_extra_state_shared_building_slots"
+                    | "army_experience"
                     | "set_state_flag"
                     | "clr_state_flag"
                     | "retire_character"

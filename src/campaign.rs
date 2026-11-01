@@ -111,6 +111,11 @@ pub struct CampaignState {
     pub politics: crate::politics::PoliticalRuntime,
     #[serde(default)]
     pub dynamic_modifiers: BTreeMap<String, BTreeMap<String, DynamicModifier>>,
+    /// Permanent extra shared building slots per state from
+    /// `add_extra_state_shared_building_slots`. A separate layer because the
+    /// total is recomputed from the base value after every commit.
+    #[serde(default)]
+    pub extra_shared_slots: BTreeMap<u32, u16>,
     pub countries: BTreeMap<String, CountryPolitics>,
     pub state_flags: BTreeMap<u32, BTreeSet<String>>,
     pub queue: BTreeMap<u64, Scheduled>,
@@ -129,6 +134,7 @@ impl Default for CampaignState {
             on_actions: Default::default(),
             focuses: Default::default(),
             politics: Default::default(),
+            extra_shared_slots: BTreeMap::new(),
             dynamic_modifiers: Default::default(),
             countries: BTreeMap::new(),
             state_flags: BTreeMap::new(),
@@ -336,6 +342,8 @@ struct Journal<'a> {
     research: BTreeMap<String, CountryResearch>,
     stock: BTreeMap<String, crate::production::CountryProduction>,
     men: BTreeMap<String, u64>,
+    /// Staged army experience pools, committed with `men`.
+    xp: BTreeMap<String, f64>,
     economy: BTreeMap<u32, crate::state::StateEconomy>,
     retired: BTreeSet<String>,
     globals: BTreeSet<String>,
@@ -355,6 +363,7 @@ impl<'a> Journal<'a> {
             research: BTreeMap::new(),
             stock: BTreeMap::new(),
             men: BTreeMap::new(),
+            xp: BTreeMap::new(),
             economy: BTreeMap::new(),
             retired: BTreeSet::new(),
             globals: s.research.global_flags.clone(),
@@ -1278,6 +1287,24 @@ impl<'a> Journal<'a> {
                 self.men.insert(t, integral(old, n)?);
                 Ok(())
             }
+            // Army experience only: the simulation has no navy or air experience
+            // pools, so those effects stay unsupported instead of being faked.
+            "army_experience" => {
+                let t = self.tag(c)?;
+                let n = self.num(atom(e)?, c)?;
+                if !n.is_finite() {
+                    return Err("Invalid experience amount".into());
+                }
+                let old = self
+                    .xp
+                    .get(&t)
+                    .copied()
+                    .or_else(|| self.s.military.countries.get(&t).map(|a| a.army_xp))
+                    .ok_or("Missing army")?;
+                self.xp
+                    .insert(t, (old + n).clamp(0., crate::warfare::ARMY_XP_CAP));
+                Ok(())
+            }
             "add_equipment_to_stockpile" => {
                 let t = self.tag(c)?;
                 let b = body(e)?;
@@ -1353,6 +1380,20 @@ impl<'a> Journal<'a> {
                     _ => return Err("Unsupported building".into()),
                 };
                 *v = u16::try_from(integral(u64::from(*v), n)?).map_err(|_| "Building overflow")?;
+                Ok(())
+            }
+            // Permanent extra shared slots on the state in scope. The total that
+            // construction reads is rebuilt in refresh_research_building_slots.
+            "add_extra_state_shared_building_slots" => {
+                let Scope::State(id) = c.scope else {
+                    return Err("State required".into());
+                };
+                self.s.world.states.get(&id).ok_or("State missing")?;
+                let n = self.num(atom(e)?, c)?;
+                let old = self.state.extra_shared_slots.get(&id).copied().unwrap_or(0);
+                let new = u16::try_from(integral(u64::from(old), n)?)
+                    .map_err(|_| "Building slot overflow")?;
+                self.state.to_mut().extra_shared_slots.insert(id, new);
                 Ok(())
             }
             "retire_character" => {
@@ -1494,6 +1535,7 @@ impl GameSession {
             research,
             stock,
             men,
+            xp,
             economy,
             retired,
             globals,
@@ -1515,6 +1557,9 @@ impl GameSession {
         }
         for (t, n) in men {
             self.military.countries.get_mut(&t).unwrap().manpower_pool = n;
+        }
+        for (t, v) in xp {
+            self.military.countries.get_mut(&t).unwrap().army_xp = v;
         }
         for (id, a) in economy {
             self.world.states.get_mut(&id).unwrap().economy = a;
