@@ -339,6 +339,50 @@ fn add_popularity_through_script_keeps_total_and_rejects_uninitialised_countries
     assert_eq!(snap(&s), before);
 }
 
+/// `consumer_goods_factor` from an idea changes the real number of consumer
+/// goods factories, and the stored value follows the idea's removal.
+#[test]
+fn consumer_goods_factor_idea_changes_construction_capacity() {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "austerity".into(),
+        parse_pdx("modifier={consumer_goods_factor=-0.5}").unwrap(),
+    );
+    let mut s = fixture();
+    let economy = &mut s.world.states.get_mut(&2).unwrap().economy;
+    economy.civilian_factories = 12;
+    economy.military_factories = 8;
+    s.construction.entry("A".into()).or_default().policy.consumer_goods_fraction = 0.5;
+    let goods = |s: &GameSession| {
+        crate::construction::country_capacity(&s.world, "A", s.construction["A"].policy)
+            .unwrap()
+            .consumer_goods
+    };
+    let before = goods(&s);
+    assert!(before > 0);
+    let apply = |s: &mut GameSession, script: &str| {
+        s.campaign_effects(
+            &Context::country("A"),
+            &parse_pdx(script).unwrap(),
+            "fixture",
+            &cat,
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    apply(&mut s, "add_ideas=austerity");
+    assert_eq!(goods(&s), before / 2, "factor -50% halves the goods factories (floored)");
+    apply(&mut s, "remove_ideas=austerity");
+    assert_eq!(goods(&s), before);
+    // Saves written before this field existed still load.
+    let mut json = serde_json::to_value(&s).unwrap();
+    json["construction"]["A"]["policy"]
+        .as_object_mut()
+        .unwrap()
+        .remove("consumer_goods_factor");
+    let _: GameSession = serde_json::from_value(json).unwrap();
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {

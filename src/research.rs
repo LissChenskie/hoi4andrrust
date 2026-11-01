@@ -91,6 +91,7 @@ pub fn modifier_consumer(key: &str) -> Option<&'static str> {
     ) {
         Some("производство")
     } else if key == "global_building_slots_factor"
+        || key == "consumer_goods_factor"
         || key == "production_speed_buildings_factor"
         || [
             "infrastructure",

@@ -710,6 +710,11 @@ pub struct CountryConstructionPolicy {
     pub consumer_goods_fraction: f32,
     pub trade_civilian_factories: u32,
     pub construction_speed_bonus: f32,
+    /// Sum of the country's `consumer_goods_factor` modifiers (ideas, laws).
+    /// Refreshed by the session from research modifiers; never set by the
+    /// player. Scales the consumer goods share multiplicatively: (1 + factor).
+    #[serde(default)]
+    pub consumer_goods_factor: f32,
 }
 
 impl Default for CountryConstructionPolicy {
@@ -718,6 +723,7 @@ impl Default for CountryConstructionPolicy {
             consumer_goods_fraction: 0.0,
             trade_civilian_factories: 0,
             construction_speed_bonus: 0.0,
+            consumer_goods_factor: 0.0,
         }
     }
 }
@@ -735,7 +741,14 @@ pub fn country_capacity(
     tag: &str,
     policy: CountryConstructionPolicy,
 ) -> Option<ConstructionCapacity> {
-    country_capacity_with_goods_modifiers(world, tag, policy, 0.0, &[], 0.0)
+    country_capacity_with_goods_modifiers(
+        world,
+        tag,
+        policy,
+        0.0,
+        &[policy.consumer_goods_factor],
+        0.0,
+    )
 }
 
 /// Post-2023 HOI4 consumer-goods method: sum expected values, multiply factor
@@ -1744,6 +1757,7 @@ mod tests {
                 consumer_goods_fraction: 0.5,
                 trade_civilian_factories: 2,
                 construction_speed_bonus: 0.0,
+                consumer_goods_factor: 0.0,
             },
         )
         .unwrap();
@@ -1859,6 +1873,7 @@ mod tests {
                     .consumer_goods_fraction(),
                 trade_civilian_factories: 2,
                 construction_speed_bonus: 0.0,
+                consumer_goods_factor: 0.0,
             },
         )
         .unwrap();
@@ -1873,6 +1888,7 @@ mod tests {
                     .consumer_goods_fraction(),
                 trade_civilian_factories: 2,
                 construction_speed_bonus: 0.0,
+                consumer_goods_factor: 0.0,
             },
         )
         .unwrap();

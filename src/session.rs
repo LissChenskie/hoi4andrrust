@@ -199,6 +199,15 @@ impl GameSession {
                 state.shared_building_slots = scaled.saturating_add(extra);
             }
         }
+        // Same refresh points as the slot total: idea/law changes reach the
+        // consumer goods share immediately instead of at the next daily tick.
+        for (tag, country) in &mut self.construction {
+            country.policy.consumer_goods_factor = self
+                .research
+                .country(tag)
+                .map_or(0.0, |c| c.modifier("consumer_goods_factor"))
+                as f32;
+        }
     }
     /// Research component only. A full campaign save is a separate, still missing subsystem.
     pub fn save_research_snapshot(
@@ -589,7 +598,12 @@ impl GameSession {
         for tag in &tags {
             let effective = buildings.for_research(self.research.country(tag), catalogue);
             let modifiers = ConstructionModifiers::from_research(self.research.country(tag));
+            let goods_factor = self
+                .research
+                .country(tag)
+                .map_or(0.0, |c| c.modifier("consumer_goods_factor")) as f32;
             let country = self.construction.entry(tag.clone()).or_default();
+            country.policy.consumer_goods_factor = goods_factor;
             let removed = construction::advance_day_by_order(
                 &mut self.world,
                 tag,
