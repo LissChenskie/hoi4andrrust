@@ -500,6 +500,96 @@ fn parse_state_history_field(
     Ok(owners)
 }
 
+/// Cores and claims of every state at `map_date`. Undated `add_*`/`remove_*`
+/// entries apply first, then dated blocks up to the date in date order, like
+/// the owner field. `if` blocks inside state history are not evaluated here.
+#[allow(clippy::type_complexity)]
+pub fn parse_state_relations(
+    source: &str,
+    map_date: (u32, u32, u32),
+) -> Result<
+    HashMap<
+        u32,
+        (
+            std::collections::BTreeSet<String>,
+            std::collections::BTreeSet<String>,
+        ),
+    >,
+    String,
+> {
+    use std::collections::BTreeSet;
+    fn apply(fields: &[Entry], cores: &mut BTreeSet<String>, claims: &mut BTreeSet<String>) {
+        for field in fields {
+            if let Entry::Pair(key, Value::Atom(tag)) = field {
+                match key.as_str() {
+                    "add_core_of" => {
+                        cores.insert(tag.clone());
+                    }
+                    "remove_core_of" => {
+                        cores.remove(tag);
+                    }
+                    "add_claim_by" => {
+                        claims.insert(tag.clone());
+                    }
+                    "remove_claim_by" => {
+                        claims.remove(tag);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let tokens = tokenize(source)?;
+    let mut cursor = 0;
+    let root = parse_entries(&tokens, &mut cursor, false)?;
+    let mut out = HashMap::new();
+    for entry in root {
+        let Entry::Pair(key, Value::Block(state_fields)) = entry else {
+            continue;
+        };
+        if key != "state" {
+            continue;
+        }
+        let mut state_id = None;
+        let mut history = None;
+        for field in &state_fields {
+            match field {
+                Entry::Pair(name, value) if name == "id" => {
+                    state_id = Some(numeric_atom(value, "state ID")?);
+                }
+                Entry::Pair(name, Value::Block(entries)) if name == "history" => {
+                    history = Some(entries.as_slice());
+                }
+                _ => {}
+            }
+        }
+        let (Some(id), Some(entries)) = (state_id, history) else {
+            continue;
+        };
+        let (mut cores, mut claims) = (BTreeSet::new(), BTreeSet::new());
+        apply(entries, &mut cores, &mut claims);
+        let mut dated: Vec<_> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                let Entry::Pair(key, Value::Block(fields)) = entry else {
+                    return None;
+                };
+                let date = parse_history_date(key)?;
+                (date <= map_date).then_some(((date, index), fields))
+            })
+            .collect();
+        dated.sort_by_key(|(key, _)| *key);
+        for (_, fields) in dated {
+            apply(fields, &mut cores, &mut claims);
+        }
+        if !cores.is_empty() || !claims.is_empty() {
+            out.insert(id, (cores, claims));
+        }
+    }
+    Ok(out)
+}
+
 /// Parse state-category definitions and their base shared building-slot counts.
 pub fn parse_state_categories(source: &str) -> Result<HashMap<String, u16>, String> {
     let tokens = tokenize(source)?;
@@ -664,6 +754,23 @@ pub fn load_state_membership_at(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relations_apply_defaults_then_dated_blocks_up_to_the_date() {
+        let src = "state={id=7 history={add_core_of=AAA add_claim_by=CCC \
+                   1930.1.1={add_core_of=BBB} 1939.1.1={remove_core_of=AAA add_core_of=DDD} \
+                   1936.1.1={remove_claim_by=CCC add_claim_by=EEE}}}";
+        let at = |d| super::parse_state_relations(src, d).unwrap();
+        let r = at((1936, 1, 1));
+        let (cores, claims) = &r[&7];
+        assert_eq!(cores.iter().map(String::as_str).collect::<Vec<_>>(), ["AAA", "BBB"]);
+        assert_eq!(claims.iter().map(String::as_str).collect::<Vec<_>>(), ["EEE"]);
+        let (cores, _) = &at((1940, 1, 1))[&7];
+        assert_eq!(cores.iter().map(String::as_str).collect::<Vec<_>>(), ["BBB", "DDD"]);
+        assert!(super::parse_state_relations("state={id=8 history={owner=A}}", (1936, 1, 1))
+            .unwrap()
+            .is_empty());
+    }
+
     use super::{parse_state_categories, parse_state_file};
 
     #[test]

@@ -350,6 +350,8 @@ struct Journal<'a> {
     /// Staged army experience pools, committed with `men`.
     xp: BTreeMap<String, f64>,
     economy: BTreeMap<u32, crate::state::StateEconomy>,
+    /// Staged (cores, claims) per touched state, committed with `economy`.
+    relations: BTreeMap<u32, (BTreeSet<String>, BTreeSet<String>)>,
     retired: BTreeSet<String>,
     globals: BTreeSet<String>,
     budget: usize,
@@ -370,6 +372,7 @@ impl<'a> Journal<'a> {
             men: BTreeMap::new(),
             xp: BTreeMap::new(),
             economy: BTreeMap::new(),
+            relations: BTreeMap::new(),
             retired: BTreeSet::new(),
             globals: s.research.global_flags.clone(),
             budget: STEPS,
@@ -398,6 +401,57 @@ impl<'a> Journal<'a> {
             }
             _ => Err("Existing active country scope required".into()),
         }
+    }
+    fn state_cores(&self, id: u32) -> Option<&BTreeSet<String>> {
+        self.relations
+            .get(&id)
+            .map(|r| &r.0)
+            .or_else(|| self.s.world.states.get(&id).map(|s| &s.cores))
+    }
+    fn state_claims(&self, id: u32) -> Option<&BTreeSet<String>> {
+        self.relations
+            .get(&id)
+            .map(|r| &r.1)
+            .or_else(|| self.s.world.states.get(&id).map(|s| &s.claims))
+    }
+    fn relations_mut(
+        &mut self,
+        id: u32,
+    ) -> Result<&mut (BTreeSet<String>, BTreeSet<String>), String> {
+        if !self.relations.contains_key(&id) {
+            let s = self.s.world.states.get(&id).ok_or("State missing")?;
+            self.relations.insert(id, (s.cores.clone(), s.claims.clone()));
+        }
+        Ok(self.relations.get_mut(&id).expect("inserted above"))
+    }
+    /// A country argument: a scope keyword (ROOT, THIS, FROM, PREV, owner,
+    /// controller) or a tag. Tags need not exist on the map: cores and claims
+    /// of countries that are not in play yet are legitimate.
+    fn country_arg(&self, raw: &str, c: &Context) -> Result<String, String> {
+        if ["ROOT", "THIS", "FROM", "PREV", "owner", "controller"].contains(&raw) {
+            return match self.scope(raw, c)? {
+                Scope::Country(t) => Ok(t),
+                _ => Err(format!("Country required for {raw}")),
+            };
+        }
+        if (1..=8).contains(&raw.len())
+            && raw
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
+            Ok(raw.to_owned())
+        } else {
+            Err(format!("Invalid country {raw}"))
+        }
+    }
+    /// A state ID argument of a country-scope effect.
+    fn state_arg(&mut self, raw: &str, c: &Context) -> Result<u32, String> {
+        let n = self.num(raw, c)?;
+        if !n.is_finite() || n.fract() != 0. || n < 1. || n > f64::from(u32::MAX) {
+            return Err(format!("Invalid state {raw}"));
+        }
+        let id = n as u32;
+        self.s.world.states.contains_key(&id).then_some(id).ok_or_else(|| format!("Unknown state {id}"))
     }
     /// Summed modifier of a country, seeing changes staged by this script.
     fn modifier_of(&self, t: &str, key: &str) -> f64 {
@@ -763,6 +817,40 @@ impl<'a> Journal<'a> {
                         self.research(&tag).context.original_tag == target
                     }
                 }
+                "is_core_of" | "is_claimed_by" | "is_owned_by" | "is_controlled_by"
+                | "is_owned_and_controlled_by" => {
+                    let Scope::State(id) = c.scope else {
+                        return Err("State required".into());
+                    };
+                    let tag = self.country_arg(atom(e)?, c)?;
+                    let owned = self.s.world.states.get(&id).and_then(|s| s.owner.as_deref())
+                        == Some(tag.as_str());
+                    let controlled = self.s.world.state_controller(id) == Some(tag.as_str());
+                    match e.key.as_str() {
+                        "is_core_of" => self.state_cores(id).is_some_and(|s| s.contains(&tag)),
+                        "is_claimed_by" => self.state_claims(id).is_some_and(|s| s.contains(&tag)),
+                        "is_owned_by" => owned,
+                        "is_controlled_by" => controlled,
+                        _ => owned && controlled,
+                    }
+                }
+                "owns_state" | "controls_state" => {
+                    let t = self.tag(c)?;
+                    let n = self.num(atom(e)?, c)?;
+                    if !n.is_finite() || n.fract() != 0. || n < 1. || n > f64::from(u32::MAX) {
+                        return Err(format!("Invalid state {n}"));
+                    }
+                    let id = n as u32;
+                    // An unknown state is simply not owned or controlled.
+                    if !self.s.world.states.contains_key(&id) {
+                        false
+                    } else if e.key == "owns_state" {
+                        self.s.world.states.get(&id).and_then(|s| s.owner.as_deref())
+                            == Some(t.as_str())
+                    } else {
+                        self.s.world.state_controller(id) == Some(t.as_str())
+                    }
+                }
                 "has_state_flag" => {
                     let flag = atom(e)?;
                     let Scope::State(id) = c.scope else {
@@ -902,6 +990,7 @@ impl<'a> Journal<'a> {
                     s.owner.as_deref() == Some(t) && world.state_controller(s.id) == Some(t)
                 }
                 ("state", None) => true,
+                ("core_state", Some(t)) => self.state_cores(s.id).is_some_and(|c| c.contains(t)),
                 _ => false,
             })
             .map(|s| Scope::State(s.id))
@@ -1463,6 +1552,32 @@ impl<'a> Journal<'a> {
                     .ok_or("Party popularities are not initialised")?;
                 crate::research_script::add_popularity(map, &ideology, delta)
             }
+            "add_core_of" | "remove_core_of" | "add_claim_by" | "remove_claim_by" => {
+                let Scope::State(id) = c.scope else {
+                    return Err("State required".into());
+                };
+                let tag = self.country_arg(atom(e)?, c)?;
+                let (cores, claims) = self.relations_mut(id)?;
+                match e.key.as_str() {
+                    "add_core_of" => cores.insert(tag),
+                    "remove_core_of" => cores.remove(&tag),
+                    "add_claim_by" => claims.insert(tag),
+                    _ => claims.remove(&tag),
+                };
+                Ok(())
+            }
+            "add_state_core" | "remove_state_core" | "add_state_claim" | "remove_state_claim" => {
+                let tag = self.tag(c)?;
+                let id = self.state_arg(atom(e)?, c)?;
+                let (cores, claims) = self.relations_mut(id)?;
+                match e.key.as_str() {
+                    "add_state_core" => cores.insert(tag),
+                    "remove_state_core" => cores.remove(&tag),
+                    "add_state_claim" => claims.insert(tag),
+                    _ => claims.remove(&tag),
+                };
+                Ok(())
+            }
             "retire_character" => {
                 let t = self.tag(c)?;
                 let id = atom(e)?;
@@ -1569,6 +1684,7 @@ impl GameSession {
             men,
             xp,
             economy,
+            relations,
             retired,
             globals,
             ..
@@ -1595,6 +1711,11 @@ impl GameSession {
         }
         for (id, a) in economy {
             self.world.states.get_mut(&id).unwrap().economy = a;
+        }
+        for (id, (cores, claims)) in relations {
+            let state = self.world.states.get_mut(&id).unwrap();
+            state.cores = cores;
+            state.claims = claims;
         }
         for id in retired {
             self.military.command.commanders.remove(&id);

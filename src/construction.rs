@@ -1455,6 +1455,8 @@ mod tests {
                     infrastructure: 5,
                     ..StateEconomy::default()
                 },
+                cores: Default::default(),
+                claims: Default::default(),
             },
         );
         World {
@@ -1563,6 +1565,8 @@ mod tests {
                     infrastructure: 0,
                     ..StateEconomy::default()
                 },
+                cores: Default::default(),
+                claims: Default::default(),
             },
         );
         let mut queues = ConstructionQueues::new();
@@ -1718,6 +1722,8 @@ mod tests {
                     civilian_factories: 18,
                     ..StateEconomy::default()
                 },
+                cores: Default::default(),
+                claims: Default::default(),
             },
         );
         let rules = BuildingRules::default();
@@ -2087,6 +2093,8 @@ mod tests {
                 province_ids: vec![],
                 shared_building_slots: 5,
                 economy: StateEconomy::default(),
+                cores: Default::default(),
+                claims: Default::default(),
             },
         );
         world.countries.get_mut("TST").unwrap().state_ids.insert(2);

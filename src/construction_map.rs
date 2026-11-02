@@ -172,6 +172,8 @@ mod tests {
                         civilian_factories: civ,
                         ..Default::default()
                     },
+                    cores: Default::default(),
+                    claims: Default::default(),
                 },
             );
         }

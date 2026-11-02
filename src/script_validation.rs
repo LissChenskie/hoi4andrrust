@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 const STEPS: usize = 10000;
 /// Scope iterators the executor implements. Validator, executor and the
 /// compatibility report all use this one list so they cannot disagree.
-/// `core` iterators are absent on purpose: the simulation has no core data.
+/// Core iterators read `State::cores`, loaded from the state history files.
 pub const SCOPE_ITERATORS: &[&str] = &[
     "every_country",
     "random_country",
@@ -20,6 +20,8 @@ pub const SCOPE_ITERATORS: &[&str] = &[
     "random_controlled_state",
     "every_owned_controlled_state",
     "random_owned_controlled_state",
+    "every_core_state",
+    "random_core_state",
     "every_state",
     "random_state",
 ];
@@ -454,6 +456,14 @@ pub fn preflight(b: &[Entry], cat: &ResearchCatalogue) -> Result<(), String> {
                     | "set_stability"
                     | "set_war_support"
                     | "add_extra_state_shared_building_slots"
+                    | "add_core_of"
+                    | "remove_core_of"
+                    | "add_claim_by"
+                    | "remove_claim_by"
+                    | "add_state_core"
+                    | "remove_state_core"
+                    | "add_state_claim"
+                    | "remove_state_claim"
                     | "army_experience"
                     | "set_state_flag"
                     | "clr_state_flag"

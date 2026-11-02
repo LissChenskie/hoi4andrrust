@@ -17,6 +17,12 @@ pub struct State {
     pub province_ids: Vec<u32>,
     pub shared_building_slots: u16,
     pub economy: StateEconomy,
+    /// Countries holding a core on this state (`add_core_of`).
+    #[serde(default)]
+    pub cores: BTreeSet<String>,
+    /// Countries holding a claim on this state (`add_claim_by`).
+    #[serde(default)]
+    pub claims: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -110,6 +116,8 @@ impl World {
                         .copied()
                         .unwrap_or(0),
                     economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
+                    cores: BTreeSet::new(),
+                    claims: BTreeSet::new(),
                 })
                 .province_ids
                 .push(province_id);
@@ -124,6 +132,8 @@ impl World {
                 province_ids: Vec::new(),
                 shared_building_slots: shared_slots_by_state.get(&state_id).copied().unwrap_or(0),
                 economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
+                cores: BTreeSet::new(),
+                claims: BTreeSet::new(),
             });
             state.owner = Some(owner.clone());
         }
@@ -141,6 +151,8 @@ impl World {
                         .copied()
                         .unwrap_or(0),
                     economy: economy_by_state.get(&state_id).copied().unwrap_or_default(),
+                    cores: BTreeSet::new(),
+                    claims: BTreeSet::new(),
                 })
                 .name = Some(name.clone());
         }

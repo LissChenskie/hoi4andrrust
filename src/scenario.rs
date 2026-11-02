@@ -89,6 +89,7 @@ pub fn load_at(
     let mut owners = HashMap::new();
     let mut controllers = HashMap::new();
     let mut victory_points = HashMap::new();
+    let mut relations = HashMap::new();
     if let Ok(entries) = fs::read_dir(&state_directory) {
         let mut paths: Vec<_> = entries
             .flatten()
@@ -101,6 +102,7 @@ pub fn load_at(
             owners.extend(state::parse_state_owners(&source, date)?);
             controllers.extend(state::parse_state_controllers(&source, date)?);
             victory_points.extend(state::parse_state_victory_points(&source, date)?);
+            relations.extend(state::parse_state_relations(&source, date)?);
         }
     }
     for province in membership.state_by_province.keys() {
@@ -118,6 +120,12 @@ pub fn load_at(
         &membership.shared_slots_by_state,
     );
     world.resources_by_state = membership.resources_by_state.into_iter().collect();
+    for (id, (cores, claims)) in relations {
+        if let Some(state) = world.states.get_mut(&id) {
+            state.cores = cores;
+            state.claims = claims;
+        }
+    }
     for &id in geography.provinces.keys() {
         world.provinces.entry(id).or_insert(Province {
             control_revision: 0,

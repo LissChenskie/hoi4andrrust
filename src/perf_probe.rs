@@ -87,3 +87,39 @@ fn perf_probe_country_economy_cost() {
         );
     }
 }
+
+/// Real-data check of the state relations parser: every shipped state history
+/// file must parse, and 1936 cores must be plausible. Needs HOI4_DATA.
+#[test]
+#[ignore]
+fn real_state_history_cores_parse_at_the_1936_bookmark() {
+    let root = std::env::var("HOI4_DATA").expect("set HOI4_DATA");
+    let dir = std::path::Path::new(&root).join("history/states");
+    let (mut files, mut states, mut errors) = (0, 0, Vec::new());
+    let mut per_tag = std::collections::BTreeMap::<String, u32>::new();
+    let mut claims_total = 0;
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let source = std::fs::read_to_string(entry.path()).unwrap();
+        files += 1;
+        match crate::state::parse_state_relations(&source, (1936, 1, 1)) {
+            Ok(map) => {
+                for (cores, claims) in map.values() {
+                    states += 1;
+                    claims_total += claims.len();
+                    for tag in cores {
+                        *per_tag.entry(tag.clone()).or_default() += 1;
+                    }
+                }
+            }
+            Err(e) => errors.push(format!("{}: {e}", entry.path().display())),
+        }
+    }
+    let mut top: Vec<_> = per_tag.iter().collect();
+    top.sort_by(|a, b| b.1.cmp(a.1));
+    println!(
+        "{files} files, {states} states with cores/claims, {claims_total} claims, {} parse errors",
+        errors.len()
+    );
+    println!("most cores at 1936: {:?}", &top[..top.len().min(8)]);
+    assert!(errors.is_empty(), "{errors:?}");
+}

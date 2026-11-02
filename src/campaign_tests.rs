@@ -490,6 +490,73 @@ fn idea_cancel_condition_removes_the_idea_daily_and_reports_unevaluable_ones() {
     assert!((attack(&s) - base * 1.1).abs() < 1e-9, "temp removed, broken kept");
 }
 
+/// Cores and claims: both effect scopes, visibility inside the same script,
+/// core iterators, ownership triggers, atomic rollback, and save compatibility.
+#[test]
+fn cores_and_claims_effects_iterators_and_triggers_work_atomically() {
+    let mut s = fixture();
+    let cores = |s: &GameSession, id: u32| s.world.states[&id].cores.clone();
+    let claims = |s: &GameSession, id: u32| s.world.states[&id].claims.clone();
+    let flagged = |s: &GameSession, flag: &str| -> Vec<u32> {
+        s.campaign
+            .state_flags
+            .iter()
+            .filter(|(_, f)| f.contains(flag))
+            .map(|(id, _)| *id)
+            .collect()
+    };
+    // State scope, scope keywords as tags, and staged changes seen by triggers.
+    run(
+        &mut s,
+        "1={add_core_of=ROOT add_core_of=BBB add_claim_by=CCC \
+            if={limit={is_core_of=BBB is_claimed_by=CCC} set_state_flag=seen_staged}} \
+         add_state_core=2 add_state_claim=1",
+    )
+    .unwrap();
+    assert_eq!(cores(&s, 1).iter().map(String::as_str).collect::<Vec<_>>(), ["A", "BBB"]);
+    assert_eq!(cores(&s, 2).iter().map(String::as_str).collect::<Vec<_>>(), ["A"]);
+    assert_eq!(claims(&s, 1).iter().map(String::as_str).collect::<Vec<_>>(), ["A", "CCC"]);
+    assert_eq!(flagged(&s, "seen_staged"), [1]);
+
+    // Iterators and ownership triggers.
+    run(
+        &mut s,
+        "every_core_state={set_state_flag=core} \
+         every_owned_state={if={limit={is_owned_by=ROOT is_owned_and_controlled_by=A} set_state_flag=mine}} \
+         if={limit={owns_state=2 NOT={owns_state=999999}} set_country_flag=owns_two}",
+    )
+    .unwrap();
+    assert_eq!(flagged(&s, "core"), [1, 2]);
+    assert_eq!(flagged(&s, "mine"), [1, 2]);
+    assert!(s.military.countries["A"].modifiers.flags.contains("owns_two"));
+
+    // Removal in both scopes.
+    run(&mut s, "remove_state_core=2 remove_state_claim=1 1={remove_core_of=BBB remove_claim_by=CCC}")
+        .unwrap();
+    assert_eq!(cores(&s, 1).iter().map(String::as_str).collect::<Vec<_>>(), ["A"]);
+    assert!(cores(&s, 2).is_empty() && claims(&s, 1).is_empty());
+
+    // A failing script leaves nothing behind; bad arguments are rejected.
+    let before = snap(&s);
+    assert!(run(&mut s, "1={add_core_of=ZZZ} add_state_core=999999").is_err());
+    assert!(run(&mut s, "1={add_core_of=lowercase}").is_err());
+    assert!(run(&mut s, "add_core_of=BBB").is_err(), "state scope required");
+    assert_eq!(snap(&s), before);
+
+    // Round trip, and saves written before these fields existed still load.
+    let json = serde_json::to_value(&s).unwrap();
+    let back: GameSession = serde_json::from_value(json.clone()).unwrap();
+    assert_eq!(cores(&back, 1), cores(&s, 1));
+    let mut old = json;
+    for st in old["world"]["states"].as_object_mut().unwrap().values_mut() {
+        let obj = st.as_object_mut().unwrap();
+        obj.remove("cores");
+        obj.remove("claims");
+    }
+    let loaded: GameSession = serde_json::from_value(old).unwrap();
+    assert!(loaded.world.states[&1].cores.is_empty());
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {
