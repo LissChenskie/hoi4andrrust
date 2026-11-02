@@ -394,6 +394,13 @@ impl<'a> Journal<'a> {
             _ => Err("Existing active country scope required".into()),
         }
     }
+    /// Summed modifier of a country, seeing changes staged by this script.
+    fn modifier_of(&self, t: &str, key: &str) -> f64 {
+        self.research
+            .get(t)
+            .or_else(|| self.s.research.country(t))
+            .map_or(0., |r| r.modifier(key))
+    }
     fn research(&mut self, t: &str) -> &mut CountryResearch {
         let c = self.research.entry(t.into()).or_insert_with(|| {
             self.s.research.country(t).cloned().unwrap_or_else(|| {
@@ -773,12 +780,19 @@ impl<'a> Journal<'a> {
                         .countries
                         .get(&t)
                         .ok_or("Unknown political history")?;
-                    let n = match e.key.as_str() {
-                        "political_power" | "has_political_power" => p.power,
-                        "stability" | "has_stability" => p.stability,
-                        _ => p.war_support,
-                    }
-                    .ok_or("Unknown political value")?;
+                    let (base, modifier) = match e.key.as_str() {
+                        "political_power" | "has_political_power" => (p.power, 0.),
+                        "stability" | "has_stability" => {
+                            (p.stability, self.modifier_of(&t, "stability_factor"))
+                        }
+                        _ => (p.war_support, self.modifier_of(&t, "war_support_factor")),
+                    };
+                    let n = base.ok_or("Unknown political value")?;
+                    let n = if modifier == 0. {
+                        n
+                    } else {
+                        crate::politics::effective(n, modifier)
+                    };
                     let target = self.num(atom(e)?, c)?;
                     match e.operator.as_str() {
                         ">" => n > target,

@@ -80,6 +80,8 @@ pub fn modifier_consumer(key: &str) -> Option<&'static str> {
         "political_power_gain" | "political_power_cost" | "political_power_factor"
     ) {
         Some("политическая власть")
+    } else if matches!(key, "stability_factor" | "war_support_factor") {
+        Some("политика")
     } else if key == "research_speed_factor" {
         Some("исследования")
     } else if matches!(

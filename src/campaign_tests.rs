@@ -383,6 +383,42 @@ fn consumer_goods_factor_idea_changes_construction_capacity() {
     let _: GameSession = serde_json::from_value(json).unwrap();
 }
 
+/// Stability / war support modifiers shift the value that triggers (and the
+/// political power income) read, clamped like the base value.
+#[test]
+fn stability_and_war_support_modifiers_shift_effective_values() {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "calm".into(),
+        parse_pdx("modifier={stability_factor=0.2 war_support_factor=-0.3}").unwrap(),
+    );
+    let mut s = fixture();
+    {
+        let p = s.campaign.countries.get_mut("A").unwrap();
+        p.stability = Some(0.5);
+        p.war_support = Some(0.5);
+    }
+    let flags = |s: &GameSession| s.military.countries["A"].modifiers.flags.clone();
+    let script = "if={limit={stability>0.6} set_country_flag=stable} \
+                  if={limit={war_support<0.3} set_country_flag=tired}";
+    let apply = |s: &mut GameSession, script: &str| {
+        s.campaign_effects(
+            &Context::country("A"),
+            &parse_pdx(script).unwrap(),
+            "fixture",
+            &cat,
+            &Default::default(),
+        )
+        .unwrap()
+    };
+    apply(&mut s, script);
+    assert!(!flags(&s).contains("stable") && !flags(&s).contains("tired"));
+    // The idea is staged in the same script: conditions after it see it.
+    apply(&mut s, &format!("add_ideas=calm {script}"));
+    assert!(flags(&s).contains("stable") && flags(&s).contains("tired"));
+    assert_eq!(s.campaign.countries["A"].stability, Some(0.5), "base value untouched");
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {

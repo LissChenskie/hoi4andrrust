@@ -34,6 +34,16 @@ fn define(cat: &ResearchCatalogue, key: &str) -> Result<f64, String> {
         .filter(|v| v.is_finite())
         .ok_or_else(|| format!("Missing/invalid define {key}"))
 }
+/// A political value (stability, war support) as the player sees it: the base
+/// value plus the summed modifiers, kept inside 0..=1 like the base value.
+pub fn effective(base: f64, modifier: f64) -> f64 {
+    if modifier.is_finite() {
+        (base + modifier).clamp(0., 1.)
+    } else {
+        base
+    }
+}
+
 pub fn limits(cat: &ResearchCatalogue) -> Result<(f64, f64), String> {
     let min = define(cat, "NDefines.NCountry.POLITICAL_POWER_LOWER_CAP")?;
     let max = define(cat, "NDefines.NCountry.POLITICAL_POWER_UPPER_CAP")?;
@@ -242,6 +252,8 @@ impl GameSession {
         let stability = p
             .stability
             .ok_or("Stability unknown for political income")?;
+        // Modifiers shift the displayed value, and the income bonus follows it.
+        let stability = effective(stability, get("stability_factor")?);
         let weight = (stability - 0.5).abs() * 2.;
         let stability_factor = if weight > 0. {
             static_value(
@@ -366,6 +378,14 @@ impl GameSession {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effective_values_follow_modifiers_inside_the_unit_interval() {
+        assert!((super::effective(0.5, 0.2) - 0.7).abs() < 1e-12);
+        assert_eq!(super::effective(0.9, 0.5), 1.0);
+        assert_eq!(super::effective(0.1, -0.5), 0.0);
+        assert_eq!(super::effective(0.4, f64::NAN), 0.4);
+    }
+
     use super::*;
     fn prepared() -> (GameSession, ResearchCatalogue) {
         let (mut s, mut cat, _) = crate::focus::tests::prepared();
