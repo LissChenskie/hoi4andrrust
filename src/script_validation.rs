@@ -58,6 +58,13 @@ pub fn check_idea(cat: &ResearchCatalogue, id: &str) -> Result<(), String> {
             "name",
             "desc",
             "allowed",
+            // `available` only gates when a player may pick the idea (advisors,
+            // companies, laws); script effects such as add_ideas bypass it.
+            // Assumption, unverified against the original engine.
+            "available",
+            // Evaluated daily by GameSession::tick_idea_cancels, which removes the idea
+            // once the condition holds.
+            "cancel",
             "visible",
             "cost",
             "removal_cost",

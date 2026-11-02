@@ -116,6 +116,10 @@ pub struct CampaignState {
     /// total is recomputed from the base value after every commit.
     #[serde(default)]
     pub extra_shared_slots: BTreeMap<u32, u16>,
+    /// `TAG:idea` -> why its `cancel` condition could not be evaluated. Shown
+    /// instead of silently leaving an idea that can never be cancelled.
+    #[serde(default)]
+    pub idea_cancel_errors: BTreeMap<String, String>,
     pub countries: BTreeMap<String, CountryPolitics>,
     pub state_flags: BTreeMap<u32, BTreeSet<String>>,
     pub queue: BTreeMap<u64, Scheduled>,
@@ -135,6 +139,7 @@ impl Default for CampaignState {
             focuses: Default::default(),
             politics: Default::default(),
             extra_shared_slots: BTreeMap::new(),
+            idea_cancel_errors: BTreeMap::new(),
             dynamic_modifiers: Default::default(),
             countries: BTreeMap::new(),
             state_flags: BTreeMap::new(),
@@ -1752,6 +1757,9 @@ impl GameSession {
         }
         self.campaign.last_hour = Some(h);
         self.expire_dynamic_modifiers();
+        if h % 24 == 0 {
+            self.tick_idea_cancels(cat, rules);
+        }
         self.tick_on_actions(cat);
         self.flush_simulation_hooks(cat, rules);
         if !self.campaign.queue.values().any(|a| {
@@ -1759,6 +1767,46 @@ impl GameSession {
                 && matches!(&a.payload, Payload::OnAction {hook, ..} if hook == "on_startup")
         }) {
             self.tick_decisions(cat, rules);
+        }
+    }
+    /// Daily: an idea with a `cancel` block is removed once that condition
+    /// holds. Runs through the normal transactional executor, so the removal
+    /// has the same validation and effects as `remove_ideas`.
+    fn tick_idea_cancels(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {
+        use crate::pdx::{Span, Value};
+        let mut work = Vec::new();
+        for (tag, r) in &self.research.countries {
+            for id in &r.context.ideas {
+                if let Some(cancel) = cat.scripts.ideas.get(id).and_then(|raw| pdx::block(raw, "cancel")) {
+                    work.push((tag.clone(), id.clone(), cancel.to_vec()));
+                }
+            }
+        }
+        let entry = |key: &str, value: Value| Entry {
+            key: key.into(),
+            operator: "=".into(),
+            value: Some(value),
+            span: Span::default(),
+        };
+        for (tag, id, cancel) in work {
+            let script = [entry(
+                "if",
+                Value::Block(vec![
+                    entry("limit", Value::Block(cancel)),
+                    entry("remove_ideas", Value::Atom(id.clone())),
+                ]),
+            )];
+            let key = format!("{tag}:{id}");
+            match self.campaign_effects(&Context::country(&tag), &script, "idea cancel", cat, rules) {
+                Ok(()) => {
+                    self.campaign.idea_cancel_errors.remove(&key);
+                }
+                Err(e) => {
+                    if self.campaign.idea_cancel_errors.len() < 256 {
+                        self.campaign.idea_cancel_errors.insert(key, e);
+                    }
+                }
+            }
         }
     }
     fn process_campaign_queue(&mut self, cat: &ResearchCatalogue, rules: &ResearchRules) {

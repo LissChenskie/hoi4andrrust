@@ -419,6 +419,77 @@ fn stability_and_war_support_modifiers_shift_effective_values() {
     assert_eq!(s.campaign.countries["A"].stability, Some(0.5), "base value untouched");
 }
 
+/// `available` gates player selection only; add_ideas applies the idea anyway.
+#[test]
+fn idea_available_field_does_not_block_script_added_ideas() {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "gated".into(),
+        parse_pdx("available={always=no} modifier={army_attack_factor=0.5}").unwrap(),
+    );
+    let mut s = fixture();
+    let base = s.military.divisions[&1].derived.stats.soft_attack;
+    s.campaign_effects(
+        &Context::country("A"),
+        &parse_pdx("add_ideas=gated").unwrap(),
+        "fixture",
+        &cat,
+        &Default::default(),
+    )
+    .unwrap();
+    assert!((s.military.divisions[&1].derived.stats.soft_attack - base * 1.5).abs() < 1e-9);
+}
+
+/// An idea with a `cancel` block disappears once the condition holds; an idea
+/// whose condition cannot be evaluated is reported, not silently kept forever.
+#[test]
+fn idea_cancel_condition_removes_the_idea_daily_and_reports_unevaluable_ones() {
+    let mut cat = ResearchCatalogue::default();
+    cat.scripts.ideas.insert(
+        "temp".into(),
+        parse_pdx("cancel={has_global_flag=peace_signed} modifier={army_attack_factor=0.5}").unwrap(),
+    );
+    cat.scripts.ideas.insert(
+        "broken".into(),
+        parse_pdx("cancel={no_such_trigger=yes} modifier={army_attack_factor=0.1}").unwrap(),
+    );
+    let mut s = fixture();
+    let base = s.military.divisions[&1].derived.stats.soft_attack;
+    s.campaign_effects(
+        &Context::country("A"),
+        &parse_pdx("add_ideas=temp add_ideas=broken").unwrap(),
+        "fixture",
+        &cat,
+        &Default::default(),
+    )
+    .unwrap();
+    let attack = |s: &GameSession| s.military.divisions[&1].derived.stats.soft_attack;
+    assert!((attack(&s) - base * 1.6).abs() < 1e-9);
+    let (br, pr, rr) = (
+        crate::construction::BuildingRules::default(),
+        crate::production::ProductionRules::default(),
+        ResearchRules::default(),
+    );
+    for _ in 0..48 {
+        s.advance_one_hour(&br, &pr, &cat, &rr);
+    }
+    assert!((attack(&s) - base * 1.6).abs() < 1e-9, "condition false: idea stays");
+    assert!(s.campaign.idea_cancel_errors.contains_key("A:broken"));
+    assert!(!s.campaign.idea_cancel_errors.contains_key("A:temp"));
+    s.campaign_effects(
+        &Context::country("A"),
+        &parse_pdx("set_global_flag=peace_signed").unwrap(),
+        "fixture",
+        &cat,
+        &Default::default(),
+    )
+    .unwrap();
+    for _ in 0..25 {
+        s.advance_one_hour(&br, &pr, &cat, &rr);
+    }
+    assert!((attack(&s) - base * 1.1).abs() < 1e-9, "temp removed, broken kept");
+}
+
 /// Display-only effects change nothing and their inner effects never execute.
 #[test]
 fn tooltip_only_effects_change_nothing_and_do_not_run_inner_effects() {
