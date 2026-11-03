@@ -123,3 +123,90 @@ fn real_state_history_cores_parse_at_the_1936_bookmark() {
     println!("most cores at 1936: {:?}", &top[..top.len().min(8)]);
     assert!(errors.is_empty(), "{errors:?}");
 }
+
+/// War simulation with divisions on a large province grid. Dev-profile numbers
+/// on synthetic terrain: a lower bound, not the real map.
+#[test]
+#[ignore]
+fn perf_probe_war_with_many_divisions() {
+    use crate::game::GameDate;
+    use crate::map_graph::MapGraph;
+    use crate::warfare::Warfare;
+    let (w, h) = (120u32, 80u32);
+    let mut rgba = Vec::new();
+    let mut csv = String::new();
+    for id in 1..=w * h {
+        let (r, g) = ((id % 256) as u8, (id / 256) as u8);
+        rgba.extend([r, g, 7, 255]);
+        csv.push_str(&format!("{id};{r};{g};7;land;false;plains;1\n"));
+    }
+    let graph = MapGraph::from_rgba(w, h, &rgba, &csv, false).unwrap();
+    for divisions_per_side in [100usize, 500, 2000] {
+        let mut membership = HashMap::new();
+        let mut owners = HashMap::new();
+        for id in 1..=w * h {
+            let state = (id - 1) / 4 + 1;
+            membership.insert(id, state);
+            let x = (id - 1) % w;
+            owners.insert(state, if x < w / 2 { "A" } else { "B" }.to_owned());
+        }
+        let mut world = World::from_map_data(
+            &membership,
+            &owners,
+            &HashMap::new(),
+            &HashMap::new(),
+            &HashMap::new(),
+        );
+        world.geography = graph.clone();
+        let mut catalogue = crate::military_model::tests::catalogue();
+        catalogue.rules.pixels_to_km = Some(1.0);
+        catalogue.rules.minimum_hours = 1;
+        let mut war = Warfare::new(catalogue);
+        let mut next = 1u64;
+        for side in ["A", "B"] {
+            let mut placed = 0;
+            'fill: for dx in 0..25u32 {
+                for y in 0..h {
+                    let x = if side == "A" { w / 2 - 1 - dx } else { w / 2 + dx };
+                    let mut d = crate::military_model::tests::division(next, side, y * w + x + 1);
+                    d.derived.stats.speed = 4.0;
+                    war.divisions.insert(next, d);
+                    next += 1;
+                    placed += 1;
+                    if placed >= divisions_per_side {
+                        break 'fill;
+                    }
+                }
+            }
+        }
+        war.declare_war("A", "B", &world).unwrap();
+        let hours = 72u64;
+        let mut worst = 0f64;
+        let start = Instant::now();
+        for hour in 0..hours {
+            if hour % 24 == 0 {
+                // Every border row attacks the enemy province next to it.
+                for y in 0..h {
+                    let target = y * w + w / 2 + 1;
+                    if let Err(e) = war.attack("A", &[u64::from(y) + 1], target, &world) {
+                        if y == 0 && hour == 0 {
+                            println!("first attack order rejected: {e}");
+                        }
+                    }
+                }
+            }
+            let t = Instant::now();
+            war.tick_hour(&mut world, GameDate::START, (hour % 24) as u8, hour, None);
+            worst = worst.max(t.elapsed().as_secs_f64() * 1000.0);
+        }
+        let total = start.elapsed().as_secs_f64() * 1000.0;
+        println!(
+            "{:>5} divisions total, {} provinces: {:.2} ms per game hour (worst {:.2} ms), {} battles at end",
+            war.divisions.len(),
+            w * h,
+            total / hours as f64,
+            worst,
+            war.battles.len()
+        );
+    }
+}
