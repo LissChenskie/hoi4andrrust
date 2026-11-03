@@ -107,11 +107,6 @@ impl ProductionRules {
                 &mut r.efficiency_cap,
                 0.01,
             ),
-            (
-                "BASE_FACTORY_EFFICIENCY_GAIN",
-                &mut r.efficiency_growth,
-                1.0,
-            ),
         ] {
             if let Some(value) = defines
                 .get(&format!("NDefines.NProduction.{key}"))
@@ -120,6 +115,20 @@ impl ProductionRules {
             {
                 *field = value * scale;
             }
+        }
+        // Growth coefficient = gain x balance factor, converted from percent.
+        // The shipped values (1 x 0.1 x 0.01) give 0.001, the long-standing
+        // default; taking the gain define alone was 1000 times too large and
+        // lifted every new line to its efficiency cap on the first day.
+        let define = |key: &str| {
+            defines
+                .get(&format!("NDefines.NProduction.{key}"))
+                .copied()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+        };
+        if let Some(gain) = define("BASE_FACTORY_EFFICIENCY_GAIN") {
+            let balance = define("BASE_FACTORY_EFFICIENCY_BALANCE_FACTOR").unwrap_or(0.1);
+            r.efficiency_growth = gain * balance * 0.01;
         }
         if let Some(penalty) = defines
             .get("NDefines.NProduction.PRODUCTION_RESOURCE_LACK_PENALTY")
@@ -527,6 +536,51 @@ impl ProductionState {
 
 #[cfg(test)]
 mod tests {
+    /// The shipped 1.15.4 values of NDefines.NProduction.
+    fn real_1_15_defines() -> BTreeMap<String, f64> {
+        [
+            ("BASE_FACTORY_SPEED_MIL", 4.5),
+            ("BASE_FACTORY_START_EFFICIENCY_FACTOR", 10.0),
+            ("BASE_FACTORY_MAX_EFFICIENCY_FACTOR", 50.0),
+            ("BASE_FACTORY_EFFICIENCY_GAIN", 1.0),
+            ("BASE_FACTORY_EFFICIENCY_BALANCE_FACTOR", 0.1),
+            ("PRODUCTION_RESOURCE_LACK_PENALTY", -0.05),
+        ]
+        .into_iter()
+        .map(|(k, v)| (format!("NDefines.NProduction.{k}"), v))
+        .collect()
+    }
+
+    /// With the real defines a new line must climb gradually. It used to reach
+    /// the cap on its first day because the gain define was applied as the
+    /// growth coefficient without the balance factor and percent conversion.
+    #[test]
+    fn real_defines_make_efficiency_climb_gradually_not_jump_to_the_cap() {
+        let rules = ProductionRules::from_defines(&real_1_15_defines());
+        let mut efficiency = rules.starting_efficiency;
+        assert!((efficiency - 0.10).abs() < 1e-12 && (rules.efficiency_cap - 0.50).abs() < 1e-12);
+        efficiency = (efficiency + rules.efficiency_gain(efficiency)).min(rules.efficiency_cap);
+        assert!(efficiency < 0.12, "first day gain must be small, got {efficiency}");
+        let mut days = 1;
+        while efficiency < rules.efficiency_cap && days < 2000 {
+            efficiency = (efficiency + rules.efficiency_gain(efficiency)).min(rules.efficiency_cap);
+            days += 1;
+        }
+        assert!(days > 100 && days < 1000, "reached the cap after {days} days");
+    }
+
+    /// The code default is exactly what the real defines produce.
+    #[test]
+    fn default_growth_equals_the_value_derived_from_real_defines() {
+        let derived = ProductionRules::from_defines(&real_1_15_defines());
+        assert!((derived.efficiency_growth - ProductionRules::default().efficiency_growth).abs() < 1e-12);
+        // A modded gain define scales it.
+        let mut modded = real_1_15_defines();
+        modded.insert("NDefines.NProduction.BASE_FACTORY_EFFICIENCY_GAIN".into(), 2.0);
+        let r = ProductionRules::from_defines(&modded);
+        assert!((r.efficiency_growth - 2.0 * derived.efficiency_growth).abs() < 1e-12);
+    }
+
     use super::*;
     #[test]
     fn concrete_models_use_imported_cost_and_only_the_model_stockpile() {
